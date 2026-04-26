@@ -1,0 +1,5 @@
+{
+  "name": "Interactive Map Explorer",
+  "description": "A polished interactive map application with search and location details.",
+  "requestFramePermissions": ["geolocation"]
+}

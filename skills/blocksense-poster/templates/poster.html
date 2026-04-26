@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ headline|default('Neighborhood Report') }}</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --primary: #0f766e;
+    --primary-dark: #0d5f59;
+    --primary-light: #ccfbf1;
+    --primary-bg: #f0fdfa;
+    --accent: #d97706;
+    --accent-light: #fef3c7;
+    --accent-bg: #fffbeb;
+    --secondary: #4f46e5;
+    --secondary-light: #e0e7ff;
+    --bg: #f8faf9;
+    --card-border: #e5e7eb;
+  }
+
+  body {
+    font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: #111827;
+    -webkit-font-smoothing: antialiased;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* ---- Poster Container ---- */
+  .poster {
+    max-width: 1100px; margin: 40px auto 60px; padding: 48px;
+    background: #fff; border-radius: 24px;
+    box-shadow: 0 4px 24px rgba(0,0,0,.06);
+  }
+
+  /* Header */
+  .header { text-align: center; margin-bottom: 48px; }
+  .header h1 {
+    font-size: 48px; font-weight: 800;
+    color: var(--primary); letter-spacing: -1px;
+    position: relative; display: inline-block;
+  }
+  .header h1::after {
+    content: ''; position: absolute; bottom: -4px; left: 0;
+    width: 100%; height: 14px; background: rgba(15,118,110,.12);
+    border-radius: 20px; z-index: -1;
+  }
+  .header .subtitle {
+    margin-top: 16px; color: #6b7280; font-size: 18px;
+    font-weight: 500; max-width: 600px; margin-left: auto; margin-right: auto;
+  }
+
+  /* Grid */
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(12, 1fr);
+    gap: 24px;
+  }
+
+  /* Cards */
+  .card {
+    background: #fff; padding: 24px; border-radius: 16px;
+    border: 1px solid var(--card-border);
+    box-shadow: 0 1px 4px rgba(0,0,0,.04);
+  }
+  .card-title {
+    font-size: 22px; font-weight: 700;
+    color: #1f2937; margin-bottom: 12px;
+  }
+  .card-text { color: #6b7280; font-size: 17px; line-height: 1.65; }
+
+  .card-header { display: flex; align-items: flex-start; gap: 16px; }
+  .icon-box {
+    width: 48px; height: 48px; border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; font-size: 24px;
+  }
+
+  /* Foundation Card — Summary */
+  .card-foundation {
+    grid-column: span 7; border-left: 8px solid var(--primary);
+  }
+  .card-foundation .icon-box { background: var(--primary-bg); color: var(--primary); }
+
+  /* Dimension bars inside foundation */
+  .dim-bars { margin-top: 20px; display: flex; flex-direction: column; gap: 10px; }
+  .dim-row { display: flex; align-items: center; gap: 10px; }
+  .dim-icon { font-size: 18px; width: 28px; text-align: center; }
+  .dim-name { width: 80px; font-size: 14px; font-weight: 600; color: #374151; }
+  .dim-bar-bg { flex: 1; height: 18px; background: #e8ecf0; border-radius: 9px; overflow: hidden; }
+  .dim-bar-fill { height: 100%; border-radius: 9px; transition: width 0.3s; }
+  .dim-score { width: 36px; font-size: 14px; font-weight: 700; text-align: right; color: #374151; }
+
+  /* Diversity Card — Dimensions as tags */
+  .card-diversity {
+    grid-column: span 5; background: rgba(224,231,255,.25);
+    border-top: 8px solid var(--secondary); transform: rotate(1.5deg);
+  }
+  .card-diversity .icon-box { background: var(--secondary-light); color: var(--secondary); }
+  .tags { margin-top: 16px; display: flex; flex-wrap: wrap; gap: 8px; }
+  .tag {
+    padding: 6px 16px; background: rgba(255,255,255,.85);
+    border-radius: 999px; font-size: 13px; font-weight: 700;
+    color: var(--secondary); box-shadow: 0 1px 2px rgba(0,0,0,.05);
+  }
+  .tag-improving { color: #059669; }
+  .tag-declining { color: #dc2626; }
+  .tag-stable { color: var(--secondary); }
+
+  /* Belonging Card — Key findings */
+  .card-belonging { grid-column: span 8; transform: rotate(-0.8deg); }
+  .card-belonging .card-title svg { vertical-align: -3px; margin-right: 8px; }
+  .community-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 16px;
+  }
+  .community-item {
+    padding: 14px 16px; border-radius: 12px;
+    display: flex; flex-direction: column; gap: 4px;
+    box-shadow: 0 1px 2px rgba(0,0,0,.04);
+  }
+  .ci-value { font-size: 28px; font-weight: 800; }
+  .ci-label { font-size: 13px; font-weight: 700; }
+  .ci-context { font-size: 11px; opacity: 0.7; }
+  .ci-teal   { background: var(--primary-bg); color: var(--primary); }
+  .ci-amber  { background: var(--accent-bg); color: var(--accent); }
+  .ci-indigo { background: var(--secondary-light); color: var(--secondary); }
+
+  /* Impact Card — Overall Score */
+  .card-impact {
+    grid-column: span 4; background: rgba(254,243,199,.25);
+    border-bottom: 8px solid var(--accent); transform: rotate(1deg);
+    text-align: center;
+  }
+  .score-circle {
+    margin: 20px auto 0; width: 120px; height: 120px;
+    border-radius: 50%; position: relative;
+    display: flex; align-items: center; justify-content: center;
+    background: conic-gradient(
+      {{ score_color|default('#565e74') }} calc({{ overall_score|default(0) }} * 3.6deg),
+      #e8ecf0 calc({{ overall_score|default(0) }} * 3.6deg)
+    );
+  }
+  .score-inner {
+    width: 96px; height: 96px; border-radius: 50%; background: #fff;
+    display: flex; align-items: center; justify-content: center; flex-direction: column;
+    box-shadow: 0 2px 8px rgba(0,0,0,.06);
+  }
+  .score-number { font-size: 36px; font-weight: 800; color: {{ score_color|default('#565e74') }}; line-height: 1; }
+  .score-of { font-size: 11px; color: #6b7280; }
+  .score-label-text { font-size: 15px; font-weight: 700; color: {{ score_color|default('#565e74') }}; margin-top: 8px; }
+  .sparkle-dot {
+    position: absolute; top: -4px; right: -4px;
+    width: 28px; height: 28px; background: var(--accent);
+    border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 2px 6px rgba(0,0,0,.1); font-size: 14px; color: #fff;
+  }
+
+  /* Spirit Card — Priority Action */
+  .card-spirit {
+    grid-column: span 12;
+    border: 2px dashed rgba(15,118,110,.3);
+    display: flex; align-items: center; gap: 32px;
+  }
+  .card-spirit .spirit-text { flex: 1; }
+  .card-spirit .spirit-title {
+    font-size: 24px; font-weight: 800;
+    color: var(--primary); font-style: italic; margin-bottom: 12px;
+  }
+  .card-spirit .spirit-body {
+    color: #374151; font-size: 18px; line-height: 1.6; font-weight: 500;
+  }
+
+  /* Footer */
+  .footer {
+    text-align: center; margin-top: 40px; padding-bottom: 8px;
+    color: #9ca3af; font-weight: 500; font-size: 14px;
+  }
+
+  /* ---- Print / PDF styles ---- */
+  @media print {
+    .toolbar { display: none !important; }
+    body { background: #fff; }
+    .poster { margin: 0; padding: 32px; box-shadow: none; border-radius: 0; }
+    .card-diversity { transform: rotate(0); }
+    .card-belonging { transform: rotate(0); }
+    .card-impact { transform: rotate(0); }
+  }
+
+  @page {
+    size: A3 portrait;
+    margin: 12mm;
+  }
+</style>
+</head>
+<body>
+
+<!-- Poster -->
+<div class="poster">
+  <!-- Header -->
+  <div class="header">
+    <h1>{{ headline|default('Neighborhood Report') }}</h1>
+    {% if location_name %}
+    <div class="subtitle">{{ location_name }}{% if borough %}, {{ borough }}{% endif %}{% if zip %} {{ zip }}{% endif %} &middot; {{ radius_m|default(500) }}m radius</div>
+    {% endif %}
+  </div>
+
+  <!-- Grid -->
+  <div class="grid">
+
+    <!-- Foundation — Neighborhood Overview -->
+    <div class="card card-foundation">
+      <div class="card-header">
+        <div class="icon-box">&#127961;&#65039;</div>
+        <div>
+          <div class="card-title">Neighborhood Overview</div>
+          <div class="card-text">{{ summary|default('') }}</div>
+        </div>
+      </div>
+      {% if dimension_scores %}
+      <div class="dim-bars">
+        {% for dim in dimension_scores %}
+        <div class="dim-row">
+          <div class="dim-icon">{{ dim.icon|emoji }}</div>
+          <div class="dim-name">{{ dim.name }}</div>
+          <div class="dim-bar-bg"><div class="dim-bar-fill" style="width:{{ dim.score }}%; background:var(--primary);"></div></div>
+          <div class="dim-score">{{ dim.score }}</div>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+
+    <!-- Diversity — Dimension Breakdown -->
+    <div class="card card-diversity">
+      <div class="card-header">
+        <div class="icon-box">&#10024;</div>
+        <div>
+          <div class="card-title">Dimensions</div>
+          <div class="card-text">Performance across key livability dimensions</div>
+        </div>
+      </div>
+      {% if dimension_scores %}
+      <div class="tags">
+        {% for dim in dimension_scores %}
+        <span class="tag tag-{{ dim.trend|default('stable') }}">{{ dim.name }} {{ dim.score }} {% if dim.trend == 'improving' %}&uarr;{% elif dim.trend == 'declining' %}&darr;{% else %}&mdash;{% endif %}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+
+    <!-- Belonging — Key Findings -->
+    <div class="card card-belonging">
+      <div class="card-title">
+        <svg style="display:inline;vertical-align:-4px;margin-right:8px;color:var(--accent);width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round" viewBox="0 0 24 24"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>
+        Key Findings
+      </div>
+      <div class="card-text" style="margin-bottom:16px">Highlights from the neighborhood analysis</div>
+      {% if top_findings %}
+      <div class="community-grid">
+        {% for f in top_findings %}
+        <div class="community-item {% if loop.index % 3 == 1 %}ci-teal{% elif loop.index % 3 == 2 %}ci-amber{% else %}ci-indigo{% endif %}">
+          <div class="ci-value">{{ f.value }}</div>
+          <div class="ci-label">{{ f.label }}</div>
+          <div class="ci-context">{{ f.context }}</div>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+
+    <!-- Impact — Overall Score -->
+    <div class="card card-impact">
+      <div class="card-title">Overall Score</div>
+      <div class="card-text">{{ score_label|default('') }}</div>
+      {% if overall_score is not none %}
+      <div class="score-circle">
+        <div class="score-inner">
+          <div class="score-number">{{ overall_score }}</div>
+          <div class="score-of">/ 100</div>
+        </div>
+        <div class="sparkle-dot">&#10024;</div>
+      </div>
+      <div class="score-label-text">{{ score_label|default('') }}</div>
+      {% endif %}
+    </div>
+
+    <!-- Spirit — Priority Action -->
+    {% if priority_action %}
+    <div class="card card-spirit">
+      <div class="spirit-text">
+        <div class="spirit-title">&#9888;&#65039; Priority Action</div>
+        <div class="spirit-body">{{ priority_action }}</div>
+      </div>
+    </div>
+    {% endif %}
+
+  </div>
+
+  <!-- Footer -->
+  <div class="footer">
+    Data source: {{ data_source|default('NYC Open Data') }} &middot; Generated {{ generated_date|default('') }} &middot; BlockSense NYC
+  </div>
+</div>
+
+</body>
+</html>

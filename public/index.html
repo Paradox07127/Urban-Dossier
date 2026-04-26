@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Urban Dossier NYC Offline Map</title>
+    <link rel="stylesheet" href="/vendor/maplibre-gl/maplibre-gl.css" />
+    <style>
+      html, body, #app {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        font-family: "Segoe UI", sans-serif;
+        background: #f0ede9;
+        color: #222;
+      }
+
+      .shell {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+      }
+
+      #map {
+        width: 100%;
+        height: 100%;
+      }
+
+      .panel {
+        position: absolute;
+        top: 16px;
+        left: 16px;
+        z-index: 2;
+        width: min(420px, calc(100vw - 32px));
+        padding: 16px 18px;
+        border-radius: 16px;
+        background: rgba(255, 255, 255, 0.94);
+        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.16);
+        line-height: 1.5;
+      }
+
+      .panel h1 {
+        margin: 0;
+        font-size: 18px;
+      }
+
+      .panel p {
+        margin: 8px 0 0;
+        font-size: 14px;
+        color: #444;
+      }
+
+      .row {
+        display: flex;
+        gap: 10px;
+        margin-top: 12px;
+      }
+
+      .row input {
+        flex: 1;
+        min-width: 0;
+        height: 42px;
+        padding: 0 14px;
+        border: 1px solid #d5d1cb;
+        border-radius: 12px;
+        font-size: 14px;
+        outline: none;
+      }
+
+      .row button {
+        height: 42px;
+        padding: 0 16px;
+        border: none;
+        border-radius: 12px;
+        background: #222;
+        color: #fff;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+
+      #status {
+        margin-top: 10px;
+        font-size: 13px;
+        color: #666;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app" class="shell">
+      <div id="map"></div>
+      <div class="panel">
+        <h1>Urban Dossier NYC Offline Map</h1>
+        <p>Enter a NYC landmark name or coordinates like <strong>40.7580,-73.9855</strong>.</p>
+        <div class="row">
+          <input id="search-input" type="text" value="Times Square" placeholder="Landmark or lat,lng" />
+          <button id="search-button">Search</button>
+        </div>
+        <div id="status">Buildings intersecting the 5km diameter area will turn red.</div>
+      </div>
+    </div>
+
+    <script src="/vendor/maplibre-gl/maplibre-gl.js"></script>
+    <script src="/offline-map.js"></script>
+  </body>
+  </html>

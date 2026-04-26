@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ headline|default('Neighborhood Report') }}</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body {
+    font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    background: #f7f9fb; color: #2a3439; line-height: 1.5;
+  }
+  .page {
+    width: 210mm; min-height: 297mm; margin: 0 auto;
+    padding: 18mm 16mm; background: #fff;
+    display: flex; flex-direction: column; gap: 16px;
+  }
+  /* Header */
+  .header { text-align: center; border-bottom: 3px solid #0053dc; padding-bottom: 12px; }
+  .header .brand { font-size: 11px; text-transform: uppercase; letter-spacing: 2px; color: #565e74; }
+  .header h1 { font-size: 22px; color: #2a3439; margin: 6px 0 4px; }
+  .header .subtitle { font-size: 13px; color: #565e74; }
+  /* Score circle */
+  .score-section { text-align: center; padding: 12px 0; }
+  .score-circle {
+    width: 120px; height: 120px; border-radius: 50%; margin: 0 auto;
+    display: flex; align-items: center; justify-content: center; flex-direction: column;
+    background: conic-gradient(
+      {{ score_color|default('#565e74') }} calc({{ overall_score|default(0) }} * 3.6deg),
+      #e8ecf0 calc({{ overall_score|default(0) }} * 3.6deg)
+    );
+    position: relative;
+  }
+  .score-inner {
+    width: 96px; height: 96px; border-radius: 50%; background: #fff;
+    display: flex; align-items: center; justify-content: center; flex-direction: column;
+  }
+  .score-number { font-size: 36px; font-weight: 700; color: {{ score_color|default('#565e74') }}; line-height: 1; }
+  .score-of { font-size: 11px; color: #565e74; }
+  .score-label { font-size: 15px; font-weight: 600; color: {{ score_color|default('#565e74') }}; margin-top: 6px; }
+  /* Dimension bars */
+  .dimensions { display: flex; flex-direction: column; gap: 8px; }
+  .dim-row { display: flex; align-items: center; gap: 8px; }
+  .dim-icon { font-size: 18px; width: 28px; text-align: center; }
+  .dim-name { width: 80px; font-size: 13px; font-weight: 600; color: #2a3439; }
+  .dim-bar-bg { flex: 1; height: 18px; background: #e8ecf0; border-radius: 9px; overflow: hidden; }
+  .dim-bar-fill { height: 100%; border-radius: 9px; background: #0053dc; transition: width 0.3s; }
+  .dim-score { width: 36px; font-size: 13px; font-weight: 600; text-align: right; color: #2a3439; }
+  /* Findings */
+  .findings { display: flex; gap: 10px; }
+  .finding-card {
+    flex: 1; padding: 12px; background: #f7f9fb; border-radius: 8px;
+    border-left: 4px solid #0053dc; text-align: center;
+  }
+  .finding-value { font-size: 28px; font-weight: 700; color: #0053dc; }
+  .finding-label { font-size: 12px; font-weight: 600; color: #2a3439; margin-top: 2px; }
+  .finding-context { font-size: 11px; color: #565e74; margin-top: 2px; }
+  /* Summary */
+  .summary-section { padding: 12px 16px; background: #f7f9fb; border-radius: 8px; }
+  .summary-section h2 { font-size: 14px; color: #0053dc; margin-bottom: 4px; }
+  .summary-section p { font-size: 13px; color: #2a3439; }
+  /* Priority */
+  .priority { padding: 10px 16px; background: #fff3e0; border-radius: 8px; border-left: 4px solid #c59a1a; }
+  .priority .label { font-size: 11px; text-transform: uppercase; font-weight: 700; color: #c59a1a; }
+  .priority .action { font-size: 13px; color: #2a3439; margin-top: 2px; }
+  /* Footer */
+  .footer { margin-top: auto; text-align: center; font-size: 10px; color: #565e74; border-top: 1px solid #e8ecf0; padding-top: 8px; }
+  @media print {
+    body { background: #fff; }
+    .page { width: 210mm; min-height: 297mm; margin: 0; padding: 18mm 16mm; box-shadow: none; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="header">
+    <div class="brand">BlockSense NYC</div>
+    <h1>{{ headline|default('Neighborhood Report') }}</h1>
+    {% if location_name %}<div class="subtitle">{{ location_name }}{% if borough %}, {{ borough }}{% endif %}{% if zip %} {{ zip }}{% endif %} &middot; {{ radius_m|default(500) }}m radius</div>{% endif %}
+  </div>
+
+  {% if overall_score is not none %}
+  <div class="score-section">
+    <div class="score-circle"><div class="score-inner">
+      <div class="score-number">{{ overall_score }}</div>
+      <div class="score-of">/ 100</div>
+    </div></div>
+    <div class="score-label">{{ score_label|default('') }}</div>
+  </div>
+  {% endif %}
+
+  {% if dimension_scores %}
+  <div class="dimensions">
+    {% for dim in dimension_scores %}
+    <div class="dim-row">
+      <div class="dim-icon">{{ dim.icon|emoji }}</div>
+      <div class="dim-name">{{ dim.name }}</div>
+      <div class="dim-bar-bg"><div class="dim-bar-fill" style="width:{{ dim.score }}%;"></div></div>
+      <div class="dim-score">{{ dim.score }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if top_findings %}
+  <div class="findings">
+    {% for f in top_findings %}
+    <div class="finding-card">
+      <div class="finding-value">{{ f.value }}</div>
+      <div class="finding-label">{{ f.label }}</div>
+      <div class="finding-context">{{ f.context }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if summary %}
+  <div class="summary-section">
+    <h2>Summary</h2>
+    <p>{{ summary }}</p>
+  </div>
+  {% endif %}
+
+  {% if priority_action %}
+  <div class="priority">
+    <div class="label">&#9888;&#65039; Priority Action</div>
+    <div class="action">{{ priority_action }}</div>
+  </div>
+  {% endif %}
+
+  <div class="footer">
+    Data source: {{ data_source|default('NYC Open Data') }} &middot; Generated {{ generated_date|default('') }} &middot; BlockSense NYC
+  </div>
+</div>
+</body>
+</html>

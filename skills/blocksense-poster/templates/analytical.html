@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ headline|default('Neighborhood Analysis') }}</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body {
+    font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    background: #f7f9fb; color: #2a3439; line-height: 1.5;
+  }
+  .page {
+    width: 297mm; height: 210mm; margin: 0 auto;
+    padding: 14mm 16mm; background: #fff;
+    display: grid; grid-template-rows: auto 1fr auto auto; gap: 10px;
+  }
+  /* Header */
+  .header {
+    display: flex; justify-content: space-between; align-items: baseline;
+    border-bottom: 3px solid #0053dc; padding-bottom: 8px;
+  }
+  .header-left h1 { font-size: 18px; color: #2a3439; }
+  .header-left .subtitle { font-size: 11px; color: #565e74; }
+  .header-right { text-align: right; }
+  .header-right .brand { font-size: 10px; text-transform: uppercase; letter-spacing: 2px; color: #565e74; }
+  .header-right .date { font-size: 10px; color: #565e74; }
+  /* Main content */
+  .content { display: grid; grid-template-columns: 1fr 1.3fr; gap: 16px; }
+  /* Left column */
+  .left-col { display: flex; flex-direction: column; gap: 10px; }
+  .summary-block { padding: 12px; background: #f7f9fb; border-radius: 8px; }
+  .summary-block h2 { font-size: 13px; color: #0053dc; margin-bottom: 4px; }
+  .summary-block p { font-size: 12px; color: #2a3439; }
+  .metric-card-sm {
+    padding: 10px 12px; background: #f7f9fb; border-radius: 8px;
+    border-left: 4px solid #0053dc; display: flex; align-items: center; gap: 10px;
+  }
+  .mc-icon { font-size: 22px; }
+  .mc-body { flex: 1; }
+  .mc-name { font-size: 10px; font-weight: 600; color: #565e74; text-transform: uppercase; letter-spacing: 1px; }
+  .mc-score { font-size: 24px; font-weight: 700; color: #0053dc; line-height: 1.1; }
+  .mc-trend { font-size: 10px; color: #565e74; }
+  .mc-bar { height: 5px; background: #e8ecf0; border-radius: 3px; margin-top: 3px; }
+  .mc-bar-fill { height: 100%; border-radius: 3px; background: #0053dc; }
+  /* Overall badge (compact) */
+  .overall-compact {
+    display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+    background: {{ score_color|default('#0053dc') }}12; border-radius: 8px;
+    border-left: 4px solid {{ score_color|default('#0053dc') }};
+  }
+  .oc-score { font-size: 32px; font-weight: 700; color: {{ score_color|default('#0053dc') }}; line-height: 1; }
+  .oc-label { font-size: 13px; font-weight: 600; color: {{ score_color|default('#0053dc') }}; }
+  .oc-sub { font-size: 10px; color: #565e74; }
+  /* Right column: bar chart + findings */
+  .right-col { display: flex; flex-direction: column; gap: 12px; }
+  .chart-section h2 { font-size: 13px; color: #0053dc; margin-bottom: 8px; }
+  .bar-chart {
+    display: flex; align-items: flex-end; gap: 16px;
+    height: 130px; padding: 0 8px;
+    border-bottom: 2px solid #e8ecf0;
+  }
+  .bar-group { flex: 1; display: flex; flex-direction: column; align-items: center; height: 100%; justify-content: flex-end; }
+  .bar {
+    width: 100%; max-width: 56px; border-radius: 4px 4px 0 0;
+    background: #0053dc; position: relative; min-height: 4px;
+    transition: height 0.3s;
+  }
+  .bar-value {
+    position: absolute; top: -18px; left: 50%; transform: translateX(-50%);
+    font-size: 12px; font-weight: 700; color: #2a3439;
+  }
+  .bar-label { font-size: 10px; color: #565e74; margin-top: 6px; text-align: center; font-weight: 600; }
+  .bar-icon { font-size: 14px; margin-top: 2px; }
+  /* Color variants for bars */
+  .bar-safety { background: #0053dc; }
+  .bar-transit { background: #006d4a; }
+  .bar-amenities { background: #565e74; }
+  .bar-building { background: #c59a1a; }
+  /* Findings row */
+  .findings-row { display: flex; gap: 8px; }
+  .finding-card-sm {
+    flex: 1; padding: 10px; background: #fff; border: 1px solid #e8ecf0;
+    border-radius: 8px; text-align: center;
+  }
+  .fc-value { font-size: 20px; font-weight: 700; color: #0053dc; }
+  .fc-label { font-size: 10px; font-weight: 600; color: #2a3439; margin-top: 2px; }
+  .fc-context { font-size: 9px; color: #565e74; margin-top: 1px; }
+  /* Recommendations row */
+  .recommendations-row {
+    display: flex; gap: 10px;
+  }
+  .rec-card {
+    flex: 1; padding: 10px 12px; background: #fff3e0; border-radius: 8px;
+    border-left: 4px solid #c59a1a;
+  }
+  .rec-card .label { font-size: 9px; text-transform: uppercase; font-weight: 700; color: #c59a1a; }
+  .rec-card .text { font-size: 11px; color: #2a3439; margin-top: 2px; }
+  .rec-card-info {
+    flex: 1; padding: 10px 12px; background: #e8f4fd; border-radius: 8px;
+    border-left: 4px solid #0053dc;
+  }
+  .rec-card-info .label { font-size: 9px; text-transform: uppercase; font-weight: 700; color: #0053dc; }
+  .rec-card-info .text { font-size: 11px; color: #2a3439; margin-top: 2px; }
+  /* Footer */
+  .footer {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 9px; color: #565e74; border-top: 1px solid #e8ecf0; padding-top: 6px;
+  }
+  @media print {
+    body { background: #fff; }
+    .page { width: 297mm; height: 210mm; margin: 0; box-shadow: none; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <!-- Header -->
+  <div class="header">
+    <div class="header-left">
+      <h1>{{ headline|default('Neighborhood Analysis') }}</h1>
+      {% if location_name %}<div class="subtitle">{{ location_name }}{% if borough %}, {{ borough }}{% endif %}{% if zip %} {{ zip }}{% endif %} &middot; {{ radius_m|default(500) }}m radius</div>{% endif %}
+    </div>
+    <div class="header-right">
+      <div class="brand">BlockSense NYC</div>
+      <div class="date">{{ generated_date|default('') }}</div>
+    </div>
+  </div>
+
+  <!-- Main content -->
+  <div class="content">
+    <!-- Left: summary + metric cards -->
+    <div class="left-col">
+      {% if overall_score is not none %}
+      <div class="overall-compact">
+        <div>
+          <div class="oc-score">{{ overall_score }}</div>
+          <div class="oc-sub">/ 100</div>
+        </div>
+        <div>
+          <div class="oc-label">{{ score_label|default('') }}</div>
+          <div class="oc-sub">Overall Score</div>
+        </div>
+      </div>
+      {% endif %}
+
+      {% if summary %}
+      <div class="summary-block">
+        <h2>Executive Summary</h2>
+        <p>{{ summary }}</p>
+      </div>
+      {% endif %}
+
+      {% if dimension_scores %}
+        {% for dim in dimension_scores %}
+        <div class="metric-card-sm">
+          <div class="mc-icon">{{ dim.icon|emoji }}</div>
+          <div class="mc-body">
+            <div class="mc-name">{{ dim.name }}</div>
+            <div class="mc-score">{{ dim.score }}</div>
+            {% if dim.trend and dim.trend != 'stable' %}
+            <div class="mc-trend">{{ dim.trend }}</div>
+            {% endif %}
+            <div class="mc-bar"><div class="mc-bar-fill" style="width:{{ dim.score }}%;"></div></div>
+          </div>
+        </div>
+        {% endfor %}
+      {% endif %}
+    </div>
+
+    <!-- Right: bar chart + findings -->
+    <div class="right-col">
+      {% if dimension_scores %}
+      <div class="chart-section">
+        <h2>Dimension Scores Comparison</h2>
+        <div class="bar-chart">
+          {% for dim in dimension_scores %}
+          <div class="bar-group">
+            <div class="bar bar-{{ dim.name|lower }}" style="height: {{ dim.score }}%;">
+              <div class="bar-value">{{ dim.score }}</div>
+            </div>
+            <div class="bar-icon">{{ dim.icon|emoji }}</div>
+            <div class="bar-label">{{ dim.name }}</div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+
+      {% if top_findings %}
+      <div class="findings-row">
+        {% for f in top_findings %}
+        <div class="finding-card-sm">
+          <div class="fc-value">{{ f.value }}</div>
+          <div class="fc-label">{{ f.label }}</div>
+          <div class="fc-context">{{ f.context }}</div>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Recommendations row -->
+  <div class="recommendations-row">
+    {% if priority_action %}
+    <div class="rec-card">
+      <div class="label">&#9888;&#65039; Priority Action</div>
+      <div class="text">{{ priority_action }}</div>
+    </div>
+    {% endif %}
+    <div class="rec-card-info">
+      <div class="label">&#128202; Data Coverage</div>
+      <div class="text">Analysis covers a {{ radius_m|default(500) }}m radius from {{ location_name|default('the target address') }}. Scores based on {{ data_source|default('NYC Open Data') }}.</div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <div class="footer">
+    <div>Data source: {{ data_source|default('NYC Open Data') }} &middot; All scores 0-100 scale</div>
+    <div>Generated {{ generated_date|default('') }} &middot; BlockSense NYC</div>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.DS_Store
+osm-2020-02-10-v3.11_new-york_new-york.mbtiles
+map_cache/
+node_modules/
+.venv/
+data/
+*.pid
+*.log
+.claude/
+blocksense-v*.md
+urban-dossier-v*.md
+urban-dossier-ssh-datasets.md

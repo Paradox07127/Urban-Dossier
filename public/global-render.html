@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Urban Dossier Global Render</title>
+    <link rel="stylesheet" href="/vendor/maplibre-gl/maplibre-gl.css" />
+    <style>
+      html, body, #app { width: 100%; height: 100%; margin: 0; }
+      body { font-family: "Segoe UI", sans-serif; background: #f0ede9; color: #222; }
+      .shell { position: relative; width: 100%; height: 100%; overflow: hidden; }
+      #map { width: 100%; height: 100%; }
+      .panel {
+        position: absolute; top: 16px; left: 16px; z-index: 3;
+        width: min(440px, calc(100vw - 32px));
+        padding: 16px 18px; border-radius: 16px;
+        background: rgba(255,255,255,0.94); box-shadow: 0 12px 30px rgba(0,0,0,0.16);
+      }
+      .panel h1 { margin: 0; font-size: 18px; }
+      .panel p { margin: 8px 0 0; font-size: 14px; color: #444; }
+      .row { display: flex; gap: 10px; margin-top: 12px; }
+      select, button {
+        height: 40px; border-radius: 12px; border: 1px solid #d5d1cb; background: #fff;
+        padding: 0 12px; font-size: 14px;
+      }
+      button { background: #222; color: #fff; border: none; font-weight: 600; cursor: pointer; }
+      textarea {
+        width: 100%; height: 190px; margin-top: 12px; border-radius: 14px; border: 1px solid #d5d1cb;
+        padding: 12px; font: 12px/1.45 Consolas, monospace; box-sizing: border-box; resize: vertical;
+      }
+      #status { margin-top: 10px; font-size: 13px; color: #666; }
+      .legend {
+        position: absolute; right: 16px; bottom: 16px; z-index: 3;
+        width: 240px; padding: 14px 16px; border-radius: 16px;
+        background: rgba(255,255,255,0.94); box-shadow: 0 12px 30px rgba(0,0,0,0.16);
+      }
+      .legend-title { font-size: 14px; font-weight: 700; }
+      .legend-sub { margin-top: 6px; font-size: 12px; color: #666; }
+      .legend-bar {
+        height: 16px; margin-top: 10px; border-radius: 999px;
+        border: 1px solid rgba(0,0,0,0.08);
+      }
+      .legend-scale { display: flex; justify-content: space-between; margin-top: 6px; font-size: 12px; color: #555; }
+    </style>
+  </head>
+  <body>
+    <div id="app" class="shell">
+      <div id="map"></div>
+      <div class="panel">
+        <h1>Global Building Render API</h1>
+        <p>Choose a tag to load a built-in random global render dataset. If no tag is selected, the page uses <strong>general</strong>.</p>
+        <div class="row">
+          <select id="tag-select">
+            <option value="">general (default)</option>
+            <option value="general">general</option>
+            <option value="safety">safety</option>
+            <option value="transit">transit</option>
+            <option value="amenities">amenities</option>
+          </select>
+          <button id="load-button">Load Tag Dataset</button>
+          <button id="apply-button">Overwrite Selected Tag</button>
+        </div>
+        <textarea id="payload-input">[
+  { "latitude": 40.7580, "longitude": -73.9855, "score": 22 },
+  { "latitude": 40.7484, "longitude": -73.9857, "score": 35 },
+  { "latitude": 40.7308, "longitude": -73.9973, "score": 58 },
+  { "latitude": 40.8075, "longitude": -73.9626, "score": 82 }
+]</textarea>
+        <div id="status">Waiting for dataset.</div>
+      </div>
+      <div class="legend">
+        <div class="legend-title" id="legend-title">General score</div>
+        <div class="legend-sub" id="legend-sub">More saturated color means lower score.</div>
+        <div class="legend-bar" id="legend-bar"></div>
+        <div class="legend-scale"><span>Low score</span><span>High score</span></div>
+      </div>
+    </div>
+    <script src="/vendor/maplibre-gl/maplibre-gl.js"></script>
+    <script src="/global-render.js"></script>
+  </body>
+  </html>

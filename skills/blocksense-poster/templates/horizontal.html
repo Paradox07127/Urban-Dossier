@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ headline|default('Neighborhood Report') }}</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body {
+    font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    background: #f7f9fb; color: #2a3439; line-height: 1.5;
+  }
+  .page {
+    width: 297mm; height: 210mm; margin: 0 auto;
+    padding: 14mm 16mm; background: #fff;
+    display: grid; grid-template-rows: auto 1fr auto; gap: 12px;
+  }
+  /* Header */
+  .header {
+    display: flex; justify-content: space-between; align-items: baseline;
+    border-bottom: 3px solid #0053dc; padding-bottom: 8px;
+  }
+  .header-left h1 { font-size: 20px; color: #2a3439; }
+  .header-left .subtitle { font-size: 12px; color: #565e74; }
+  .header-right { text-align: right; }
+  .header-right .brand { font-size: 10px; text-transform: uppercase; letter-spacing: 2px; color: #565e74; }
+  .header-right .date { font-size: 11px; color: #565e74; }
+  /* Main content grid */
+  .content { display: grid; grid-template-columns: 1fr 1.5fr; gap: 16px; }
+  /* Left: metric cards */
+  .metric-cards { display: flex; flex-direction: column; gap: 10px; }
+  .metric-card {
+    padding: 14px; background: #f7f9fb; border-radius: 8px;
+    border-left: 4px solid #0053dc; display: flex; align-items: center; gap: 12px;
+  }
+  .metric-icon { font-size: 28px; }
+  .metric-body { flex: 1; }
+  .metric-name { font-size: 12px; font-weight: 600; color: #565e74; text-transform: uppercase; letter-spacing: 1px; }
+  .metric-score { font-size: 32px; font-weight: 700; color: #0053dc; line-height: 1.1; }
+  .metric-trend { font-size: 11px; color: #565e74; }
+  .metric-bar { height: 6px; background: #e8ecf0; border-radius: 3px; margin-top: 4px; }
+  .metric-bar-fill { height: 100%; border-radius: 3px; background: #0053dc; }
+  /* Overall score badge */
+  .overall-badge {
+    display: flex; align-items: center; gap: 12px; padding: 14px;
+    background: {{ score_color|default('#0053dc') }}12; border-radius: 8px;
+    border-left: 4px solid {{ score_color|default('#0053dc') }};
+  }
+  .badge-score { font-size: 40px; font-weight: 700; color: {{ score_color|default('#0053dc') }}; line-height: 1; }
+  .badge-label { font-size: 14px; font-weight: 600; color: {{ score_color|default('#0053dc') }}; }
+  .badge-sublabel { font-size: 11px; color: #565e74; }
+  /* Right column */
+  .right-col { display: flex; flex-direction: column; gap: 12px; }
+  .summary-block { padding: 14px; background: #f7f9fb; border-radius: 8px; }
+  .summary-block h2 { font-size: 14px; color: #0053dc; margin-bottom: 4px; }
+  .summary-block p { font-size: 13px; color: #2a3439; }
+  .findings-row { display: flex; gap: 10px; }
+  .finding-card {
+    flex: 1; padding: 12px; background: #fff; border: 1px solid #e8ecf0;
+    border-radius: 8px; text-align: center;
+  }
+  .finding-value { font-size: 24px; font-weight: 700; color: #0053dc; }
+  .finding-label { font-size: 11px; font-weight: 600; color: #2a3439; margin-top: 2px; }
+  .finding-context { font-size: 10px; color: #565e74; margin-top: 2px; }
+  .recommendation {
+    padding: 10px 14px; background: #fff3e0; border-radius: 8px;
+    border-left: 4px solid #c59a1a;
+  }
+  .recommendation .label { font-size: 10px; text-transform: uppercase; font-weight: 700; color: #c59a1a; }
+  .recommendation .text { font-size: 12px; color: #2a3439; margin-top: 2px; }
+  /* Footer */
+  .footer {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 9px; color: #565e74; border-top: 1px solid #e8ecf0; padding-top: 6px;
+  }
+  @media print {
+    body { background: #fff; }
+    .page { width: 297mm; height: 210mm; margin: 0; box-shadow: none; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <!-- Header -->
+  <div class="header">
+    <div class="header-left">
+      <h1>{{ headline|default('Neighborhood Report') }}</h1>
+      {% if location_name %}<div class="subtitle">{{ location_name }}{% if borough %}, {{ borough }}{% endif %}{% if zip %} {{ zip }}{% endif %} &middot; {{ radius_m|default(500) }}m radius</div>{% endif %}
+    </div>
+    <div class="header-right">
+      <div class="brand">BlockSense NYC</div>
+      <div class="date">{{ generated_date|default('') }}</div>
+    </div>
+  </div>
+
+  <!-- Content -->
+  <div class="content">
+    <!-- Left: Metric cards -->
+    <div class="metric-cards">
+      {% if overall_score is not none %}
+      <div class="overall-badge">
+        <div>
+          <div class="badge-score">{{ overall_score }}</div>
+          <div class="badge-sublabel">/ 100</div>
+        </div>
+        <div>
+          <div class="badge-label">{{ score_label|default('') }}</div>
+          <div class="badge-sublabel">Overall Neighborhood Score</div>
+        </div>
+      </div>
+      {% endif %}
+
+      {% if dimension_scores %}
+        {% for dim in dimension_scores[:3] %}
+        <div class="metric-card">
+          <div class="metric-icon">{{ dim.icon|emoji }}</div>
+          <div class="metric-body">
+            <div class="metric-name">{{ dim.name }}</div>
+            <div class="metric-score">{{ dim.score }}</div>
+            {% if dim.trend and dim.trend != 'stable' %}
+            <div class="metric-trend">Trend: {{ dim.trend }}</div>
+            {% endif %}
+            <div class="metric-bar"><div class="metric-bar-fill" style="width:{{ dim.score }}%;"></div></div>
+          </div>
+        </div>
+        {% endfor %}
+      {% endif %}
+    </div>
+
+    <!-- Right: Summary + findings -->
+    <div class="right-col">
+      {% if summary %}
+      <div class="summary-block">
+        <h2>Executive Summary</h2>
+        <p>{{ summary }}</p>
+      </div>
+      {% endif %}
+
+      {% if top_findings %}
+      <div class="findings-row">
+        {% for f in top_findings %}
+        <div class="finding-card">
+          <div class="finding-value">{{ f.value }}</div>
+          <div class="finding-label">{{ f.label }}</div>
+          <div class="finding-context">{{ f.context }}</div>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      {% if priority_action %}
+      <div class="recommendation">
+        <div class="label">&#9888;&#65039; Recommendation</div>
+        <div class="text">{{ priority_action }}</div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <div class="footer">
+    <div>Data source: {{ data_source|default('NYC Open Data') }}</div>
+    <div>Generated {{ generated_date|default('') }} &middot; BlockSense NYC</div>
+  </div>
+</div>
+</body>
+</html>

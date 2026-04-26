@@ -1,0 +1,1029 @@
+const express = require('express');
+const path = require('path');
+const fs = require('fs');
+
+const app = express();
+const PORT = 3456;
+const HOST = (process.env.URBAN_DOSSIER_BIND_HOST || '0.0.0.0').trim();
+const BACKEND_BASE_URL = (process.env.URBAN_DOSSIER_BACKEND_URL || 'http://127.0.0.1:8090').replace(/\/$/, '');
+const DEMO_TOKEN = (process.env.URBAN_DOSSIER_DEMO_TOKEN || '').trim();
+const BACKEND_TIMEOUT_MS = Number(process.env.URBAN_DOSSIER_BACKEND_TIMEOUT_MS || 180000);
+const DEBUG_PROXY_ERRORS = process.env.URBAN_DOSSIER_DEBUG_ERRORS === '1';
+const ALLOWED_ORIGINS = new Set([
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  'http://localhost:3456',
+  'http://127.0.0.1:3456',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+]);
+app.use(express.json({ limit: '2mb' }));
+app.disable('x-powered-by');
+
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'same-origin');
+  res.setHeader('Cache-Control', 'no-store');
+  next();
+});
+
+app.use('/api', (req, res, next) => {
+  const origin = req.get('origin');
+  if (origin && !isAllowedOrigin(origin)) {
+    return res.status(403).json({ ok: false, error: 'Origin not allowed' });
+  }
+  next();
+});
+
+const MBTILES_PATH = path.join(__dirname, 'osm-2020-02-10-v3.11_new-york_new-york.mbtiles');
+
+function createDatabase(dbPath) {
+  try {
+    const { DatabaseSync } = require('node:sqlite');
+    return new DatabaseSync(dbPath, { readOnly: true });
+  } catch (sqliteError) {
+    const BetterSqlite3 = require('better-sqlite3');
+    return new BetterSqlite3(dbPath, { readonly: true });
+  }
+}
+
+const db = createDatabase(MBTILES_PATH);
+
+const TAG_STYLES = {
+  general: {
+    low: '#d73027',
+    high: '#fee8c8',
+    accent: '#8c1d18',
+    legend: 'General',
+  },
+  safety: {
+    low: '#c51b8a',
+    high: '#fde0dd',
+    accent: '#7a0177',
+    legend: 'Safety',
+  },
+  transit: {
+    low: '#2b8cbe',
+    high: '#deebf7',
+    accent: '#045a8d',
+    legend: 'Transit',
+  },
+  amenities: {
+    low: '#31a354',
+    high: '#e5f5e0',
+    accent: '#006d2c',
+    legend: 'Amenities',
+  },
+};
+const ALLOWED_RADIUS_METERS = new Set([200, 500, 1000]);
+
+function createSeededRandom(seed) {
+  let value = seed % 2147483647;
+  if (value <= 0) value += 2147483646;
+  return () => {
+    value = (value * 16807) % 2147483647;
+    return (value - 1) / 2147483646;
+  };
+}
+
+function generateRandomDataset(tag) {
+  const rand = createSeededRandom(
+    tag.split('').reduce((sum, char) => sum + char.charCodeAt(0), 0) + 2026,
+  );
+  const count = 28;
+  const points = [];
+
+  for (let index = 0; index < count; index += 1) {
+    const latitude = 40.50 + rand() * 0.43;
+    const longitude = -74.25 + rand() * 0.57;
+    const wave = Math.sin(index * 0.8 + rand() * 2) * 18;
+    const cluster = rand() * 55;
+    const score = Math.max(0, Math.min(100, Math.round(20 + cluster + wave)));
+
+    points.push({
+      latitude: Number(latitude.toFixed(6)),
+      longitude: Number(longitude.toFixed(6)),
+      score,
+    });
+  }
+
+  return {
+    tag,
+    points,
+    style: TAG_STYLES[tag],
+    updated_at: new Date().toISOString(),
+    dataset_name: `${tag} demo dataset`,
+  };
+}
+
+const globalRenderDatasets = {
+  general: generateRandomDataset('general'),
+  safety: generateRandomDataset('safety'),
+  transit: generateRandomDataset('transit'),
+  amenities: generateRandomDataset('amenities'),
+};
+
+function sanitizeRenderPayload(payload = {}) {
+  const rawTag = typeof payload.tag === 'string' ? payload.tag.toLowerCase() : 'general';
+  const tag = TAG_STYLES[rawTag] ? rawTag : 'general';
+  const rawPoints = Array.isArray(payload.points) ? payload.points : [];
+  const points = rawPoints
+    .map((point) => ({
+      latitude: Number(point.latitude),
+      longitude: Number(point.longitude),
+      score: Number(point.score),
+    }))
+    .filter((point) =>
+      Number.isFinite(point.latitude) &&
+      Number.isFinite(point.longitude) &&
+      Number.isFinite(point.score),
+    )
+    .map((point) => ({
+      latitude: Math.max(-90, Math.min(90, point.latitude)),
+      longitude: Math.max(-180, Math.min(180, point.longitude)),
+      score: Math.max(0, Math.min(100, point.score)),
+    }));
+
+  return {
+    tag,
+    points,
+    style: TAG_STYLES[tag],
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function sanitizeTaggedPoints(rawPoints = []) {
+  return rawPoints
+    .map((point) => ({
+      latitude: Number(point.latitude),
+      longitude: Number(point.longitude),
+      score: Number(point.score),
+      tag: typeof point.tag === 'string' ? point.tag.toLowerCase() : 'general',
+    }))
+    .filter((point) =>
+      Number.isFinite(point.latitude) &&
+      Number.isFinite(point.longitude) &&
+      Number.isFinite(point.score) &&
+      TAG_STYLES[point.tag],
+    )
+    .map((point) => ({
+      latitude: Math.max(-90, Math.min(90, point.latitude)),
+      longitude: Math.max(-180, Math.min(180, point.longitude)),
+      score: Math.max(0, Math.min(100, point.score)),
+      tag: point.tag,
+    }));
+}
+
+function mapTagToOverviewRequest(tag) {
+  if (tag === 'general') {
+    return { view_mode: 'overall', category_id: null, render_mode: 'h3_cells' };
+  }
+  return { view_mode: 'category', category_id: tag, render_mode: 'h3_cells' };
+}
+
+function scoreForTag(cell = {}, tag = 'general') {
+  if (tag === 'general') {
+    const raw = cell.overall_score ?? cell.score ?? cell.category_scores?.overall;
+    return raw == null ? Number.NaN : Number(raw);
+  }
+  const raw = cell[`${tag}_score`] ?? cell.category_scores?.[tag] ?? cell.score;
+  return raw == null ? Number.NaN : Number(raw);
+}
+
+function cellsToRenderPoints(cells = [], tag = 'general') {
+  return cells
+    .map((cell) => ({
+      latitude: Number(cell.latitude ?? cell.lat ?? cell.center_lat ?? cell.centroid_lat),
+      longitude: Number(cell.longitude ?? cell.lng ?? cell.center_lng ?? cell.centroid_lng),
+      score: Math.max(0, Math.min(100, scoreForTag(cell, tag))),
+    }))
+    .filter((point) =>
+      Number.isFinite(point.latitude) &&
+      Number.isFinite(point.longitude) &&
+      Number.isFinite(point.score),
+    );
+}
+
+function categoryScoreFromPreview(data, tag) {
+  if (tag === 'general') {
+    const raw = data?.scores?.overall;
+    return raw == null ? 50 : Number(raw);
+  }
+  const raw = data?.scores?.[tag] ?? data?.scores?.overall;
+  return raw == null ? 50 : Number(raw);
+}
+
+function averageNearestNeighborDistance(point, peers, limit = 3) {
+  const distances = [];
+  for (const peer of peers) {
+    if (peer === point) continue;
+    const distance = distanceMeters(
+      [point.latitude, point.longitude],
+      [peer.latitude, peer.longitude],
+    );
+    if (Number.isFinite(distance)) {
+      distances.push(distance);
+    }
+  }
+  if (!distances.length) return Number.POSITIVE_INFINITY;
+  distances.sort((a, b) => a - b);
+  const nearest = distances.slice(0, limit);
+  return nearest.reduce((sum, value) => sum + value, 0) / nearest.length;
+}
+
+function buildRankLookup(values, invert = false, anchor = 50) {
+  const sorted = values.filter((value) => Number.isFinite(value)).sort((a, b) => a - b);
+  if (!sorted.length) {
+    return () => anchor;
+  }
+
+  const firstIndex = new Map();
+  const lastIndex = new Map();
+  sorted.forEach((value, index) => {
+    if (!firstIndex.has(value)) firstIndex.set(value, index);
+    lastIndex.set(value, index);
+  });
+
+  const denominator = Math.max(sorted.length - 1, 1);
+  // Map percentile ranks to a ±25-point window centered on the anchor score,
+  // so detail-point colors stay consistent with the overview zone color.
+  const SPREAD = 25;
+  const low = Math.max(0, anchor - SPREAD);
+  const high = Math.min(100, anchor + SPREAD);
+
+  return (value) => {
+    if (!Number.isFinite(value)) return anchor;
+    const first = firstIndex.get(value);
+    const last = lastIndex.get(value);
+    if (first === undefined || last === undefined) return anchor;
+    const percentile = ((first + last) / 2) / denominator;
+    const normalized = invert ? 1 - percentile : percentile;
+    return Math.round(low + normalized * (high - low));
+  };
+}
+
+function pointBelongsToTag(point, tag) {
+  if (tag === 'general') return true;
+  const kind = typeof point?.kind === 'string' ? point.kind.toLowerCase() : '';
+  if (tag === 'safety') return kind === 'safety' || kind === 'rodent' || kind === '311';
+  if (tag === 'transit') return kind === 'transit' || kind === 'collision';
+  if (tag === 'amenities') return kind === 'toilet' || kind === 'linknyc' || kind === 'restaurant' || kind === 'tree';
+  return false;
+}
+
+function previewToRenderPoints(tag, data = {}) {
+  const categoryScore = Math.max(0, Math.min(100, categoryScoreFromPreview(data, tag)));
+  const mapPoints = Array.isArray(data?.detail_items?.map_points) ? data.detail_items.map_points : [];
+  const buildingFlags = Array.isArray(data?.detail_items?.building_flags) ? data.detail_items.building_flags : [];
+  const combined = [
+    ...mapPoints,
+    ...(tag === 'general' ? buildingFlags : []),
+  ];
+
+  const filtered = combined
+    .filter((point) => pointBelongsToTag(point, tag))
+    .map((point) => ({
+      latitude: Number(point.latitude),
+      longitude: Number(point.longitude),
+      baseScore: Number(point.score_hint ?? Number.NaN),
+      tag,
+      point,
+    }))
+    .filter((point) =>
+      Number.isFinite(point.latitude) &&
+      Number.isFinite(point.longitude),
+    );
+
+  if (!filtered.length) {
+    return [];
+  }
+
+  const densityValues = filtered.map((point) => {
+    const neighborDistance = averageNearestNeighborDistance(point, filtered);
+    if (!Number.isFinite(neighborDistance)) return 0;
+    return 1 / Math.max(neighborDistance, 1);
+  });
+
+  const densityToScore = buildRankLookup(densityValues, tag !== 'amenities', categoryScore);
+  const baseValues = filtered
+    .map((point) => point.baseScore)
+    .filter((value) => Number.isFinite(value));
+  const baseToScore = buildRankLookup(baseValues, false, categoryScore);
+
+  return filtered.map((point, index) => {
+    const densityScore = densityToScore(densityValues[index]);
+    const explicitScore = Number.isFinite(point.baseScore)
+      ? Math.max(0, Math.min(100, baseToScore(point.baseScore)))
+      : Number.NaN;
+
+    const blendedScore = Number.isFinite(explicitScore)
+      ? Math.round(explicitScore * 0.65 + densityScore * 0.35)
+      : Math.round(categoryScore * 0.45 + densityScore * 0.55);
+
+    return {
+      latitude: point.latitude,
+      longitude: point.longitude,
+      score: Math.max(0, Math.min(100, blendedScore)),
+      tag,
+      kind: point.point?.kind || tag,
+      summary: point.point?.summary || '',
+    };
+  });
+}
+
+async function backendRequest(routePath, { method = 'GET', body } = {}) {
+  const headers = {
+    'Content-Type': 'application/json',
+  };
+  if (DEMO_TOKEN) {
+    headers['X-Urban-Dossier-Token'] = DEMO_TOKEN;
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), BACKEND_TIMEOUT_MS);
+  let response;
+  try {
+    response = await fetch(`${BACKEND_BASE_URL}${routePath}`, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      const timeoutError = new Error(`Backend request timed out after ${BACKEND_TIMEOUT_MS}ms`);
+      timeoutError.status = 504;
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+
+  if (!response.ok) {
+    const error = new Error(`Backend request failed: ${response.status}`);
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
+  }
+
+  return payload;
+}
+
+function sendProxyError(res, status, message, extra = {}) {
+  res.status(status).json({
+    ok: false,
+    error: message,
+    ...(DEBUG_PROXY_ERRORS ? extra : {}),
+  });
+}
+
+function isSafePathSegment(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9 _.-]+$/.test(value);
+}
+
+function isPrivateOrLoopbackHost(hostname) {
+  if (!hostname) return false;
+  const value = hostname.toLowerCase();
+  if (value === 'localhost' || value === '127.0.0.1' || value === '::1') return true;
+  const match = value.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!match) return false;
+  const [a, b] = [Number(match[1]), Number(match[2])];
+  if (a === 10) return true;
+  if (a === 127) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true; // Tailscale / CGNAT range
+  return false;
+}
+
+function isAllowedOrigin(origin) {
+  if (!origin) return true;
+  if (ALLOWED_ORIGINS.has(origin)) return true;
+  try {
+    const parsed = new URL(origin);
+    const port = Number(parsed.port || (parsed.protocol === 'https:' ? 443 : 80));
+    // Allow any host on the serving port (same-server requests via proxies/tunnels)
+    if (port === PORT) return true;
+    return isPrivateOrLoopbackHost(parsed.hostname) && [3000, 3456, 5173].includes(port);
+  } catch {
+    return false;
+  }
+}
+
+function toRadians(value) {
+  return (value * Math.PI) / 180;
+}
+
+function distanceMeters(a, b) {
+  const NYC_COS_LAT = 0.7580107;
+  const DEG_TO_M = 111320.0;
+  const dlat = (b[0] - a[0]) * DEG_TO_M;
+  const dlng = (b[1] - a[1]) * DEG_TO_M * NYC_COS_LAT;
+  return Math.sqrt(dlat * dlat + dlng * dlng);
+}
+
+function destinationPoint(latitude, longitude, distanceMetersValue, bearingRad) {
+  const earthRadiusMeters = 6371008.8;
+  const lat1 = toRadians(latitude);
+  const lng1 = toRadians(longitude);
+  const angularDistance = distanceMetersValue / earthRadiusMeters;
+
+  const lat2 = Math.asin(
+    Math.sin(lat1) * Math.cos(angularDistance) +
+      Math.cos(lat1) * Math.sin(angularDistance) * Math.cos(bearingRad),
+  );
+
+  const lng2 =
+    lng1 +
+    Math.atan2(
+      Math.sin(bearingRad) * Math.sin(angularDistance) * Math.cos(lat1),
+      Math.cos(angularDistance) - Math.sin(lat1) * Math.sin(lat2),
+    );
+
+  return {
+    latitude: Number(((lat2 * 180) / Math.PI).toFixed(6)),
+    longitude: Number(((lng2 * 180) / Math.PI).toFixed(6)),
+  };
+}
+
+function generateLocalDemoPoints(latitude, longitude, radiusMeters) {
+  const points = [];
+  const tags = Object.keys(TAG_STYLES);
+
+  tags.forEach((tag, tagIndex) => {
+    const rand = createSeededRandom(
+      Math.round((latitude + 90) * 1000) +
+      Math.round((longitude + 180) * 1000) +
+      radiusMeters +
+      tagIndex * 977,
+    );
+
+    for (let index = 0; index < 7; index += 1) {
+      const bearing = rand() * Math.PI * 2;
+      const distance = Math.max(25, rand() * radiusMeters * 0.85);
+      const destination = destinationPoint(latitude, longitude, distance, bearing);
+
+      points.push({
+        latitude: destination.latitude,
+        longitude: destination.longitude,
+        score: Math.max(5, Math.min(95, Math.round(15 + rand() * 75))),
+        tag,
+      });
+    }
+  });
+
+  return points;
+}
+
+// CORS
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (!origin || isAllowedOrigin(origin)) {
+    res.set('Access-Control-Allow-Origin', origin || 'http://localhost:3456');
+  }
+  res.set('Vary', 'Origin');
+  res.set('Access-Control-Allow-Headers', 'Content-Type, X-Urban-Dossier-Token');
+  res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end();
+  }
+  next();
+});
+
+// Metadata endpoint
+app.get('/metadata', (req, res) => {
+  const rows = db.prepare('SELECT name, value FROM metadata').all();
+  const metadata = {};
+  for (const row of rows) {
+    metadata[row.name] = row.value;
+  }
+  res.json(metadata);
+});
+
+app.post('/api/search', async (req, res) => {
+  try {
+    const payload = await backendRequest('/api/search', { method: 'POST', body: req.body });
+    res.json(payload);
+  } catch (error) {
+    sendProxyError(res, 502, 'Search proxy failed', { details: error.payload ?? null });
+  }
+});
+
+app.get('/api/health', async (req, res) => {
+  try {
+    const payload = await backendRequest('/api/health');
+    res.json(payload);
+  } catch (error) {
+    sendProxyError(res, 502, 'Python backend health check failed', { details: error.payload ?? null });
+  }
+});
+
+app.get('/api/categories', async (req, res) => {
+  try {
+    const payload = await backendRequest('/api/categories');
+    res.json(payload);
+  } catch (error) {
+    sendProxyError(res, 502, 'Python backend categories lookup failed', { details: error.payload ?? null });
+  }
+});
+
+app.get('/api/coverage', async (req, res) => {
+  try {
+    const payload = await backendRequest('/api/coverage');
+    res.json(payload);
+  } catch (error) {
+    sendProxyError(res, 502, 'Python backend coverage lookup failed', { details: error.payload ?? null });
+  }
+});
+
+app.post('/api/overview', async (req, res) => {
+  try {
+    const payload = await backendRequest('/api/overview', {
+      method: 'POST',
+      body: req.body,
+    });
+    res.json(payload);
+  } catch (error) {
+    sendProxyError(res, 502, 'Overview proxy failed', { details: error.payload ?? null });
+  }
+});
+
+function buildDisplayScoreLookup(values) {
+  const sorted = values
+    .filter((value) => Number.isFinite(value))
+    .sort((a, b) => a - b);
+
+  if (!sorted.length) {
+    return () => 50;
+  }
+
+  const firstIndex = new Map();
+  const lastIndex = new Map();
+  sorted.forEach((value, index) => {
+    if (!firstIndex.has(value)) firstIndex.set(value, index);
+    lastIndex.set(value, index);
+  });
+
+  const denominator = Math.max(sorted.length - 1, 1);
+
+  return (value) => {
+    if (!Number.isFinite(value)) return 50;
+    const first = firstIndex.get(value);
+    const last = lastIndex.get(value);
+    if (first === undefined || last === undefined) return 50;
+    const averageRank = (first + last) / 2;
+    const percentile = averageRank / denominator;
+    return Math.round(5 + percentile * 90);
+  };
+}
+
+function hexApprox(lat, lng, sizeDegs) {
+  const coords = [];
+  for (let i = 0; i <= 6; i += 1) {
+    const angle = (Math.PI / 3) * i + Math.PI / 6;
+    coords.push([
+      Number((lng + sizeDegs * Math.cos(angle) / Math.cos(lat * Math.PI / 180)).toFixed(6)),
+      Number((lat + sizeDegs * Math.sin(angle)).toFixed(6)),
+    ]);
+  }
+  return coords;
+}
+
+app.get('/api/overview/geojson', async (req, res) => {
+  const requestedTag = typeof req.query.tag === 'string' ? req.query.tag.toLowerCase() : 'general';
+  const tag = TAG_STYLES[requestedTag] ? requestedTag : 'general';
+
+  try {
+    const payload = await backendRequest('/api/overview', {
+      method: 'POST',
+      body: mapTagToOverviewRequest(tag),
+    });
+
+    const cells = Array.isArray(payload?.cells) ? payload.cells : [];
+
+    const features = cells
+      .map((cell) => {
+        const lat = Number(cell.latitude ?? cell.lat ?? cell.center_lat ?? cell.centroid_lat);
+        const lng = Number(cell.longitude ?? cell.lng ?? cell.center_lng ?? cell.centroid_lng);
+        const h3Id = cell.h3 ?? cell.cell_id;
+        if (!Number.isFinite(lat) || !Number.isFinite(lng) || !h3Id) return null;
+
+        const raw = scoreForTag(cell, tag);
+        if (!Number.isFinite(raw)) return null;
+        return {
+          type: 'Feature',
+          properties: {
+            h3: h3Id,
+            score: raw,
+            display_score: Math.max(0, Math.min(100, Math.round(raw))),
+            tag,
+          },
+          geometry: {
+            type: 'Polygon',
+            coordinates: [hexApprox(lat, lng, 0.0025)],
+          },
+        };
+      })
+      .filter(Boolean);
+
+    res.json({
+      type: 'FeatureCollection',
+      features,
+      metadata: {
+        tag,
+        cell_count: features.length,
+        scoring_mode: 'absolute',
+        overview_ready: Boolean(payload?.coverage?.overview_ready ?? payload?.overview_ready),
+      },
+    });
+  } catch (error) {
+    sendProxyError(res, 502, 'Overview GeoJSON failed', {
+      details: error?.payload ?? null,
+    });
+  }
+});
+
+// ── NTA zone-based overview (reads pre-built JSON + GeoJSON, no backend needed) ──
+const NTA_GEOJSON_PATH = path.join(__dirname, 'data', 'boundaries', 'nta_2020.geojson');
+const NTA_SCORES_DIR = path.join(__dirname, 'data', 'cache', 'overview');
+let _ntaBoundaryCache = null;
+const _ntaScoresCache = new Map();
+
+function loadNtaBoundaries() {
+  if (_ntaBoundaryCache) return _ntaBoundaryCache;
+  try {
+    const raw = fs.readFileSync(NTA_GEOJSON_PATH, 'utf8');
+    const geojson = JSON.parse(raw);
+    const byCode = new Map();
+    for (const feat of geojson.features || []) {
+      const code = feat.properties?.nta2020;
+      if (code) byCode.set(code, feat);
+    }
+    _ntaBoundaryCache = byCode;
+    return byCode;
+  } catch { return new Map(); }
+}
+
+function loadNtaScores(tag) {
+  const scoreTag = tag === 'general' ? 'overall' : tag;
+  if (_ntaScoresCache.has(scoreTag)) return _ntaScoresCache.get(scoreTag);
+  const jsonPath = path.join(NTA_SCORES_DIR, `overview_${scoreTag}_nta.json`);
+  try {
+    const raw = fs.readFileSync(jsonPath, 'utf8');
+    const zones = JSON.parse(raw);
+    _ntaScoresCache.set(scoreTag, zones);
+    return zones;
+  } catch { return []; }
+}
+
+app.get('/api/overview/nta-geojson', (req, res) => {
+  const requestedTag = typeof req.query.tag === 'string' ? req.query.tag.toLowerCase() : 'general';
+  const tag = TAG_STYLES[requestedTag] ? requestedTag : 'general';
+  try {
+    const zones = loadNtaScores(tag);
+    const boundaries = loadNtaBoundaries();
+    if (!zones.length || !boundaries.size) {
+      return res.json({ type: 'FeatureCollection', features: [], metadata: { tag, zone_count: 0, overview_ready: false } });
+    }
+    const features = zones.map((zone) => {
+      const boundary = boundaries.get(zone.nta_code);
+      if (!boundary) return null;
+      const raw = scoreForTag(zone, tag);
+      if (!Number.isFinite(raw)) return null;
+      return {
+        type: 'Feature',
+        properties: {
+          nta_code: zone.nta_code,
+          nta_name: zone.nta_name || boundary.properties?.ntaname || '',
+          borough: zone.borough || boundary.properties?.boroname || '',
+          nta_type: zone.nta_type || '0',
+          score: raw,
+          display_score: Math.max(0, Math.min(100, Math.round(raw))),
+          cell_count: zone.cell_count || 0,
+          risk_level: zone.risk_level || 'unknown',
+          overall_score: zone.overall_score ?? null,
+          safety_score: zone.safety_score ?? null,
+          transit_score: zone.transit_score ?? null,
+          amenities_score: zone.amenities_score ?? null,
+          tag,
+        },
+        geometry: boundary.geometry,
+      };
+    }).filter(Boolean);
+    res.json({ type: 'FeatureCollection', features, metadata: { tag, zone_count: features.length, scoring_mode: 'absolute', overview_ready: true } });
+  } catch (error) {
+    sendProxyError(res, 502, 'NTA overview GeoJSON failed', { details: error?.message ?? null });
+  }
+});
+
+app.get('/api/render/global', async (req, res) => {
+  const requestedTag = typeof req.query.tag === 'string' ? req.query.tag.toLowerCase() : 'general';
+  const tag = TAG_STYLES[requestedTag] ? requestedTag : 'general';
+
+  try {
+    const payload = await backendRequest('/api/overview', {
+      method: 'POST',
+      body: mapTagToOverviewRequest(tag),
+    });
+
+    res.json({
+      ok: true,
+      schema_version: payload.schema_version ?? 'v3.7.6',
+      tag,
+      points: cellsToRenderPoints(payload.cells, tag),
+      source: 'backend_overview',
+      overview_ready: Boolean(payload.coverage?.overview_ready ?? payload.overview_ready),
+      coverage: payload.coverage ?? null,
+      ui_message: payload.ui_message ?? payload.coverage?.ui_message ?? null,
+    });
+  } catch (error) {
+    sendProxyError(res, 502, 'Overview proxy failed', {
+      tag,
+      points: [],
+      details: error.payload ?? null,
+    });
+  }
+});
+
+// ── Disk-backed response cache for slow backend queries ──
+const CACHE_DIR = path.join(__dirname, 'data', 'cache', 'api');
+try { fs.mkdirSync(CACHE_DIR, { recursive: true }); } catch {}
+
+function previewCacheKey(body) {
+  const lat = Number(body?.latitude ?? 0).toFixed(4);
+  const lng = Number(body?.longitude ?? 0).toFixed(4);
+  const r = body?.radius_m ?? 500;
+  const p = (body?.priority_order ?? []).join(',');
+  return `${lat}_${lng}_${r}_${p.replace(/,/g, '-')}`;
+}
+
+function cacheGet(prefix, key) {
+  try {
+    const fp = path.join(CACHE_DIR, `${prefix}_${key}.json`);
+    if (!fs.existsSync(fp)) return null;
+    return JSON.parse(fs.readFileSync(fp, 'utf8'));
+  } catch { return null; }
+}
+
+function cacheSet(prefix, key, data) {
+  try {
+    const fp = path.join(CACHE_DIR, `${prefix}_${key}.json`);
+    fs.writeFileSync(fp, JSON.stringify(data));
+  } catch {}
+}
+
+app.post('/api/detail/preview', async (req, res) => {
+  const key = previewCacheKey(req.body);
+  const cached = cacheGet('preview', key);
+  if (cached) return res.json(cached);
+  try {
+    const payload = await backendRequest('/api/detail/preview', {
+      method: 'POST',
+      body: req.body,
+    });
+    cacheSet('preview', key, payload);
+    res.json(payload);
+  } catch (error) {
+    sendProxyError(res, 502, 'Detail preview proxy failed', { details: error.payload ?? null });
+  }
+});
+
+app.post('/api/analyze-point', async (req, res) => {
+  const key = previewCacheKey(req.body) + '_' + (req.body?.report_mode ?? 'individual');
+  const cached = cacheGet('report', key);
+  if (cached) return res.json(cached);
+  try {
+    const payload = await backendRequest('/api/analyze-point', {
+      method: 'POST',
+      body: req.body,
+    });
+    cacheSet('report', key, payload);
+    res.json(payload);
+  } catch (error) {
+    sendProxyError(res, 502, 'Detail report proxy failed', { details: error.payload ?? null });
+  }
+});
+
+app.post('/api/watchlist/run', async (req, res) => {
+  try {
+    const payload = await backendRequest('/api/watchlist/run', {
+      method: 'POST',
+      body: req.body,
+    });
+    res.json(payload);
+  } catch (error) {
+    sendProxyError(res, 502, 'Watchlist proxy failed', { details: error.payload ?? null });
+  }
+});
+
+// ── Agent Mode endpoints (pass-through to Python backend) ──────────────
+
+app.get('/api/agent/status', async (req, res) => {
+  try {
+    const payload = await backendRequest('/api/agent/status');
+    res.json(payload);
+  } catch (error) {
+    // Agent not available is not an error — return disabled status
+    res.json({ enabled: false, reason: 'backend_unavailable' });
+  }
+});
+
+app.post('/api/agent/session', async (req, res) => {
+  try {
+    const payload = await backendRequest('/api/agent/session', { method: 'POST', body: req.body });
+    res.json(payload);
+  } catch (error) {
+    sendProxyError(res, 502, 'Agent session creation failed', { details: error.payload ?? null });
+  }
+});
+
+app.post('/api/agent/chat', async (req, res) => {
+  try {
+    const payload = await backendRequest('/api/agent/chat', { method: 'POST', body: req.body });
+    res.json(payload);
+  } catch (error) {
+    sendProxyError(res, 502, 'Agent chat failed', { details: error.payload ?? null });
+  }
+});
+
+app.post('/api/agent/report', async (req, res) => {
+  try {
+    const payload = await backendRequest('/api/agent/report', { method: 'POST', body: req.body });
+    res.json(payload);
+  } catch (error) {
+    sendProxyError(res, 502, 'Agent report generation failed', { details: error.payload ?? null });
+  }
+});
+
+app.post('/api/agent/poster', async (req, res) => {
+  try {
+    const payload = await backendRequest('/api/agent/poster', { method: 'POST', body: req.body });
+    res.json(payload);
+  } catch (error) {
+    sendProxyError(res, 502, 'Agent poster generation failed', { details: error.payload ?? null });
+  }
+});
+
+app.post('/api/agent/refine', async (req, res) => {
+  try {
+    const payload = await backendRequest('/api/agent/refine', { method: 'POST', body: req.body });
+    res.json(payload);
+  } catch (error) {
+    sendProxyError(res, 502, 'Agent report refinement failed', { details: error.payload ?? null });
+  }
+});
+
+app.post('/api/render/local', async (req, res) => {
+  const latitude = Number(req.body?.latitude);
+  const longitude = Number(req.body?.longitude);
+  const requestedRadius = Number(req.body?.radius_m);
+  const requestedTag = typeof req.body?.tag === 'string' ? req.body.tag.toLowerCase() : 'general';
+  const tag = TAG_STYLES[requestedTag] ? requestedTag : 'general';
+  const radius_m = ALLOWED_RADIUS_METERS.has(requestedRadius) ? requestedRadius : 200;
+  const priority_order = Array.isArray(req.body?.priority_order)
+    ? req.body.priority_order.filter((value) => typeof value === 'string').slice(0, 3)
+    : ['Amenities', 'Transit', 'Safety'];
+
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    return res.status(400).json({
+      error: 'latitude and longitude are required',
+      expected_body: {
+        latitude: 40.758,
+        longitude: -73.9855,
+        radius_m: 200,
+        tag: 'general|safety|transit|amenities',
+      },
+    });
+  }
+
+  try {
+    const payload = await backendRequest('/api/detail/preview', {
+      method: 'POST',
+      body: {
+        latitude,
+        longitude,
+        radius_m,
+        priority_order,
+        time_window_days: 365,
+      },
+    });
+
+    res.json({
+      ok: true,
+      schema_version: payload.schema_version ?? 'v3.7.6',
+      center: {
+        latitude,
+        longitude,
+      },
+      radius_m,
+      available_radii_m: [200, 500, 1000],
+      tag,
+      points: previewToRenderPoints(tag, payload),
+      style: TAG_STYLES[tag],
+      source: 'backend_detail_preview',
+      legend: {
+        title: `${TAG_STYLES[tag].legend} score`,
+        description: 'Lower score uses a more saturated color.',
+        stops: [
+          { label: '0 (lowest)', color: TAG_STYLES[tag].low },
+          { label: '100 (highest)', color: TAG_STYLES[tag].high },
+        ],
+      },
+    });
+  } catch (error) {
+    sendProxyError(res, 502, 'Local render proxy failed', {
+      center: { latitude, longitude },
+      radius_m,
+      tag,
+      points: [],
+      details: error.payload ?? null,
+    });
+  }
+});
+
+// Tile endpoint: /tiles/{z}/{x}/{y}.pbf
+app.get('/tiles/:z/:x/:y.pbf', (req, res) => {
+  const { z, x, y } = req.params;
+  const zInt = parseInt(z);
+  const xInt = parseInt(x);
+  const yFlipped = (1 << zInt) - 1 - parseInt(y);
+
+  const row = db.prepare(`
+    SELECT tile_data FROM tiles
+    WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?
+  `).get(zInt, xInt, yFlipped);
+
+  if (!row) {
+    return res.status(404).send('Tile not found');
+  }
+
+  res.set({
+    'Content-Type': 'application/x-protobuf',
+    'Content-Encoding': 'gzip',
+    'Cache-Control': 'public, max-age=86400',
+  });
+  res.send(row.tile_data);
+});
+
+// Font glyph endpoint for MapLibre
+app.get('/fonts/:fontstack/:range.pbf', (req, res) => {
+  const { fontstack, range } = req.params;
+  if (!isSafePathSegment(fontstack) || !isSafePathSegment(range)) {
+    return res.status(400).send('Invalid font path');
+  }
+  const fontPath = path.join(__dirname, 'public', 'fonts', fontstack, `${range}.pbf`);
+  res.sendFile(fontPath, (err) => {
+    if (err) {
+      const fallback = path.join(__dirname, 'public', 'fonts', 'Open Sans Regular', `${range}.pbf`);
+      res.sendFile(fallback, (err2) => {
+        if (err2) res.status(200).set('Content-Type', 'application/x-protobuf').send(Buffer.alloc(0));
+      });
+    }
+  });
+});
+
+// Static assets for standalone offline test pages
+app.use('/public', express.static(path.join(__dirname, 'public')));
+app.use('/vendor/maplibre-gl', express.static(path.join(__dirname, 'node_modules', 'maplibre-gl', 'dist')));
+
+app.get('/building-id-test', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'building-id-test.html'));
+});
+
+app.get('/global-render', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'global-render.html'));
+});
+
+// Serve React production build if available
+const distPath = path.join(__dirname, 'interactive-map-explorer', 'dist');
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath));
+  // SPA fallback
+  app.use((req, res) => {
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
+} else {
+  // Fallback to simple demo page
+  app.use(express.static(path.join(__dirname, 'public')));
+}
+
+app.listen(PORT, HOST, () => {
+  console.log(`\n  Urban Dossier NYC Map - Offline Mode`);
+  console.log(`  ──────────────────────────────────`);
+  console.log(`  Tile server: http://${HOST}:${PORT}/tiles/{z}/{x}/{y}.pbf`);
+  if (fs.existsSync(distPath)) {
+    console.log(`  Frontend:    http://${HOST}:${PORT} (production build)`);
+  } else {
+    console.log(`  Frontend:    http://${HOST}:${PORT} (built-in offline fallback page)`);
+    console.log(`               Optional React build: cd interactive-map-explorer && npm run build`);
+  }
+  console.log(`  完全离线运行，无需联网\n`);
+});

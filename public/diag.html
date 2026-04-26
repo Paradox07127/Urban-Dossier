@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Urban Dossier API Diagnostic</title>
+  <style>
+    body { font-family: -apple-system, system-ui, sans-serif; padding: 24px; max-width: 1100px; margin: 0 auto; line-height: 1.55; }
+    h1 { font-size: 22px; margin-bottom: 4px; }
+    .meta { color: #666; font-size: 13px; margin-bottom: 18px; }
+    .row { display: flex; gap: 12px; margin: 12px 0; }
+    button { padding: 10px 18px; font-size: 14px; border: 1px solid #444; background: #1c1c1c; color: #fff; border-radius: 6px; cursor: pointer; }
+    button:hover { background: #333; }
+    button.secondary { background: #f5f5f5; color: #1c1c1c; }
+    .panel { border: 1px solid #ccc; border-radius: 8px; padding: 14px; background: #fafafa; margin-top: 12px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+    .ok { border-color: #1f7a3e; background: #eaf7ee; }
+    .err { border-color: #b42318; background: #fce9e7; }
+    .label { font-weight: 700; font-family: -apple-system, sans-serif; font-size: 13px; margin-top: 4px; color: #444; }
+    .big { font-size: 26px; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <h1>Urban Dossier API Diagnostic</h1>
+  <div class="meta">
+    Page origin: <span id="origin"></span> · Loaded: <span id="loaded"></span>
+  </div>
+  <div class="row">
+    <button id="run">Run /api/detail/preview (Times Square)</button>
+    <button id="overview" class="secondary">Run /api/render/global?tag=general</button>
+    <button id="health" class="secondary">Run /api/health</button>
+  </div>
+
+  <div id="status" class="panel">Waiting. Click a button above.</div>
+
+  <h3 style="margin-top:24px">Summary</h3>
+  <div class="panel">
+    <div class="label">Status:</div>
+    <div id="sumStatus">--</div>
+    <div class="label">Latency:</div>
+    <div id="sumTime">--</div>
+    <div class="label">Address (matched_address):</div>
+    <div id="sumAddr">--</div>
+    <div class="label">Overall score:</div>
+    <div id="sumOverall" class="big">--</div>
+    <div class="label">Sub scores:</div>
+    <div id="sumSubs">--</div>
+    <div class="label">Counts:</div>
+    <div id="sumCounts">--</div>
+  </div>
+
+  <h3 style="margin-top:24px">Raw JSON (first 4000 chars)</h3>
+  <div id="raw" class="panel">--</div>
+
+  <script>
+    document.getElementById('origin').textContent = window.location.origin;
+    document.getElementById('loaded').textContent = new Date().toISOString();
+
+    function setStatus(text, kind) {
+      const el = document.getElementById('status');
+      el.textContent = text;
+      el.className = 'panel' + (kind ? ' ' + kind : '');
+    }
+
+    async function callDetailPreview() {
+      setStatus('POST /api/detail/preview ...');
+      const t0 = performance.now();
+      try {
+        const resp = await fetch('/api/detail/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            latitude: 40.7588,
+            longitude: -73.9851,
+            radius_m: 200,
+            priority_order: ['Amenities', 'Transit', 'Safety'],
+            time_window_days: 365,
+          }),
+        });
+        const t1 = performance.now();
+        const text = await resp.text();
+        document.getElementById('sumStatus').textContent = resp.status + ' ' + resp.statusText;
+        document.getElementById('sumTime').textContent = Math.round(t1 - t0) + ' ms';
+        document.getElementById('raw').textContent = text.slice(0, 4000);
+        if (!resp.ok) {
+          setStatus('FAIL HTTP ' + resp.status + '\n' + text.slice(0, 500), 'err');
+          return;
+        }
+        let data;
+        try { data = JSON.parse(text); }
+        catch (e) {
+          setStatus('JSON parse error: ' + e.message + '\nFirst 500 chars: ' + text.slice(0, 500), 'err');
+          return;
+        }
+        document.getElementById('sumAddr').textContent = (data?.target?.matched_address) || '(missing matched_address!)';
+        document.getElementById('sumOverall').textContent = (data?.scores?.overall ?? '(missing scores.overall!)');
+        document.getElementById('sumSubs').textContent =
+          'safety=' + (data?.scores?.safety ?? '?') +
+          ' | transit=' + (data?.scores?.transit ?? '?') +
+          ' | amenities=' + (data?.scores?.amenities ?? '?') +
+          ' | building=' + (data?.scores?.building ?? '?');
+        document.getElementById('sumCounts').textContent =
+          'priority_actions=' + ((data?.priority_actions || []).length) +
+          ' | evidence_table=' + ((data?.evidence_table || []).length) +
+          ' | building_flags=' + ((data?.detail_items?.building_flags || []).length) +
+          ' | why_now=' + ((data?.why_now || []).length);
+        setStatus('OK ' + resp.status + ' (' + Math.round(t1 - t0) + ' ms, ' + text.length + ' bytes)', 'ok');
+      } catch (e) {
+        const t1 = performance.now();
+        document.getElementById('sumTime').textContent = Math.round(t1 - t0) + ' ms';
+        setStatus('NETWORK ERROR: ' + e.name + ': ' + e.message + '\n' + (e.stack || ''), 'err');
+      }
+    }
+
+    async function callOverview() {
+      setStatus('GET /api/render/global?tag=general ...');
+      try {
+        const resp = await fetch('/api/render/global?tag=general');
+        const text = await resp.text();
+        document.getElementById('raw').textContent = text.slice(0, 4000);
+        if (!resp.ok) {
+          setStatus('FAIL HTTP ' + resp.status, 'err');
+          return;
+        }
+        const data = JSON.parse(text);
+        setStatus('OK ' + resp.status + '\npoints=' + (data?.points?.length || 0) + '\noverview_ready=' + data?.overview_ready, 'ok');
+      } catch (e) {
+        setStatus('NETWORK ERROR: ' + e.name + ': ' + e.message, 'err');
+      }
+    }
+
+    async function callHealth() {
+      setStatus('GET /api/health ...');
+      try {
+        const resp = await fetch('/api/health');
+        const text = await resp.text();
+        document.getElementById('raw').textContent = text.slice(0, 4000);
+        setStatus('OK ' + resp.status, 'ok');
+      } catch (e) {
+        setStatus('NETWORK ERROR: ' + e.name + ': ' + e.message, 'err');
+      }
+    }
+
+    document.getElementById('run').addEventListener('click', callDetailPreview);
+    document.getElementById('overview').addEventListener('click', callOverview);
+    document.getElementById('health').addEventListener('click', callHealth);
+  </script>
+</body>
+</html>

@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BlockSense NYC — {{ location.name }}</title>
+<style>
+/* ── Reset & Base ──────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 16px; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: #f7f9fb;
+  color: #2a3439;
+  line-height: 1.6;
+  padding: 2rem 1rem;
+  max-width: 900px;
+  margin: 0 auto;
+}
+a { color: #0053dc; text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ── Header ────────────────────────────────────────────────── */
+.report-header {
+  border-bottom: 3px solid #0053dc;
+  padding-bottom: 1.5rem;
+  margin-bottom: 2rem;
+}
+.report-header h1 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #565e74;
+  margin-bottom: 0.25rem;
+}
+.report-header .location {
+  font-size: 1.1rem;
+  color: #2a3439;
+}
+.report-header .location .borough {
+  color: #565e74;
+}
+
+/* ── Overall Score Circle ──────────────────────────────────── */
+.overall-section {
+  text-align: center;
+  margin-bottom: 2rem;
+}
+.score-circle {
+  display: inline-block;
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  background: conic-gradient(#0053dc calc(var(--score) * 1%), #e8eff3 0);
+  position: relative;
+  margin-bottom: 0.5rem;
+}
+.score-circle::after {
+  content: attr(data-score) "/100";
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: #2a3439;
+  background: #f7f9fb;
+  width: 90px;
+  height: 90px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.overall-label {
+  font-size: 0.9rem;
+  color: #565e74;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* ── Score Boxes ───────────────────────────────────────────── */
+.score-boxes {
+  display: flex;
+  justify-content: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 2rem;
+}
+.score-box {
+  width: 100px;
+  padding: 0.75rem 0.5rem;
+  border-radius: 8px;
+  text-align: center;
+  background: #fff;
+  border: 2px solid #e8eff3;
+}
+.score-box .score-value {
+  font-size: 1.6rem;
+  font-weight: 700;
+  display: block;
+}
+.score-box .score-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #565e74;
+}
+.score-green .score-value { color: #006d4a; }
+.score-green { border-color: #006d4a; }
+.score-blue .score-value { color: #0053dc; }
+.score-blue { border-color: #0053dc; }
+.score-yellow .score-value { color: #b8860b; }
+.score-yellow { border-color: #b8860b; }
+.score-red .score-value { color: #9f403d; }
+.score-red { border-color: #9f403d; }
+.score-na .score-value { color: #565e74; }
+
+/* ── Sections ──────────────────────────────────────────────── */
+.section {
+  margin-bottom: 2rem;
+}
+.section-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #565e74;
+  border-bottom: 2px solid #e8eff3;
+  padding-bottom: 0.4rem;
+  margin-bottom: 1rem;
+}
+.section-title .dim-score {
+  float: right;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+/* ── Priority Actions ──────────────────────────────────────── */
+.actions-list {
+  list-style: none;
+  padding: 0;
+}
+.actions-list li {
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.4rem;
+  background: #fff;
+  border-left: 4px solid #0053dc;
+  border-radius: 0 4px 4px 0;
+  font-size: 0.95rem;
+}
+.actions-list .rank {
+  font-weight: 700;
+  color: #0053dc;
+  margin-right: 0.5rem;
+}
+
+/* ── Narrative ─────────────────────────────────────────────── */
+.narrative {
+  font-size: 0.95rem;
+  line-height: 1.7;
+  margin-bottom: 1rem;
+  color: #2a3439;
+}
+
+/* ── Metrics Table ─────────────────────────────────────────── */
+.metrics-card {
+  background: #fff;
+  border: 1px solid #e8eff3;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+.metric-row {
+  display: flex;
+  align-items: center;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid #f0f3f6;
+}
+.metric-row:last-child { border-bottom: none; }
+.metric-label {
+  flex: 0 0 200px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #565e74;
+}
+.metric-bar-wrap {
+  flex: 1;
+  height: 12px;
+  background: #e8eff3;
+  border-radius: 6px;
+  overflow: hidden;
+  margin: 0 0.75rem;
+}
+.metric-bar {
+  height: 100%;
+  background: #0053dc;
+  border-radius: 6px;
+  width: calc(var(--val) / var(--max) * 100%);
+  min-width: 2px;
+}
+.metric-value {
+  flex: 0 0 100px;
+  font-size: 0.85rem;
+  text-align: right;
+  color: #2a3439;
+  font-weight: 600;
+}
+.metric-annotation {
+  flex: 0 0 180px;
+  font-size: 0.75rem;
+  color: #565e74;
+  text-align: right;
+}
+
+/* ── Trends ────────────────────────────────────────────────── */
+.trends-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-right: 1.5rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.85rem;
+}
+.trend-arrow {
+  font-size: 1rem;
+  font-weight: 700;
+}
+.trend-improving .trend-arrow { color: #006d4a; }
+.trend-worsening .trend-arrow { color: #9f403d; }
+.trend-elevated .trend-arrow { color: #b8860b; }
+.trend-stable .trend-arrow { color: #565e74; }
+.anomaly-badge {
+  display: inline-block;
+  background: #9f403d;
+  color: #fff;
+  font-size: 0.7rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+/* ── Synthesis / Cross-Signal ──────────────────────────────── */
+.pattern-card {
+  background: #fff;
+  border: 1px solid #e8eff3;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.5rem;
+}
+.pattern-card .pattern-title {
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: #0053dc;
+}
+.pattern-card .pattern-summary {
+  font-size: 0.85rem;
+  color: #565e74;
+}
+
+/* ── Data Notes ────────────────────────────────────────────── */
+.data-notes {
+  list-style: disc;
+  padding-left: 1.5rem;
+  font-size: 0.85rem;
+  color: #565e74;
+}
+.data-notes li { margin-bottom: 0.25rem; }
+
+/* ── Footer ────────────────────────────────────────────────── */
+.report-footer {
+  border-top: 2px solid #e8eff3;
+  padding-top: 1rem;
+  margin-top: 2rem;
+  font-size: 0.8rem;
+  color: #565e74;
+  display: flex;
+  justify-content: space-between;
+}
+
+/* ── Print ─────────────────────────────────────────────────── */
+@media print {
+  body {
+    background: #fff;
+    padding: 0;
+    font-size: 11pt;
+    max-width: none;
+  }
+  .report-header { border-bottom-color: #2a3439; }
+  .score-circle { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+  .score-box { break-inside: avoid; }
+  .section { break-inside: avoid; }
+  .metrics-card { break-inside: avoid; }
+  .metric-bar-wrap, .metric-bar { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+  .actions-list li { border-left-color: #2a3439; }
+}
+</style>
+</head>
+<body>
+
+<!-- ── Header ────────────────────────────────────────────── -->
+<header class="report-header">
+  <h1>BlockSense NYC &mdash; Neighborhood Analysis Report</h1>
+  <div class="location">
+    {{ location.name }}<span class="borough">, {{ location.borough }}</span>
+    {% if location.zip %} &middot; {{ location.zip }}{% endif %}
+    {% if location.radius_m %} &middot; {{ location.radius_m }}m radius{% endif %}
+  </div>
+</header>
+
+<!-- ── Overall Score ─────────────────────────────────────── -->
+<div class="overall-section">
+  <div class="score-circle" style="--score: {{ overall_score or 0 }}" data-score="{{ overall_score or 'N/A' }}"></div>
+  <div class="overall-label">Overall Score</div>
+</div>
+
+<!-- ── Score Boxes ───────────────────────────────────────── -->
+<div class="score-boxes">
+  {% for seg in segments %}
+  <div class="score-box {{ seg.score_color }}">
+    <span class="score-value">{{ seg.score if seg.score is not none else 'N/A' }}</span>
+    <span class="score-label">{{ seg.dimension_label }}</span>
+  </div>
+  {% endfor %}
+</div>
+
+<!-- ── Priority Actions ──────────────────────────────────── -->
+{% if priority_actions %}
+<div class="section">
+  <div class="section-title">Priority Actions</div>
+  <ol class="actions-list">
+    {% for action in priority_actions %}
+    <li>
+      <span class="rank">{{ loop.index }}.</span>
+      {% if action is mapping %}{{ action.action }}{% else %}{{ action }}{% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+</div>
+{% endif %}
+
+<!-- ── Dimension Sections ────────────────────────────────── -->
+{% for seg in segments %}
+<div class="section">
+  <div class="section-title">
+    {{ seg.dimension_label }}
+    <span class="dim-score {{ seg.score_color }}">{{ seg.score if seg.score is not none else 'N/A' }}/100</span>
+  </div>
+
+  <div class="narrative">{{ narratives[seg.dimension] }}</div>
+
+  {% if seg.metrics %}
+  <div class="metrics-card">
+    {% for m in seg.metrics %}
+    {% set max_val = [m.value, 1] | max %}
+    {% if m.baseline and m.baseline.p75 %}
+      {% set max_val = [m.value, m.baseline.p75 * 1.5] | max %}
+    {% endif %}
+    <div class="metric-row">
+      <span class="metric-label">{{ m.label }}</span>
+      <div class="metric-bar-wrap">
+        <div class="metric-bar" style="--val: {{ m.value or 0 }}; --max: {{ max_val }};"></div>
+      </div>
+      <span class="metric-value">{{ m.value }} {{ m.unit }}</span>
+      <span class="metric-annotation">{% if m.annotation %}{{ m.annotation }}{% endif %}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if seg.trends %}
+  <div style="margin-bottom: 0.75rem;">
+    {% for t in seg.trends %}
+    <span class="trends-row {{ t.arrow_class }}">
+      <span class="trend-arrow">{{ t.arrow }}</span>
+      <strong>{{ t.signal }}</strong>: {{ t.direction }}
+      {% if t.delta_pct is not none %} ({{ t.delta_pct }}%){% endif %}
+      {% if t.is_anomaly %}<span class="anomaly-badge">anomaly</span>{% endif %}
+    </span>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+{% endfor %}
+
+<!-- ── Cross-Signal Patterns ─────────────────────────────── -->
+{% if cross_signal_patterns or narratives.synthesis %}
+<div class="section">
+  <div class="section-title">Cross-Signal Patterns</div>
+
+  {% if narratives.synthesis %}
+  <div class="narrative">{{ narratives.synthesis }}</div>
+  {% endif %}
+
+  {% for p in cross_signal_patterns %}
+  <div class="pattern-card">
+    <span class="pattern-title">{{ p.title }}</span>
+    <span class="pattern-summary"> &mdash; {{ p.summary }}</span>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<!-- ── Data Notes ────────────────────────────────────────── -->
+{% if data_gaps %}
+<div class="section">
+  <div class="section-title">Data Notes</div>
+  <ul class="data-notes">
+    {% for gap in data_gaps %}
+    <li>{{ gap }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<!-- ── Footer ────────────────────────────────────────────── -->
+<footer class="report-footer">
+  <span>Generated: {{ generated_date }}</span>
+  <span>{{ version }}</span>
+</footer>
+
+</body>
+</html>
