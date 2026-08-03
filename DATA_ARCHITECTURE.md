@@ -270,5 +270,8 @@ host must generate its own manifests from its own downloaded snapshot.
 3. Replace full pandas materialization for recurring large refreshes with
    DuckDB or Polars streaming; benchmark cuDF-Polars independently per CUDA
    profile.
-4. Add GeoParquet metadata for line/polygon sources before adopting cuSpatial.
+4. Add GeoParquet metadata for line/polygon sources so standard geo tooling
+   (GDAL, QGIS, DuckDB spatial) can read them directly. This item previously
+   existed as a prerequisite for cuSpatial; that library was archived upstream
+   on 2025-07-28 (final v25.04), so spatial work stays on DuckDB spatial + h3.
 5. Embed catalog/methodology documents, not millions of structured fact rows.

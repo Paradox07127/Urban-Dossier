@@ -421,7 +421,7 @@ transit、amenities 分别直接覆盖 251、248、248、251 个 NTA。FastAPI �
 
 1. 大型 indexed facts 按 `h3_r9` 和 `event_date` 排序或粗分区，以扩大 row-group pruning；禁止按完整 H3 建高基数目录。
 2. 定期更新时将大 CSV 清洗器从全量 pandas materialization 改为 DuckDB 或 Polars streaming；GPU 批处理可使用 cuDF-Polars streaming engine。
-3. 为 bike/Open Streets 等线面数据补 GeoParquet metadata；只有 point-in-polygon、spatial join 成为实测热点时才引入 cuSpatial。
+3. 为 bike/Open Streets 等线面数据补 GeoParquet metadata，使 GDAL/QGIS/DuckDB spatial 等标准工具链可直接读取。（原文以"引入 cuSpatial"为动机；该库已于 2025-07-28 归档、终版 v25.04，动机作废，空间计算保留在 DuckDB spatial + h3。）
 4. 将 Agent 常用问题固化为 Gold 表和参数化 query templates，避免每次扫描 indexed facts。
 5. 数据和查询规模达到十万级以上向量时再评估 cuVS；当前小索引继续用 CPU exact/FAISS。
 
