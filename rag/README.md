@@ -1,5 +1,11 @@
 # Urban-Dossier v2 RAG
 
+> **Optional subsystem.** RAG is not currently loaded by the production
+> `urban-dossier` OpenClaw agent and is not required to run the map, FastAPI
+> scoring, or dedicated Agent chat. Enable it only for the structured
+> `/api/agent/ask`/retrieval track after starting the embedding service and
+> building an index.
+
 Retrieval-augmented context for the `urban_dossier_analyst` agent. The corpus is the
 18 NYC Open Data datasets the project ships with; each dataset is decomposed into
 3-5 chunks (overview / column groups / join graph / sample SQL) and indexed for
@@ -14,13 +20,13 @@ This package is a clean break from the v1 hardcoded fallback. There is no legacy
 flowchart LR
     Q[User query] --> EMB[embed_query<br/>Qwen/Qwen3-Embedding-4B<br/>via vLLM :8001]
     EMB --> VEC{Vector index}
-    VEC -->|CuvsIndex<br/>brute_force, GPU| RR[rerank<br/>BAAI/bge-reranker-v2-m3<br/>CrossEncoder]
-    VEC -.->|FaissIndex<br/>IndexFlatIP, CPU fallback| RR
+    VEC -->|FaissIndex / CPU exact<br/>current small corpus| RR[rerank<br/>BAAI/bge-reranker-v2-m3<br/>CrossEncoder]
+    VEC -.->|CuvsIndex<br/>optional scaled GPU corpus| RR
     RR --> CTX[Top-k RetrievedChunk]
     CTX --> NEMO[Nemotron-3 30B-A3B<br/>via vLLM :8000<br/>NVFP4 / FlashInfer MoE]
     NEMO --> A[Agent answer]
 
-    subgraph "DGX Spark - 128 GB unified memory"
+    subgraph "CUDA deployment profile"
         EMB
         VEC
         RR
@@ -28,16 +34,16 @@ flowchart LR
     end
 ```
 
-A single vLLM serving stack hosts both the LLM (Nemotron-3 30B on `:8000`) and the
-embedding model (Qwen3-Embedding-4B on `:8001`). Both share the GB10 unified
-memory pool — no inter-process copies between embedding generation and LLM
-context assembly.
+Two vLLM service instances use the same container stack: Nemotron-3 30B on
+`:8000` and optional Qwen3-Embedding-4B on `:8001`. On x86 they are declared in
+`deploy/compose.gpu.yml`; on DGX Spark use the platform-specific deployment
+instructions.
 
 ## Setup
 
-This package targets the DGX Spark runtime. The instructions below assume you
-have already followed the parent `Urban-Dossier/README.md` Quick Start through
-the Nemotron vLLM step.
+The adapter supports both x86 CUDA and DGX Spark. The commands below assume the
+main Nemotron vLLM service is already healthy. See `DEPLOY_WORKSTATION.md` or
+`DEPLOY_DGX_SPARK.md` for the selected platform.
 
 ### 1. Start the embedding vLLM instance (Qwen3-Embedding-4B)
 
@@ -45,9 +51,10 @@ the Nemotron vLLM step.
 # Download the model once (skip if cached)
 huggingface-cli download Qwen/Qwen3-Embedding-4B
 
-# Start a second vLLM instance on :8001 dedicated to embeddings.
-# Add an `embedding` profile to scripts/vllm/start_vllm.sh, then:
-bash scripts/vllm/start_vllm.sh --profile embedding &
+# x86 workstation: start only the optional embeddings service.
+docker compose \
+  --env-file /mnt/data/urban-dossier/runtime/gpu.env \
+  -f deploy/compose.gpu.yml up -d embeddings
 ```
 
 Verify:
@@ -64,10 +71,9 @@ cd Urban-Dossier
 python -m venv .venv && source .venv/bin/activate
 pip install -r rag/requirements.txt
 
-# Make CuvsIndex the GPU default (preferred on DGX Spark):
+# Optional only when a larger corpus benchmark justifies GPU indexing:
 pip install cuvs-cu13            # try pip wheel first
-# or:
-conda install -c rapidsai cuvs   # fallback if no aarch64 pip wheel
+# DGX may use the RAPIDS conda channel if its architecture lacks a pip wheel.
 ```
 
 The first import of the reranker downloads `BAAI/bge-reranker-v2-m3` (~600 MB)
@@ -157,21 +163,21 @@ Contract guarantees:
 | `RAG_INDEX_DIR` | `./index` | Directory containing the vector index |
 | `RAG_INDEX_FILENAME` | auto | `corpus.cuvs` if cuVS available, else `corpus.faiss` |
 | `RAG_VECTOR_OVERSAMPLE` | `20` | Pre-rerank candidate count |
-| `RAG_PREFER_GPU` | `1` | Set `0` to force FAISS-CPU even when cuVS is importable |
+| `RAG_PREFER_GPU` | `1` | Allows cuVS when installed; set `0` for the current small CPU index |
 
 ## NVIDIA stack components called out for the judges
 
-- **NVIDIA GB10 Grace Blackwell** — target SoC; FP4 tensor cores accelerate the
+- **NVIDIA Blackwell** — target accelerator family; FP4 tensor cores accelerate the
   Nemotron NVFP4 weights and the Qwen embedding model on a single chip.
-- **128 GB unified memory** — lets the 30B Nemotron weights, the embedding model,
-  the cuVS index, and the cuDF dataset cache coexist in one address space (273
-  GB/s LPDDR5X bandwidth, no PCIe transfers between CPU and GPU phases).
+- **DGX 128 GB unified memory or workstation discrete VRAM** — provides room
+  for model inference and optional future accelerated batch/index workloads;
+  it does not change the shared Parquet dataset contract.
 - **vLLM (single stack, two instances)** — `:8000` serves Nemotron-3 30B-A3B
   (NVFP4, FlashInfer MoE), `:8001` serves Qwen3-Embedding-4B. One inference
   engine, one set of NVIDIA optimizations.
-- **NVIDIA cuVS** (`cuvs-cu13`) — GPU `brute_force` exact-KNN index in
-  `vector_index.py`, the default backend whenever the package is importable.
-  FAISS-CPU is kept only as a dev/Mac fallback.
+- **NVIDIA cuVS** (`cuvs-cu13`) — optional GPU index adapter for a future
+  substantially larger corpus. The current catalog is small enough that CPU
+  exact/FAISS is valid on Mac, x86, and DGX Spark.
 - **NVIDIA NemoClaw / OpenClaw** — sandbox runtime for the agent skill that
   consumes this RAG layer.
 - **BAAI/bge-reranker-v2-m3** — open-source CrossEncoder reranker (Apache 2.0,

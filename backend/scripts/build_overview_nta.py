@@ -87,11 +87,14 @@ def _load_nta_polygons(nta_path: Path) -> list[dict[str, Any]]:
         props = feat["properties"]
         geom = shape(feat["geometry"])
         centroid = geom.centroid
+        # NYC Planning's current ArcGIS GeoJSON uses title-cased fields
+        # (NTA2020/NTAName/BoroName/NTAType). Keep the legacy lowercase keys
+        # compatible with older checked-in/downloaded snapshots.
         ntas.append({
-            "nta_code": props.get("nta2020", ""),
-            "nta_name": props.get("ntaname", ""),
-            "borough": props.get("boroname", ""),
-            "nta_type": props.get("ntatype", "0"),
+            "nta_code": props.get("NTA2020") or props.get("nta2020", ""),
+            "nta_name": props.get("NTAName") or props.get("ntaname", ""),
+            "borough": props.get("BoroName") or props.get("boroname", ""),
+            "nta_type": props.get("NTAType") or props.get("ntatype", "0"),
             "geometry": geom,
             "latitude": round(centroid.y, 6),
             "longitude": round(centroid.x, 6),
@@ -127,7 +130,10 @@ def _assign_h3_to_nta(h3_df: Any, ntas: list[dict[str, Any]]) -> Any:
     assignments: list[str] = []
     for _, row in h3_pdf.iterrows():
         pt = Point(row["longitude"], row["latitude"])
-        idx = tree.query(pt, predicate="contains")
+        # STRtree evaluates predicates as ``predicate(input, tree_geom)``.
+        # With a Point as the input geometry, ``within`` therefore means
+        # "this H3 centroid lies within the candidate NTA polygon".
+        idx = tree.query(pt, predicate="within")
         if len(idx) > 0:
             assignments.append(ntas[idx[0]]["nta_code"])
         else:

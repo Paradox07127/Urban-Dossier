@@ -9,6 +9,7 @@ import sys
 import tempfile
 import logging
 import re
+import threading
 
 
 def _md_to_html(text: str) -> str:
@@ -107,12 +108,25 @@ POSTER_TEMPLATES_DIR = os.path.join(SKILL_BASE, "blocksense-poster", "templates"
 # Agent backend mode — "nemoclaw" = OpenClaw via sandbox, "scripts" = direct skill scripts + vllm
 AGENT_BACKEND = os.environ.get("URBAN_DOSSIER_AGENT_BACKEND", "nemoclaw")
 
-# OpenClaw invocation chain: host → docker → k8s pod → openclaw agent
-OPENCLAW_CMD_PREFIX = [
-    "docker", "exec", "openshell-cluster-nemoclaw",
-    "kubectl", "exec", "-n", "openshell", "nemoshell", "--",
-]
+# NemoClaw 0.0.100 exposes the selected in-sandbox agent through its host CLI.
+# Keep the binary and sandbox configurable so development/test sandboxes do not
+# require code changes.  Do not couple the backend to OpenShell's container
+# names or runtime driver; those are deliberately private implementation details.
+NEMOCLAW_BIN = os.environ.get("NEMOCLAW_BIN", "nemoclaw")
+NEMOCLAW_SANDBOX = os.environ.get("NEMOCLAW_SANDBOX", "urban-dossier-agent")
+OPENCLAW_AGENT_ID = os.environ.get("OPENCLAW_AGENT_ID", "urban-dossier")
+OPENCLAW_TRANSPORT = os.environ.get("OPENCLAW_TRANSPORT", "gateway").strip().lower()
+OPENCLAW_GATEWAY_URL = os.environ.get(
+    "OPENCLAW_GATEWAY_URL", "http://127.0.0.1:18789"
+).rstrip("/")
+OPENCLAW_GATEWAY_TOKEN_FILE = os.environ.get(
+    "OPENCLAW_GATEWAY_TOKEN_FILE",
+    "/mnt/data/urban-dossier/runtime/openclaw-gateway.token",
+)
 AGENT_ENABLED = os.environ.get("URBAN_DOSSIER_AGENT_ENABLED", "1").strip() in ("1", "true", "yes")
+
+_openclaw_gateway_client = None
+_openclaw_gateway_client_lock = threading.Lock()
 
 # Per-call LLM timeout (not total operation timeout)
 # Nemotron 30B on DGX Spark can be slow; give it room
@@ -365,7 +379,7 @@ def is_agent_available() -> dict:
     # Check if NemoClaw CLI available (optional)
     nemoclaw_ok = False
     try:
-        result = subprocess.run(["nemoclaw", "--version"], capture_output=True, timeout=5)
+        result = subprocess.run([NEMOCLAW_BIN, "--version"], capture_output=True, timeout=5)
         nemoclaw_ok = result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
@@ -373,6 +387,8 @@ def is_agent_available() -> dict:
     return {
         "enabled": True,
         "backend": AGENT_BACKEND,
+        "transport": OPENCLAW_TRANSPORT,
+        "agent_id": OPENCLAW_AGENT_ID,
         "scripts_available": scripts_ok,
         "nemoclaw_available": nemoclaw_ok,
         "model": os.environ.get("URBAN_DOSSIER_MODEL", "auto"),
@@ -416,36 +432,156 @@ def generate_report(payload: dict, focus: str | None = None) -> dict:
         _cleanup_files(*temps)
 
 
+def _decode_nemoclaw_payload(stdout: str) -> str | None:
+    """Return the first text payload from current or legacy NemoClaw JSON.
+
+    NemoClaw may print a gateway-selection status line before the JSON object.
+    Scan for a decodable object instead of assuming stdout begins with ``{``.
+    v0.0.100 nests agent output below ``result``; older builds returned
+    ``payloads`` at the top level.
+    """
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", stdout):
+        try:
+            data, _ = decoder.raw_decode(stdout[match.start():])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        result = data.get("result", data)
+        if not isinstance(result, dict):
+            continue
+        payloads = result.get("payloads", [])
+        if not isinstance(payloads, list):
+            continue
+        for payload in payloads:
+            if isinstance(payload, dict) and isinstance(payload.get("text"), str):
+                return payload["text"]
+    return None
+
+
+def _read_openclaw_gateway_token() -> str | None:
+    """Load the Gateway bearer token without ever logging it.
+
+    Environment injection is convenient for containers.  A mode-0600 file is
+    preferred on the workstation so the secret is not visible in ``ps`` or a
+    systemd unit definition.
+    """
+    token = os.environ.get("OPENCLAW_GATEWAY_TOKEN", "").strip()
+    if token:
+        return token
+    try:
+        with open(OPENCLAW_GATEWAY_TOKEN_FILE, encoding="utf-8") as token_file:
+            return token_file.read().strip().strip('"') or None
+    except OSError:
+        return None
+
+
+def _get_openclaw_gateway_client(*, refresh: bool = False):
+    """Return one process-wide OpenAI client backed by a persistent pool."""
+    global _openclaw_gateway_client
+    with _openclaw_gateway_client_lock:
+        if refresh:
+            _openclaw_gateway_client = None
+        if _openclaw_gateway_client is not None:
+            return _openclaw_gateway_client
+        token = _read_openclaw_gateway_token()
+        if not token:
+            return None
+        from openai import OpenAI
+        _openclaw_gateway_client = OpenAI(
+            base_url=f"{OPENCLAW_GATEWAY_URL}/v1",
+            api_key=token,
+            timeout=LLM_CALL_TIMEOUT,
+            max_retries=1,
+        )
+        return _openclaw_gateway_client
+
+
+def _response_output_text(response) -> str | None:
+    """Extract text from OpenResponses SDK objects and compatible test doubles."""
+    output_text = getattr(response, "output_text", None)
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+    for item in getattr(response, "output", []) or []:
+        for content in getattr(item, "content", []) or []:
+            text = getattr(content, "text", None)
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+    return None
+
+
+def _openclaw_gateway_agent(message: str, session_id: str) -> str | None:
+    """Call the in-OpenShell Gateway without starting a CLI process per turn."""
+    for attempt in range(2):
+        client = _get_openclaw_gateway_client(refresh=attempt > 0)
+        if client is None:
+            logger.warning("OpenClaw Gateway token is unavailable; using CLI fallback")
+            return None
+        try:
+            response = client.responses.create(
+                # Encoding the agent in ``model`` is the least ambiguous route
+                # supported by OpenResponses. Keep the header as an explicit
+                # compatibility hint for older Gateway builds.
+                model=f"openclaw/{OPENCLAW_AGENT_ID}",
+                input=message,
+                max_output_tokens=4096,
+                extra_headers={
+                    "x-openclaw-agent-id": OPENCLAW_AGENT_ID,
+                    "x-openclaw-session-key": session_id,
+                },
+            )
+            return _response_output_text(response)
+        except Exception as exc:  # SDK exception types vary across versions
+            status_code = getattr(exc, "status_code", None)
+            if status_code == 401 and attempt == 0:
+                continue
+            logger.warning(
+                "OpenClaw Gateway request failed (%s); using CLI fallback",
+                exc.__class__.__name__,
+            )
+            return None
+    return None
+
+
 def _openclaw_agent(message: str, session_id: str = "blocksense",
                     timeout: int = 120) -> str | None:
     """Send a message to OpenClaw agent inside the NemoClaw sandbox.
 
     Returns the agent text response, or None on failure.
-    Command chain: host → docker exec → kubectl exec → openclaw agent --local
+    Command chain: backend host → NemoClaw CLI → OpenShell → OpenClaw.
     """
-    cmd = OPENCLAW_CMD_PREFIX + [
-        "openclaw", "agent",
-        "--agent", "main",
-        "--local",
-        "-m", message,
+    if OPENCLAW_TRANSPORT == "gateway":
+        response = _openclaw_gateway_agent(message, session_id)
+        if response:
+            return response
+
+    cmd = [
+        NEMOCLAW_BIN, NEMOCLAW_SANDBOX, "agent",
+        "--agent", OPENCLAW_AGENT_ID,
         "--session-id", session_id,
+        "--thinking", "off",
+        "-m", message,
         "--json",
-        "--timeout", str(timeout),
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 30)
+        child_env = os.environ.copy()
+        child_env["NO_COLOR"] = "1"
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout + 30,
+            env=child_env,
+        )
         if result.returncode != 0:
             logger.warning("OpenClaw agent returned rc=%d: %s", result.returncode, result.stderr[:500])
             return None
-        data = json.loads(result.stdout)
-        payloads = data.get("payloads", [])
-        if payloads:
-            return payloads[0].get("text", "")
-        return None
+        return _decode_nemoclaw_payload(result.stdout)
     except subprocess.TimeoutExpired:
         logger.warning("OpenClaw agent timed out after %ds", timeout + 30)
         return None
-    except (FileNotFoundError, json.JSONDecodeError, OSError) as exc:
+    except (FileNotFoundError, OSError) as exc:
         logger.warning("OpenClaw agent call failed: %s", exc)
         return None
 

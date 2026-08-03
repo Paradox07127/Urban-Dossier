@@ -8,10 +8,31 @@ Versioning targets Spark Hack NYC scoring milestones, not SemVer.
 
 ## [Unreleased] — v2 framework (post-mortem rework)
 
-The hackathon submission scored mid-pack (~59/100). v2 is a clean-break rebuild
-that addresses the scoring rubric directly: RAG, agent loop, statistical
-pattern detection, and engineering hygiene. All v2 code targets DGX Spark
-(GB10 Grace Blackwell, ARM64) and has not yet been validated on hardware.
+The hackathon submission scored mid-pack (~59/100). v2 began as a DGX Spark
+rework covering RAG, Agent behavior, statistical analysis, and engineering
+hygiene. The project now also has a separately validated x86 NVIDIA workstation
+profile; platform-specific tuning remains isolated while both profiles share
+the same application and data contracts.
+
+### Added — x86 workstation and data publication (2026-08-02)
+
+- Added the x86 deployment runbook, Docker vLLM profile, dedicated NemoClaw /
+  OpenClaw Agent workspace, and persistent FastAPI service definition.
+- Added reproducible download, audit, Parquet optimization, and validation
+  tooling for 18 raw datasets and 44 ready Parquet artifacts.
+- Added an official NYC Planning NTA 2020 release 26B downloader that validates
+  262 unique polygons and writes a source/hash manifest.
+- Added four H3 r8 overview layers plus NTA Parquet/JSON aggregation for the
+  frontend, with explicit no-data semantics for unscored zones.
+- Added the shared data architecture and separate DGX/workstation deployment
+  documentation.
+
+### Fixed — overview boundary compatibility
+
+- Accept current official `NTA2020`/`NTAName`/`BoroName` fields while retaining
+  compatibility with legacy lowercase snapshots.
+- Corrected the Shapely point-in-polygon predicate so H3 centroids use their
+  containing NTA instead of falling through to nearest-polygon assignment.
 
 ### Added — RAG pipeline (`rag/`)
 

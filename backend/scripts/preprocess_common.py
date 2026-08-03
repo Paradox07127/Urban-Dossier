@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,8 +48,11 @@ from h3 import latlng_to_cell
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_RAW_ROOT = Path.home() / "nyc_open_data" / "_claw_out" / "gpu_cleaned"
+DEFAULT_RAW_ROOT = Path.home() / "nyc_open_data"
 DEFAULT_READY_ROOT = REPO_ROOT / "data" / "ready"
+PARQUET_COMPRESSION = os.getenv("URBAN_DOSSIER_PARQUET_COMPRESSION", "zstd")
+PARQUET_COMPRESSION_LEVEL = int(os.getenv("URBAN_DOSSIER_PARQUET_COMPRESSION_LEVEL", "3"))
+PARQUET_ROW_GROUP_ROWS = int(os.getenv("URBAN_DOSSIER_PARQUET_ROW_GROUP_ROWS", "250000"))
 
 # Rough NYC bounding box (five boroughs + a small margin). Applied in
 # _prepare_dataframe so any upstream row with a typoed lat/lon (lat=0,
@@ -176,12 +180,13 @@ class DatasetSpec:
     extra_outputs: list[dict[str, str]] = field(default_factory=list)
     wkt_col: str | None = None  # for line_vertices datasets
     critical_col: str | None = None  # restaurants only
+    entity_col: str | None = None  # distinct physical entity for access counts
 
 
 SPECS: dict[str, DatasetSpec] = {
     "safety_collisions": DatasetSpec(
         name="safety_collisions",
-        raw_relpath="motor_vehicle_collisions.cleaned.csv",
+        raw_relpath="safety/motor_vehicle_collisions.csv",
         output_dir="safety",
         indexed_name="collisions_indexed.parquet",
         score_name="collisions_scores_h3.parquet",
@@ -205,7 +210,7 @@ SPECS: dict[str, DatasetSpec] = {
     ),
     "safety_rodent": DatasetSpec(
         name="safety_rodent",
-        raw_relpath="rodent_inspections.cleaned.csv",
+        raw_relpath="environment/rodent_inspections.csv",
         output_dir="safety",
         indexed_name="rodent_indexed.parquet",
         score_name="rodent_scores_h3.parquet",
@@ -221,7 +226,7 @@ SPECS: dict[str, DatasetSpec] = {
     ),
     "safety_311": DatasetSpec(
         name="safety_311",
-        raw_relpath="311_service_requests_2020_present.cleaned.csv",
+        raw_relpath="quality_of_life/311_service_requests_2020_present.csv",
         output_dir="safety",
         indexed_name="311_safety_indexed.parquet",
         score_name="311_scores_h3.parquet",
@@ -237,7 +242,7 @@ SPECS: dict[str, DatasetSpec] = {
     ),
     "safety_ems": DatasetSpec(
         name="safety_ems",
-        raw_relpath="ems_incident_dispatch.cleaned.csv",
+        raw_relpath="safety/ems_incident_dispatch.csv",
         output_dir="safety",
         indexed_name="ems_indexed.parquet",
         score_name="ems_scores_zip.parquet",
@@ -250,7 +255,7 @@ SPECS: dict[str, DatasetSpec] = {
     ),
     "safety_fire": DatasetSpec(
         name="safety_fire",
-        raw_relpath="fire_incident_dispatch.cleaned.csv",
+        raw_relpath="safety/fire_incident_dispatch.csv",
         output_dir="safety",
         indexed_name="fire_indexed.parquet",
         score_name="fire_scores_zip.parquet",
@@ -263,7 +268,7 @@ SPECS: dict[str, DatasetSpec] = {
     ),
     "amenities_restaurants": DatasetSpec(
         name="amenities_restaurants",
-        raw_relpath="dohmh_restaurant_inspections.cleaned.csv",
+        raw_relpath="amenities/dohmh_restaurant_inspections.csv",
         output_dir="amenities",
         indexed_name="restaurants_indexed.parquet",
         score_name="restaurants_scores_h3.parquet",
@@ -277,10 +282,11 @@ SPECS: dict[str, DatasetSpec] = {
         borough_col="borough",
         access_mode=True,
         critical_col="CRITICAL FLAG",
+        entity_col="CAMIS",
     ),
     "amenities_parks": DatasetSpec(
         name="amenities_parks",
-        raw_relpath="parks_properties.cleaned.csv",
+        raw_relpath="amenities/parks_properties.csv",
         output_dir="amenities",
         indexed_name="parks_indexed.parquet",
         score_name="parks_scores_zip.parquet",
@@ -294,7 +300,7 @@ SPECS: dict[str, DatasetSpec] = {
     ),
     "amenities_trees": DatasetSpec(
         name="amenities_trees",
-        raw_relpath="street_trees.cleaned.csv",
+        raw_relpath="amenities/street_trees.csv",
         output_dir="amenities",
         indexed_name="trees_indexed.parquet",
         score_name="trees_scores_h3.parquet",
@@ -307,10 +313,11 @@ SPECS: dict[str, DatasetSpec] = {
         zip_col="zip",
         borough_col="borough",
         access_mode=True,
+        filter_mode="alive_tree",
     ),
     "amenities_linknyc": DatasetSpec(
         name="amenities_linknyc",
-        raw_relpath="linknyc_kiosk_locations.cleaned.csv",
+        raw_relpath="amenities/linknyc_kiosk_locations.csv",
         output_dir="amenities",
         indexed_name="linknyc_indexed.parquet",
         score_name="linknyc_scores_h3.parquet",
@@ -321,10 +328,11 @@ SPECS: dict[str, DatasetSpec] = {
         zip_col="zip",
         borough_col="borough",
         access_mode=True,
+        filter_mode="live_linknyc",
     ),
     "amenities_toilets": DatasetSpec(
         name="amenities_toilets",
-        raw_relpath="public_toilets.cleaned.csv",
+        raw_relpath="amenities/public_toilets.csv",
         output_dir="amenities",
         indexed_name="toilets_indexed.parquet",
         score_name="toilets_scores_h3.parquet",
@@ -333,10 +341,11 @@ SPECS: dict[str, DatasetSpec] = {
         lat_col="latitude",
         lon_col="longitude",
         access_mode=True,
+        filter_mode="operational_toilet",
     ),
     "amenities_facilities": DatasetSpec(
         name="amenities_facilities",
-        raw_relpath="facilities_database.cleaned.csv",
+        raw_relpath="amenities/facilities_database.csv",
         output_dir="amenities",
         indexed_name="facilities_indexed.parquet",
         score_name="facilities_scores_h3.parquet",
@@ -350,7 +359,7 @@ SPECS: dict[str, DatasetSpec] = {
     ),
     "transit_subway": DatasetSpec(
         name="transit_subway",
-        raw_relpath="mta_subway_entrances_exits_2024.cleaned.csv",
+        raw_relpath="transit/mta_subway_entrances_exits_2024.csv",
         output_dir="transit",
         indexed_name="subway_indexed.parquet",
         score_name="subway_scores_h3.parquet",
@@ -363,7 +372,7 @@ SPECS: dict[str, DatasetSpec] = {
     ),
     "transit_bus": DatasetSpec(
         name="transit_bus",
-        raw_relpath="bus_stop_shelters.cleaned.csv",
+        raw_relpath="transit/bus_stop_shelters.csv",
         output_dir="transit",
         indexed_name="bus_indexed.parquet",
         score_name="bus_scores_h3.parquet",
@@ -376,18 +385,19 @@ SPECS: dict[str, DatasetSpec] = {
     ),
     "transit_bike_routes": DatasetSpec(
         name="transit_bike_routes",
-        raw_relpath="nyc_bike_routes.cleaned.csv",
+        raw_relpath="transit/nyc_bike_routes.csv",
         output_dir="transit",
         indexed_name="bike_routes_indexed.parquet",
         score_name="bike_routes_scores_h3.parquet",
         dataset_type="line_vertices",
-        usecols=["the_geom", "segmentid", "street", "boro", "allclasses"],
+        usecols=["the_geom", "segmentid", "status", "street", "boro", "allclasses"],
         wkt_col="the_geom",
         access_mode=True,
+        filter_mode="current_bike_route",
     ),
     "transit_open_streets": DatasetSpec(
         name="transit_open_streets",
-        raw_relpath="open_streets_locations.cleaned.csv",
+        raw_relpath="transit/open_streets_locations.csv",
         output_dir="transit",
         indexed_name="open_streets_indexed.parquet",
         score_name="open_streets_scores_h3.parquet",
@@ -398,7 +408,7 @@ SPECS: dict[str, DatasetSpec] = {
     ),
     "building_violations": DatasetSpec(
         name="building_violations",
-        raw_relpath="housing_code_violations.cleaned.csv",
+        raw_relpath="buildings/housing_code_violations.csv",
         output_dir="building",
         indexed_name="housing_violations_indexed.parquet",
         score_name="housing_violations_scores_h3.parquet",
@@ -414,7 +424,7 @@ SPECS: dict[str, DatasetSpec] = {
     ),
     "building_aep": DatasetSpec(
         name="building_aep",
-        raw_relpath="buildings_aep.cleaned.csv",
+        raw_relpath="buildings/buildings_aep.csv",
         output_dir="building",
         indexed_name="aep_indexed.parquet",
         score_name="aep_scores_h3.parquet",
@@ -429,7 +439,7 @@ SPECS: dict[str, DatasetSpec] = {
     ),
     "location_pluto": DatasetSpec(
         name="location_pluto",
-        raw_relpath="pluto.cleaned.csv",
+        raw_relpath="buildings/pluto.csv",
         output_dir="location",
         indexed_name="location_index.parquet",
         score_name="location_index.parquet",
@@ -454,11 +464,24 @@ def _apply_filter(df: pd.DataFrame, spec: DatasetSpec) -> pd.DataFrame:
         return df[df["RESULT"].fillna("").str.upper().str.contains("RAT|FAILED|ACTIVE", regex=True)]
     if mode == "safety_311":
         complaint_col = "Problem (formerly Complaint Type)"
-        return df[df[complaint_col].fillna("").str.upper().isin({"RODENT", "SANITATION CONDITION"})]
+        return df[
+            df[complaint_col]
+            .fillna("")
+            .str.upper()
+            .isin({"RODENT", "SANITATION CONDITION", "UNSANITARY CONDITION"})
+        ]
     if mode == "open_violations":
         return df[~df["ViolationStatus"].fillna("").str.upper().str.contains("CLOSE")]
     if mode == "active_aep":
         return df[~df["CURRENT_STATUS"].fillna("").str.upper().str.contains("DISCHARG")]
+    if mode == "alive_tree":
+        return df[df["status"].fillna("").str.upper() == "ALIVE"]
+    if mode == "live_linknyc":
+        return df[df["Installation Status"].fillna("").str.upper() == "LIVE"]
+    if mode == "operational_toilet":
+        return df[df["Status"].fillna("").str.upper() == "OPERATIONAL"]
+    if mode == "current_bike_route":
+        return df[df["status"].fillna("").str.upper() == "CURRENT"]
     return df
 
 
@@ -491,7 +514,21 @@ def _prepare_dataframe(spec: DatasetSpec, raw_root: Path) -> pd.DataFrame:
 
 def _write_parquet(df: pd.DataFrame, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(path, index=False)
+    partial = path.with_suffix(path.suffix + ".part")
+    partial.unlink(missing_ok=True)
+    compression_options: dict[str, Any] = {"compression": PARQUET_COMPRESSION}
+    if PARQUET_COMPRESSION.lower() in {"zstd", "gzip", "brotli"}:
+        compression_options["compression_level"] = PARQUET_COMPRESSION_LEVEL
+    df.to_parquet(
+        partial,
+        index=False,
+        engine="pyarrow",
+        row_group_size=PARQUET_ROW_GROUP_ROWS,
+        use_dictionary=True,
+        write_statistics=True,
+        **compression_options,
+    )
+    partial.replace(path)
 
 
 # ----------------------------------------------------------------------------
@@ -502,7 +539,16 @@ def _process_point_dataset(spec: DatasetSpec, raw_root: Path, ready_root: Path) 
     df = _prepare_dataframe(spec, raw_root)
     _write_parquet(df, ready_root / spec.output_dir / spec.indexed_name)
 
-    grouped = df.groupby("h3_r9").size().reset_index(name="raw_count")
+    if spec.entity_col and spec.entity_col in df.columns:
+        grouped = (
+            df.groupby("h3_r9")[spec.entity_col]
+            .nunique()
+            .reset_index(name="raw_count")
+        )
+        inspection_count = df.groupby("h3_r9").size().reset_index(name="inspection_count")
+        grouped = grouped.merge(inspection_count, on="h3_r9", how="left")
+    else:
+        grouped = df.groupby("h3_r9").size().reset_index(name="raw_count")
 
     if spec.critical_col and spec.critical_col in df.columns:
         critical_mask = df[spec.critical_col].fillna("").str.upper() == "CRITICAL"
@@ -514,7 +560,12 @@ def _process_point_dataset(spec: DatasetSpec, raw_root: Path, ready_root: Path) 
         )
         grouped = grouped.merge(critical_by_cell, on="h3_r9", how="left")
         grouped["critical_count"] = grouped["critical_count"].fillna(0).astype(int)
-        grouped["critical_rate"] = (grouped["critical_count"] / grouped["raw_count"].clip(lower=1)).round(3)
+        denominator = (
+            grouped["inspection_count"]
+            if "inspection_count" in grouped.columns
+            else grouped["raw_count"]
+        )
+        grouped["critical_rate"] = (grouped["critical_count"] / denominator.clip(lower=1)).round(3)
         # Abundance score (more restaurants = more access = good).
         abundance = percentile_score(grouped["raw_count"], access_mode=True)
         # Quality score: lower critical rate = better.  Invert so low crit
@@ -615,6 +666,7 @@ def _extract_wkt_vertices(wkt: Any) -> list[tuple[float, float]]:
 def _process_line_vertices_dataset(spec: DatasetSpec, raw_root: Path, ready_root: Path) -> None:
     raw_path = raw_root / spec.raw_relpath
     df = pd.read_csv(raw_path, usecols=spec.usecols, low_memory=False)
+    df = _apply_filter(df, spec)
 
     wkt_col = spec.wkt_col or "the_geom"
     if wkt_col not in df.columns:
@@ -641,6 +693,10 @@ def _process_line_vertices_dataset(spec: DatasetSpec, raw_root: Path, ready_root
         return
 
     vertex_df = pd.DataFrame(rows)
+    vertex_df = vertex_df[
+        vertex_df["latitude"].between(NYC_BBOX["lat_min"], NYC_BBOX["lat_max"])
+        & vertex_df["longitude"].between(NYC_BBOX["lon_min"], NYC_BBOX["lon_max"])
+    ].copy()
     vertex_df = add_h3(vertex_df, "latitude", "longitude")
     _write_parquet(vertex_df, ready_root / spec.output_dir / spec.indexed_name)
 
@@ -700,7 +756,16 @@ def rescore_from_indexed(name: str, ready_root: Path | None = None) -> bool:
         df = pd.read_parquet(indexed_path)
         if "h3_r9" not in df.columns:
             return False
-        grouped = df.groupby("h3_r9").size().reset_index(name="raw_count")
+        if spec.entity_col and spec.entity_col in df.columns:
+            grouped = (
+                df.groupby("h3_r9")[spec.entity_col]
+                .nunique()
+                .reset_index(name="raw_count")
+            )
+            inspection_count = df.groupby("h3_r9").size().reset_index(name="inspection_count")
+            grouped = grouped.merge(inspection_count, on="h3_r9", how="left")
+        else:
+            grouped = df.groupby("h3_r9").size().reset_index(name="raw_count")
         if spec.critical_col and spec.critical_col in df.columns:
             critical_mask = df[spec.critical_col].fillna("").str.upper() == "CRITICAL"
             critical_by_cell = (
@@ -711,7 +776,12 @@ def rescore_from_indexed(name: str, ready_root: Path | None = None) -> bool:
             )
             grouped = grouped.merge(critical_by_cell, on="h3_r9", how="left")
             grouped["critical_count"] = grouped["critical_count"].fillna(0).astype(int)
-            grouped["critical_rate"] = (grouped["critical_count"] / grouped["raw_count"].clip(lower=1)).round(3)
+            denominator = (
+                grouped["inspection_count"]
+                if "inspection_count" in grouped.columns
+                else grouped["raw_count"]
+            )
+            grouped["critical_rate"] = (grouped["critical_count"] / denominator.clip(lower=1)).round(3)
             abundance = percentile_score(grouped["raw_count"], access_mode=True)
             quality = percentile_score(grouped["critical_rate"], access_mode=False)
             grouped["score"] = ((abundance + quality) / 2).round().clip(lower=0, upper=100).astype(int)

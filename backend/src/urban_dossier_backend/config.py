@@ -44,7 +44,7 @@ REPORT_CACHE_DIR = CACHE_DIR / "reports" if CACHE_DIR else None
 OVERVIEW_DIR = CACHE_DIR / "overview" if CACHE_DIR else None
 DEMO_DIR = DATA_ROOT / "demo" if DATA_ROOT else None
 READY_DATA_DIR = Path(os.getenv("URBAN_DOSSIER_READY_ROOT", str(REPO_ROOT / "data" / "ready")))
-RAW_DATA_ROOT = Path(os.getenv("URBAN_DOSSIER_RAW_DATA_ROOT", str(Path.home() / "nyc_open_data" / "_claw_out" / "gpu_cleaned")))
+RAW_DATA_ROOT = Path(os.getenv("URBAN_DOSSIER_RAW_DATA_ROOT", str(Path.home() / "nyc_open_data")))
 
 URBAN_DOSSIER_DATA_MODE = os.getenv("URBAN_DOSSIER_DATA_MODE", "direct").lower()
 DEFAULT_MODEL = os.getenv("URBAN_DOSSIER_MODEL", "auto")

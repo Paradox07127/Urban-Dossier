@@ -1,5 +1,11 @@
 # vLLM startup configs for Urban Dossier
 
+> **DGX Spark profile only.** This launcher and its three profiles are retained
+> for the GB10 environment. The current x86 workstation uses the digest-pinned
+> container in `deploy/compose.gpu.yml`; see `DEPLOY_WORKSTATION.md`. The two
+> profiles have different memory architecture and validated vLLM settings, so
+> their tuning values must not be merged mechanically.
+
 Three launch profiles for `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4` on
 **NVIDIA DGX Spark (GB10 Grace Blackwell, SM 12.1, 128 GiB unified LPDDR5X)**.
 

@@ -11,7 +11,7 @@ from .base import DataProvider
 from .gpu_queries import gpu_emergency_metrics, gpu_fetch_radius_rows, gpu_nearest_overview_cell, is_available as gpu_available, is_fallback
 
 
-SAFETY_311_TYPES = {"RODENT", "SANITATION CONDITION"}
+SAFETY_311_TYPES = {"RODENT", "SANITATION CONDITION", "UNSANITARY CONDITION"}
 POSITIVE_RODENT_TERMS = ("RAT", "FAILED", "ACTIVE")
 
 
@@ -112,19 +112,45 @@ PARQUET_ALIASES = {
 }
 
 RAW_CSV_ALIASES = {
-    "pluto": ["pluto.cleaned.csv"],
-    "parks": ["parks_properties.cleaned.csv"],
-    "public_toilets": ["public_toilets.cleaned.csv"],
-    "ems_dispatch": ["ems_incident_dispatch.cleaned.csv"],
-    "fire_dispatch": ["fire_incident_dispatch.cleaned.csv"],
-    "collisions": ["motor_vehicle_collisions.cleaned.csv"],
-    "rodent_inspections": ["rodent_inspections.cleaned.csv"],
-    "311_subset": ["311_service_requests_2020_present.cleaned.csv"],
-    "restaurant_inspections": ["dohmh_restaurant_inspections.cleaned.csv"],
-    "linknyc_locations": ["linknyc_kiosk_locations.cleaned.csv"],
-    "street_trees": ["street_trees.cleaned.csv"],
-    "housing_violations": ["housing_code_violations.cleaned.csv"],
-    "aep_buildings": ["buildings_aep.cleaned.csv"],
+    "pluto": ["buildings/pluto.csv"],
+    "parks": ["amenities/parks_properties.csv"],
+    "public_toilets": ["amenities/public_toilets.csv"],
+    "ems_dispatch": ["safety/ems_incident_dispatch.csv"],
+    "fire_dispatch": ["safety/fire_incident_dispatch.csv"],
+    "collisions": ["safety/motor_vehicle_collisions.csv"],
+    "rodent_inspections": ["environment/rodent_inspections.csv"],
+    "311_subset": ["quality_of_life/311_service_requests_2020_present.csv"],
+    "restaurant_inspections": ["amenities/dohmh_restaurant_inspections.csv"],
+    "linknyc_locations": ["amenities/linknyc_kiosk_locations.csv"],
+    "street_trees": ["amenities/street_trees.csv"],
+    "housing_violations": ["buildings/housing_code_violations.csv"],
+    "aep_buildings": ["buildings/buildings_aep.csv"],
+}
+
+READY_DATASET_PATHS = {
+    "location_index": "location/location_index.parquet",
+    "collisions": "safety/collisions_indexed.parquet",
+    "rodent_inspections": "safety/rodent_indexed.parquet",
+    "311_subset": "safety/311_safety_indexed.parquet",
+    "public_toilets": "amenities/toilets_indexed.parquet",
+    "restaurant_inspections": "amenities/restaurants_indexed.parquet",
+    "linknyc_locations": "amenities/linknyc_indexed.parquet",
+    "street_trees": "amenities/trees_indexed.parquet",
+    "parks": "amenities/parks_indexed.parquet",
+    "ems_dispatch": "safety/ems_indexed.parquet",
+    "fire_dispatch": "safety/fire_indexed.parquet",
+    "housing_violations": "building/housing_violations_indexed.parquet",
+    "aep_buildings": "building/aep_indexed.parquet",
+}
+
+READY_COLUMN_ALIASES = {
+    "CRASH DATE": "event_date",
+    "INSPECTION_DATE": "event_date",
+    "Created Date": "event_date",
+    "created_date": "event_date",
+    "INSPECTION DATE": "event_date",
+    "InspectionDate": "event_date",
+    "AEP_START_DATE": "event_date",
 }
 
 
@@ -173,7 +199,12 @@ class DirectQueryDataProvider(DataProvider):
         return None
 
     def _dataset_available(self, name: str) -> bool:
-        return self._parquet_path(name).exists() or bool(self._raw_csv_path(name))
+        ready_path = READY_DATASET_PATHS.get(name)
+        return (
+            bool(ready_path and self._ready_exists(ready_path))
+            or self._parquet_path(name).exists()
+            or bool(self._raw_csv_path(name))
+        )
 
     def _load_overview_rows(self, path: Path, limit: int = 5000) -> list[dict[str, Any]]:
         con = self._connect()
@@ -305,7 +336,23 @@ class DirectQueryDataProvider(DataProvider):
         # Use H3 pre-filter to dramatically reduce scan scope
         h3_cells = self._h3_cells_for_radius(latitude, longitude, int(radius_m))
         min_lat, max_lat, min_lon, max_lon = bbox(latitude, longitude, radius_m)
-        selected = ", ".join(quote(col) for col in columns)
+        available_columns = {
+            row[0]
+            for row in con.execute(
+                f"DESCRIBE SELECT * FROM read_parquet('{path.as_posix()}')"
+            ).fetchall()
+        }
+        selected_parts: list[str] = []
+        for requested in columns:
+            actual = READY_COLUMN_ALIASES.get(requested, requested)
+            if actual in available_columns:
+                selected_parts.append(f"{quote(actual)} AS {quote(requested)}")
+            else:
+                # Some display-only address fields were intentionally omitted
+                # from the compact ready layer. Preserve the response key while
+                # avoiding a multi-gigabyte raw CSV fallback.
+                selected_parts.append(f"NULL AS {quote(requested)}")
+        selected = ", ".join(selected_parts)
         if selected:
             selected += ", "
         if h3_cells:
@@ -433,6 +480,18 @@ class DirectQueryDataProvider(DataProvider):
         columns: list[str],
         limit: int = 50000,
     ) -> list[dict[str, Any]]:
+        ready_relative = READY_DATASET_PATHS.get(parquet_name)
+        if ready_relative and self._ready_exists(ready_relative):
+            return self._query_ready_radius_rows(
+                con,
+                ready_relative,
+                lat,
+                lon,
+                radius_m,
+                columns,
+                limit,
+            )
+
         # GPU path: cuDF reads parquet directly, all filtering on GPU
         if self._use_gpu:
             path = self._parquet_path(parquet_name)
@@ -848,8 +907,26 @@ class DirectQueryDataProvider(DataProvider):
         rows: list[dict[str, Any]] = []
         active_variant: dict[str, str] | None = None
 
+        # The published ready table is already reduced to the supported safety
+        # complaint types. Query it before the raw CSV-specific SQL variants.
+        ready_311 = READY_DATASET_PATHS.get("311_subset")
+        if ready_311 and self._ready_exists(ready_311):
+            variant = schema_variants[0]
+            rows = self._fetch_radius_rows(
+                con,
+                "311_subset",
+                variant["lat_col"],
+                variant["lon_col"],
+                latitude,
+                longitude,
+                radius_m,
+                [variant["date_col"], variant["type_col"], variant["desc_col"], variant["addr_col"], variant["id_col"]],
+                limit=10000,
+            )
+            active_variant = variant
+
         # GPU-accelerated path: _fetch_radius_rows has cuDF path, then filter type in Python
-        if self._use_gpu:
+        if active_variant is None and self._use_gpu:
             for variant in schema_variants:
                 try:
                     gpu_rows = self._fetch_radius_rows(
@@ -1026,6 +1103,10 @@ class DirectQueryDataProvider(DataProvider):
                 })
 
         toilet_rows = self._fetch_radius_rows(con, "public_toilets", "Latitude", "Longitude", latitude, longitude, max(radius_m, 1000), ["Facility Name", "Status", "Location Type"])
+        toilet_rows = [
+            row for row in toilet_rows
+            if str(row.get("Status") or "").strip().upper() == "OPERATIONAL"
+        ]
         metrics["toilet_count_1km"] = len(toilet_rows)
         if toilet_rows:
             evidence.append({
@@ -1045,6 +1126,10 @@ class DirectQueryDataProvider(DataProvider):
                 })
 
         link_rows = self._fetch_radius_rows(con, "linknyc_locations", "Latitude", "Longitude", latitude, longitude, radius_m, ["Site ID", "Street Address", "Installation Status"])
+        link_rows = [
+            row for row in link_rows
+            if str(row.get("Installation Status") or "").strip().upper() == "LIVE"
+        ]
         metrics["linknyc_count_500m"] = len(link_rows)
         if link_rows:
             evidence.append({
@@ -1063,9 +1148,14 @@ class DirectQueryDataProvider(DataProvider):
                     "score_hint": 70,
                 })
 
-        restaurant_rows = self._fetch_radius_rows(con, "restaurant_inspections", "Latitude", "Longitude", latitude, longitude, radius_m, ["DBA", "INSPECTION DATE", "CRITICAL FLAG", "GRADE"])
+        restaurant_rows = self._fetch_radius_rows(con, "restaurant_inspections", "Latitude", "Longitude", latitude, longitude, radius_m, ["CAMIS", "DBA", "INSPECTION DATE", "CRITICAL FLAG", "GRADE"])
         recent_restaurants = [row for row in restaurant_rows if is_within_days(row.get("INSPECTION DATE"), time_window_days)]
-        metrics["restaurant_count_500m"] = len(recent_restaurants)
+        distinct_restaurant_ids = {
+            str(row.get("CAMIS") or row.get("DBA") or "").strip()
+            for row in recent_restaurants
+            if row.get("CAMIS") or row.get("DBA")
+        }
+        metrics["restaurant_count_500m"] = len(distinct_restaurant_ids)
         if recent_restaurants:
             critical = [row for row in recent_restaurants if str(row.get("CRITICAL FLAG") or "").strip().upper() == "CRITICAL"]
             metrics["restaurant_critical_rate_500m"] = round(len(critical) / max(1, len(recent_restaurants)), 3)
@@ -1073,10 +1163,20 @@ class DirectQueryDataProvider(DataProvider):
                 "evidence_id": "restaurants_500m",
                 "source": "NYC Restaurant Inspection Results",
                 "date": f"last {time_window_days} days in local extract",
-                "summary": f"{len(recent_restaurants)} restaurant inspection record(s) nearby with critical rate {metrics['restaurant_critical_rate_500m']:.0%}.",
+                "summary": f"{len(distinct_restaurant_ids)} distinct restaurant(s) across {len(recent_restaurants)} nearby inspection record(s), with critical rate {metrics['restaurant_critical_rate_500m']:.0%}.",
                 "record_ref": "radius_500m",
             })
-            for row in recent_restaurants[:10]:
+            representative_restaurants: list[dict[str, Any]] = []
+            seen_restaurant_ids: set[str] = set()
+            for row in recent_restaurants:
+                entity_id = str(row.get("CAMIS") or row.get("DBA") or "").strip()
+                if not entity_id or entity_id in seen_restaurant_ids:
+                    continue
+                seen_restaurant_ids.add(entity_id)
+                representative_restaurants.append(row)
+                if len(representative_restaurants) == 10:
+                    break
+            for row in representative_restaurants:
                 _grade = str(row.get("GRADE") or "").strip().upper()
                 _critical = str(row.get("CRITICAL FLAG") or "").strip().upper() == "CRITICAL"
                 _rhint = 80 if _grade == "A" else 60 if _grade == "B" else 40

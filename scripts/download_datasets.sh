@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# Download all 17 NYC Open Data datasets used by Urban Dossier.
+# Download all 18 NYC Open Data datasets used by Urban Dossier.
 # Usage: bash scripts/download_datasets.sh [output_dir]
 # Default output: ~/nyc_open_data/
 
 set -euo pipefail
 
 OUT="${1:-$HOME/nyc_open_data}"
-LIMIT=5000000  # 5M rows max per dataset (enough for all current datasets)
 
 echo "=== Urban Dossier Dataset Downloader ==="
 echo "Output directory: $OUT"
@@ -18,6 +17,7 @@ download() {
     local url="$1"
     local dest="$2"
     local name="$3"
+    local partial="${dest}.part"
 
     if [ -f "$dest" ]; then
         local size
@@ -29,13 +29,15 @@ download() {
     fi
 
     echo "[DOWN] $name ..."
-    if curl -L -o "$dest" --progress-bar --fail "$url"; then
+    rm -f "$partial"
+    if curl -L -o "$partial" --progress-bar --fail --retry 4 --retry-delay 5 "$url"; then
+        mv "$partial" "$dest"
         local size
         size=$(stat -c%s "$dest" 2>/dev/null || stat -f%z "$dest" 2>/dev/null || echo "?")
         echo "[DONE] $name — $(numfmt --to=iec "$size" 2>/dev/null || echo "${size} bytes")"
     else
         echo "[FAIL] $name — download failed, skipping"
-        rm -f "$dest"
+        rm -f "$partial"
     fi
 }
 
@@ -67,7 +69,8 @@ download \
 echo ""
 echo "--- Quality of Life ---"
 
-# 311 is huge (30M+ rows). Download with $limit to keep it manageable.
+# 311 is huge (30M+ rows). This downloads the complete current export so the
+# raw layer remains reproducible; downstream preprocessing performs filtering.
 download \
     "https://data.cityofnewyork.us/api/views/erm2-nwe9/rows.csv?accessType=DOWNLOAD" \
     "$OUT/quality_of_life/311_service_requests_2020_present.csv" \
@@ -77,17 +80,17 @@ echo ""
 echo "--- Transit ---"
 
 download \
-    "https://data.cityofnewyork.us/api/views/drex-xx56/rows.csv?accessType=DOWNLOAD" \
+    "https://data.ny.gov/api/views/i9wp-a4ja/rows.csv?accessType=DOWNLOAD" \
     "$OUT/transit/mta_subway_entrances_exits_2024.csv" \
     "Subway Entrances/Exits"
 
 download \
-    "https://data.cityofnewyork.us/api/views/qafz-7myz/rows.csv?accessType=DOWNLOAD" \
+    "https://data.cityofnewyork.us/api/views/t4f2-8md7/rows.csv?accessType=DOWNLOAD" \
     "$OUT/transit/bus_stop_shelters.csv" \
     "Bus Stop Shelters"
 
 download \
-    "https://data.cityofnewyork.us/api/views/7vsa-caz7/rows.csv?accessType=DOWNLOAD" \
+    "https://data.cityofnewyork.us/api/views/mzxg-pwib/rows.csv?accessType=DOWNLOAD" \
     "$OUT/transit/nyc_bike_routes.csv" \
     "Bike Routes"
 
@@ -105,7 +108,7 @@ download \
     "Restaurant Inspections"
 
 download \
-    "https://data.cityofnewyork.us/api/views/k2ya-ucmv/rows.csv?accessType=DOWNLOAD" \
+    "https://data.cityofnewyork.us/api/views/enfh-gkve/rows.csv?accessType=DOWNLOAD" \
     "$OUT/amenities/parks_properties.csv" \
     "Parks Properties"
 
@@ -120,7 +123,7 @@ download \
     "LinkNYC Kiosks"
 
 download \
-    "https://data.cityofnewyork.us/api/views/hjae-yuav/rows.csv?accessType=DOWNLOAD" \
+    "https://data.cityofnewyork.us/api/v3/views/i7jb-7jku/export.csv?accessType=DOWNLOAD" \
     "$OUT/amenities/public_toilets.csv" \
     "Public Toilets"
 
@@ -152,5 +155,6 @@ echo "=== Download complete ==="
 echo "Files saved to: $OUT"
 echo ""
 echo "Next steps:"
-echo "  1. Start NemoClaw and say: 'prepare my data in $OUT'"
-echo "  2. Or run the demo preprocessing: cd backend && python scripts/preprocess_safety_collisions.py"
+echo "  1. Export URBAN_DOSSIER_RAW_DATA_ROOT=$OUT"
+echo "  2. Build the required ready Parquet files; see backend/scripts/README.md"
+echo "  Note: the production urban-dossier Agent is analysis-only and does not ingest files."

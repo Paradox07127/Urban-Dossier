@@ -2,363 +2,239 @@
 
 ### *A Local is All You Need*
 
-NYC neighborhood analysis system. Click anywhere on the map and get a data-driven dossier covering safety, transit, amenities, and building conditions, scored against the city, trended over time, and narrated by an on-device LLM. Fully offline.
+Urban Dossier is a local-first NYC neighborhood analysis system. It combines
+deterministic scoring over NYC Open Data, an offline MapLibre interface, and a
+locally served Nemotron model for grounded narrative analysis.
 
-Built for Spark Hack NYC 2026 (NVIDIA hackathon).
+The project began at Spark Hack NYC 2026 and now supports multiple deployment
+profiles instead of assuming one NVIDIA machine.
 
-## Why DGX Spark
+## Deployment profiles
 
-Urban Dossier is built around three workloads that must run simultaneously on one host. Only the GB10 platform can host all three; the other obvious candidates fail on either memory or ecosystem.
+| Profile | Role | Inference | Data/vector path | Status |
+| --- | --- | --- | --- | --- |
+| `cuda-x86` | Primary production/workstation | Docker vLLM + Nemotron NVFP4 | DuckDB/Parquet; optional cuVS | Validated 2026-08-02 |
+| `dgx-spark` | GB10 deployment | DGX-specific vLLM launcher | RAPIDS/cuVS-capable | Preserved independently |
+| `mac` | Development and UI work | Optional MLX/llama.cpp endpoint | DuckDB + CPU vector index | Development profile |
+| `test` | CI/contract checks | Stub or disabled | Small fixtures | Planned baseline |
 
-### Hardware comparison
+Do not copy performance parameters between the x86 workstation and DGX Spark.
+They have different memory architecture, kernels, container paths, and tuning
+history.
 
-| Capability | RTX 5090 (32 GiB) | Mac Studio M4 Max (128 GiB unified) | **DGX Spark GB10 (128 GiB unified)** |
-|---|---|---|---|
-| NVFP4 inference (Blackwell) | Yes | No | Yes |
-| 128 GiB single-host memory | No | Yes | Yes |
-| CUDA + RAPIDS (cuDF / cuML / cuVS) | Yes (x86_64) | No (no CUDA) | Yes (aarch64) |
-| Result: hosts this project | No — runs out of memory | No — RAPIDS does not exist on Apple Silicon | Yes — only platform with all three |
+- x86 workstation: [`DEPLOY_WORKSTATION.md`](DEPLOY_WORKSTATION.md)
+- DGX Spark: [`DEPLOY_DGX_SPARK.md`](DEPLOY_DGX_SPARK.md)
+- Shared dataset contract: [`DATA_ARCHITECTURE.md`](DATA_ARCHITECTURE.md)
+- architecture and roadmap: [`PROJECT_PLAN.md`](PROJECT_PLAN.md)
 
-Mac Studio can serve open-weight models through MLX or llama.cpp, so model size alone is not the argument. The data path of this project depends on the RAPIDS stack (cuDF for city-wide aggregation, cuML for DBSCAN clustering, cuVS for the RAG vector index), and those libraries do not target Apple Silicon. The 5090 has full RAPIDS but does not have the memory to co-tenant the model, the embedding model, and the dataset working set.
+## Current x86 workstation stack
 
-### Three pillars Urban Dossier requires simultaneously
+```text
+Browser
+  -> Node / MapLibre (:3456)
+  -> FastAPI (:8090)
+       |-> DuckDB + Parquet/H3 deterministic analysis
+       |-> OpenClaw Gateway (:18789, loopback SSH forward)
+             -> urban-dossier dedicated agent
+             -> OpenShell inference route
+             -> vLLM (:8000)
+             -> NVIDIA Nemotron-3-Nano-30B-A3B-NVFP4
+```
 
-- **Nemotron-30B-A3B-NVFP4** weights (~15 GiB) plus KV/Mamba state — the reasoning model behind reports, the agent loop, and pattern naming.
-- **cuDF + cuVS dataset cache** (~30 GiB peak across 17 datasets) — city-wide aggregation, NTA rollups, and the RAG vector index live in GPU memory rather than spilling.
-- **Qwen3-Embedding-4B + reranker** resident (~10 GiB) — embeddings for `/api/agent/ask` retrieval, served from the same vLLM stack as Nemotron.
+Current validated runtime:
 
-Total resident floor: ~55 GiB. Peak during heavy aggregation: ~90 GiB. The 5090 fails on memory before the third pillar even loads. The Mac fails on the RAPIDS ecosystem the moment cuDF is imported.
+- NemoClaw `0.0.100`, OpenShell `0.0.85`, OpenClaw `2026.7.1`;
+- vLLM `0.23.0`, digest-pinned Docker image;
+- Node.js 24 and Python 3.12 environment managed with `uv`;
+- FastAPI runs as a user-level systemd service;
+- the production agent uses a minimal workspace, no Skills, and only the
+  `session_status` tool.
 
-### Key NVIDIA stack components in the data path
+The Gateway remains inside the NemoClaw-managed OpenShell container. FastAPI's
+persistent HTTP client removes per-turn CLI startup without bypassing the
+OpenShell security boundary.
 
-- **vLLM** serves both Nemotron-30B-A3B-NVFP4 (`:8000`) and Qwen3-Embedding-4B (`:8001`) — one inference stack, two model instances, no separate embedding daemon.
-- **cuVS** is the default vector backend for the RAG corpus (FAISS-CPU is fallback only).
-- **cuDF** runs in-process inside the FastAPI backend for heavy aggregation (city-wide overview, NTA rollups via `backend/scripts/build_overview_nta.py`).
-- **cuML DBSCAN** clusters incident data (collisions, EMS, fire) for hotspot detection.
-- **NemoClaw / OpenClaw** sandboxes the agent skill so tool dispatch can run with a least-privilege policy.
-- All five components share the GB10 LPDDR5X unified memory pool (273 GB/s, no PCIe transfer between host and accelerator).
+## Quick start: x86 workstation
 
-### Falsifiable evidence the judge can verify
-
-Run during the peak of the demo:
+The complete first-time procedure is in
+[`DEPLOY_WORKSTATION.md`](DEPLOY_WORKSTATION.md). For an already-onboarded
+workstation:
 
 ```bash
-nvidia-smi --query-gpu=memory.used --format=csv -l 5
+cd /mnt/data/Urban-Dossier
+
+# LLM only. The embedding service is optional and is not part of the current
+# frontend/backend critical path.
+docker compose \
+  --env-file /mnt/data/urban-dossier/runtime/gpu.env \
+  -f deploy/compose.gpu.yml up -d llm
+
+# Reconcile the dedicated agent and restore its Gateway forward/token.
+bash scripts/configure_openclaw_agent.sh
+
+# Start the persistent backend.
+systemctl --user enable --now urban-dossier-backend.service
+
+# Validate all active components.
+bash scripts/health-check.sh
 ```
 
-Expected: total GPU memory used > 60 GiB. Anything above 32 GiB proves a 5090 cannot host this configuration. Anything in the 60-90 GiB band proves all three pillars are co-resident, which is the entire point of the GB10 platform choice.
-
-### Data sovereignty (secondary, not the Spark Story)
-
-Urban Dossier ingests raw NYC parcel records, housing-code violations, and EMS dispatch logs. Inference, scoring, agent execution, and report generation all run on-device, which is the only acceptable posture for analysis that touches tenant-level housing data. This is a property of any local-inference deployment and is not by itself an argument for DGX Spark — the argument above is.
-
-## Quick Start
+Frontend development/build:
 
 ```bash
-git clone https://github.com/Paradox07127/Urban-Dossier.git
-cd Urban-Dossier
-bash scripts/download_datasets.sh
-bash scripts/vllm/start_vllm.sh --profile balanced &
-nemoclaw onboard && bash scripts/install_skills.sh
-cd backend && python -m venv .venv && source .venv/bin/activate \
-  && pip install -r requirements.txt \
-  && uvicorn urban_dossier_backend.app:app --host 0.0.0.0 --port 8090 --app-dir src &
-cd .. && npm install \
-  && (cd interactive-map-explorer && npm install && npm run build) \
-  && node server.js
-```
-
-Open `http://localhost:3456`.
-
-## How It Works
-
-```
-1. Download any NYC Open Data CSV
-2. Tell NemoClaw: "prepare my data in ~/nyc_open_data/safety/"
-3. NemoClaw skill auto-cleans, indexes, and scores the data
-4. Urban Dossier map instantly uses the processed data
-```
-
-You bring your own datasets, the agent prepares them, the map visualizes them. The NemoClaw `prep-data` skill handles any CSV without hand-written pipelines.
-
-The `backend/scripts/preprocess_*.py` files are quick-verification scripts for the demo datasets listed below. The NemoClaw skill replaces this entire step in real usage.
-
-## Service Dependency Chain
-
-```
-vLLM (:8000)  ←  Python Backend (:8090)  ←  Node Frontend (:3456)  →  Browser
-                        ↑
-                  NemoClaw Sandbox
-                  (OpenClaw Agent)
-```
-
-- **vLLM** serves the local Nemotron 30B model. All LLM calls (report narratives, agent chat) go through it.
-- **NemoClaw Sandbox** runs an OpenClaw agent inside a hardened sandbox. The frontend's "Deep Report", "Poster", and "Chat" features (`/api/agent/*`) require it.
-- **Python Backend** (FastAPI) handles data queries, scoring, and report generation. Calls vLLM for narratives and NemoClaw for agent features.
-- **Node Frontend** (Express) serves the React app, offline map tiles, and proxies API requests to the Python backend.
-
-## Deploy
-
-### Prerequisites
-
-- DGX Spark (or similar GPU machine) with NVIDIA drivers
-- Python 3.12+, Node.js 22+, Docker
-- NemoClaw CLI installed (`curl -fsSL https://www.nvidia.com/nemoclaw.sh | bash`)
-
-### Step 0 — Clone and download datasets
-
-```bash
-git clone https://github.com/Paradox07127/Urban-Dossier.git
-cd Urban-Dossier
-bash scripts/download_datasets.sh   # downloads all 17 datasets to ~/nyc_open_data/
-```
-
-### Step 1 — Inference server (vLLM + Nemotron 30B)
-
-```bash
-bash scripts/vllm/start_vllm.sh --profile balanced
-```
-
-See `scripts/vllm/README.md` for profile choices (demo / balanced / long-context) and the KV-cache math behind each.
-
-Verify: `curl -s http://localhost:8000/v1/models`
-
-### Step 2 — NemoClaw sandbox (OpenClaw agent)
-
-Required for Deep Report, Poster, and Chat features.
-
-```bash
-# First-time setup:
-nemoclaw onboard
-
-# Install skills into the sandbox:
-cp -r skills/nemoclaw-user-prep-data /path/to/nemoclaw/skills/
-cp -r skills/blocksense-report /path/to/nemoclaw/skills/
-cp -r skills/blocksense-poster /path/to/nemoclaw/skills/
-cd /path/to/nemoclaw/skills/nemoclaw-user-prep-data && bash bootstrap.sh
-cd /path/to/nemoclaw/skills/blocksense-report && bash bootstrap.sh
-cd /path/to/nemoclaw/skills/blocksense-poster && bash bootstrap.sh
-
-# Verify sandbox is running:
-nemoclaw status                 # nemoshell should show Phase: Ready
-nemoclaw nemoshell status       # detailed sandbox + policy info
-```
-
-### Step 3 — Python backend (:8090)
-
-```bash
-cd Urban-Dossier/backend
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn urban_dossier_backend.app:app \
-  --host 0.0.0.0 --port 8090 --log-level info \
-  --app-dir src
-
-# Verify:
-curl -s http://localhost:8090/api/health
-```
-
-### Step 4 — Node frontend + tile server (:3456)
-
-```bash
-cd Urban-Dossier
-
-# Install Node dependencies:
 npm install
-
-# Build the React frontend (first time or after code changes):
-cd interactive-map-explorer && npm install && npm run build && cd ..
-
-# Start the server:
+npm --prefix interactive-map-explorer install
+npm --prefix interactive-map-explorer run build
 node server.js
-
-# Verify:
-curl -s http://localhost:3456/api/health
 ```
 
-### Step 5 — Open browser
+Open `http://<workstation-lan-ip>:3456`. The service binds for LAN use; do not
+use `127.0.0.1` on a different computer unless an SSH local forward is active.
 
-Navigate to `http://<machine-ip>:3456`.
+## Data
 
-### Shutdown (reverse order)
+The repository catalog currently defines 18 source datasets across safety,
+transit, amenities, buildings, and PLUTO location reference data.
 
 ```bash
-# Stop Node frontend
-kill $(cat urban_dossier_node.pid)
-
-# Stop Python backend
-kill $(cat urban_dossier_backend.pid)
-
-# Stop NemoClaw sandbox (state persists across restarts)
-nemoclaw nemoshell destroy
-
-# vLLM runs as a system service on DGX Spark; leave it up
+# Workstation production location
+bash scripts/download_datasets.sh /mnt/data/urban-dossier/datasets/raw
 ```
 
-## Datasets
+Processed Parquet files used by the backend live under `data/ready/` in the
+repository. Raw downloads live outside Git on the second SSD. Dataset source
+IDs, URLs, filenames, and resume behavior are encoded in
+[`scripts/download_datasets.sh`](scripts/download_datasets.sh); semantic RAG
+metadata is in [`rag/catalog.json`](rag/catalog.json).
 
-We use 17 NYC Open Data datasets. One-command download:
+The overview map additionally needs NYC Planning's official NTA 2020 boundary
+and generated Gold score layers:
 
 ```bash
-bash scripts/download_datasets.sh          # all datasets → ~/nyc_open_data/
-bash scripts/download_datasets.sh /my/dir  # or custom path
+# Download and validate release 26B boundary + official metadata.
+bash scripts/maps/download_nta_2020.sh
+
+# Build the four H3 layers, then aggregate them into NTA display layers.
+.venv/bin/python backend/scripts/build_overview_tiles.py \
+  --ready-root data/ready --overview-root data/cache/overview
+.venv/bin/python backend/scripts/build_overview_nta.py \
+  --nta-path data/boundaries/nta_2020.geojson \
+  --overview-root data/cache/overview
 ```
 
-Already downloaded files are skipped. Full list below:
+The validated workstation snapshot contains 262 boundary features, four H3 r8
+layers with 1,171-1,232 cells, and four directly scored NTA layers with
+248-251 zones. The remaining 11-14 NTAs have no directly scored H3 cell and
+must be presented as no-data unless an explicitly marked imputation policy is
+introduced. All files under `data/` are reproducible local artifacts and are
+ignored by Git. See [`DATA_ARCHITECTURE.md`](DATA_ARCHITECTURE.md) for the
+publication contract and provenance rules.
 
-### Safety
+## Dedicated agent
 
-| Dataset | Filename | NYC Open Data |
-|---|---|---|
-| Motor Vehicle Collisions | `safety/motor_vehicle_collisions.csv` | [Motor Vehicle Collisions - Crashes](https://data.cityofnewyork.us/Public-Safety/Motor-Vehicle-Collisions-Crashes/h9gi-nx95) |
-| Rodent Inspections | `environment/rodent_inspections.csv` | [Rodent Inspection](https://data.cityofnewyork.us/Health/Rodent-Inspection/p937-wjvj) |
-| 311 Service Requests | `quality_of_life/311_service_requests_2020_present.csv` | [311 Service Requests from 2010 to Present](https://data.cityofnewyork.us/Social-Services/311-Service-Requests-from-2010-to-Present/erm2-nwe9) |
-| EMS Incident Dispatch | `safety/ems_incident_dispatch.csv` | [EMS Incident Dispatch Data](https://data.cityofnewyork.us/Public-Safety/EMS-Incident-Dispatch-Data/76xm-jjuj) |
-| Fire Incident Dispatch | `safety/fire_incident_dispatch.csv` | [Fire Incident Dispatch Data](https://data.cityofnewyork.us/Public-Safety/Fire-Incident-Dispatch-Data/8m42-w767) |
+The production `urban-dossier` agent receives already-computed score/evidence
+context from FastAPI and performs text analysis only. It does not query raw
+files or execute arbitrary tools.
 
-### Transit
+- declarative roster: [`deploy/openclaw/agents.yaml`](deploy/openclaw/agents.yaml)
+- minimal workspace: [`deploy/openclaw/urban-dossier/`](deploy/openclaw/urban-dossier/)
+- setup/recovery guide: [`deploy/openclaw/README.md`](deploy/openclaw/README.md)
+- reconciliation script: [`scripts/configure_openclaw_agent.sh`](scripts/configure_openclaw_agent.sh)
 
-| Dataset | Filename | NYC Open Data |
-|---|---|---|
-| Subway Entrances | `transit/mta_subway_entrances_exits_2024.csv` | [MTA Subway Entrances and Exits](https://data.cityofnewyork.us/Transportation/Subway-Entrances/drex-xx56) |
-| Bus Stop Shelters | `transit/bus_stop_shelters.csv` | [Bus Stop Shelters](https://data.cityofnewyork.us/Transportation/Bus-Stop-Shelters/qafz-7myz) |
-| Bike Routes | `transit/nyc_bike_routes.csv` | [New York City Bike Routes](https://data.cityofnewyork.us/Transportation/New-York-City-Bike-Routes/7vsa-caz7) |
-| Open Streets | `transit/open_streets_locations.csv` | [Open Streets Locations](https://data.cityofnewyork.us/Transportation/Open-Streets-Locations/uiay-nctu) |
+The broader skills under `skills/` remain development/legacy capabilities.
+They are deliberately not loaded by the production dedicated agent. Future
+data onboarding should be exposed as a separately authorized job or agent,
+not added back into the user-facing analysis prompt.
 
-### Amenities
+## vLLM workstation profile
 
-| Dataset | Filename | NYC Open Data |
-|---|---|---|
-| Restaurant Inspections | `amenities/dohmh_restaurant_inspections.csv` | [DOHMH New York City Restaurant Inspection Results](https://data.cityofnewyork.us/Health/DOHMH-New-York-City-Restaurant-Inspection-Results/43nn-pn8j) |
-| Parks Properties | `amenities/parks_properties.csv` | [Parks Properties](https://data.cityofnewyork.us/Recreation/Parks-Properties/k2ya-ucmv) |
-| Street Trees | `amenities/street_trees.csv` | [2015 Street Tree Census](https://data.cityofnewyork.us/Environment/2015-Street-Tree-Census-Tree-Data/uvpi-gqnh) |
-| LinkNYC Kiosks | `amenities/linknyc_kiosk_locations.csv` | [LinkNYC Kiosk Locations](https://data.cityofnewyork.us/Social-Services/LinkNYC-Kiosk-Locations/s4kf-3yrf) |
-| Public Toilets | `amenities/public_toilets.csv` | [Directory Of Toilets In Public Parks](https://data.cityofnewyork.us/Recreation/Directory-Of-Toilets-In-Public-Parks/hjae-yuav) |
-| Facilities Database | `amenities/facilities_database.csv` | [Facilities Database](https://data.cityofnewyork.us/City-Government/Facilities-Database/ji82-xba5) |
+The x86 production source of truth is
+[`deploy/compose.gpu.yml`](deploy/compose.gpu.yml), with overrides copied from
+[`deploy/gpu.env.example`](deploy/gpu.env.example).
 
-### Building
-
-| Dataset | Filename | NYC Open Data |
-|---|---|---|
-| Housing Violations | `buildings/housing_code_violations.csv` | [Housing Maintenance Code Violations](https://data.cityofnewyork.us/Housing-Development/Housing-Maintenance-Code-Violations/wvxf-dwi5) |
-| AEP Buildings | `buildings/buildings_aep.csv` | [AEP - Buildings](https://data.cityofnewyork.us/Housing-Development/AEP-Buildings/hcir-3275) |
-
-### Location Reference
-
-| Dataset | Filename | NYC Open Data |
-|---|---|---|
-| PLUTO | `buildings/pluto.csv` | [Primary Land Use Tax Lot Output (PLUTO)](https://data.cityofnewyork.us/City-Government/Primary-Land-Use-Tax-Lot-Output-PLUTO-/64uk-42ks) |
-
-### Directory structure
-
-```
-~/nyc_open_data/
-├── safety/
-│   ├── motor_vehicle_collisions.csv
-│   ├── ems_incident_dispatch.csv
-│   └── fire_incident_dispatch.csv
-├── environment/
-│   └── rodent_inspections.csv
-├── quality_of_life/
-│   └── 311_service_requests_2020_present.csv
-├── transit/
-│   ├── mta_subway_entrances_exits_2024.csv
-│   ├── bus_stop_shelters.csv
-│   ├── nyc_bike_routes.csv
-│   └── open_streets_locations.csv
-├── amenities/
-│   ├── dohmh_restaurant_inspections.csv
-│   ├── parks_properties.csv
-│   ├── street_trees.csv
-│   ├── linknyc_kiosk_locations.csv
-│   ├── public_toilets.csv
-│   └── facilities_database.csv
-└── buildings/
-    ├── housing_code_violations.csv
-    ├── buildings_aep.csv
-    └── pluto.csv
+```text
+LLM_GPU_MEMORY_UTILIZATION=0.45
+LLM_MAX_MODEL_LEN=32768
+LLM_MAX_NUM_SEQS=8
+LLM_MAX_BATCHED_TOKENS=32768
+LLM_KV_CACHE_DTYPE=fp8
+LLM_MOE_BACKEND=flashinfer_cutlass
 ```
 
-## NemoClaw Skills
+On the RTX PRO 6000 Blackwell workstation this uses about 40.8 GiB at steady
+state and leaves a 1,300,889-token KV cache. Reducing batched tokens to 8192
+lowered measured throughput, so 32768 remains the default. FP8 KV is retained
+for performance, but must be compared with BF16 on a fixed Urban Dossier answer
+quality set before a final production release.
 
-The `skills/` directory contains three agent skills for [NemoClaw](https://github.com/NVIDIA/NemoClaw) (OpenClaw). Copy them into NemoClaw's skills directory and the agent reads each `SKILL.md` and auto-triggers based on user input.
+The scripts in `scripts/vllm/` are the separate DGX Spark launch profile. See
+[`scripts/vllm/README.md`](scripts/vllm/README.md) before using them.
 
-### nemoclaw-user-prep-data
+## RAG and vector index status
 
-**The core skill.** User points at a directory of CSVs, the agent autonomously profiles, assesses quality (20+ auto-detectors), proposes a cleaning plan, waits for user confirmation, executes, and delivers a data dictionary.
+RAG is not currently on the dedicated agent's critical path. Its index adapter
+supports cuVS and FAISS:
 
+- `cuVS`: preferred for a validated CUDA deployment and larger indexes;
+- `faiss-cpu`: valid Mac/test/small-corpus fallback, not required merely to run
+  the current frontend, deterministic backend, or dedicated agent.
+
+The optional embedding vLLM service is declared in `deploy/compose.gpu.yml` but
+is intentionally not started by the default LLM-only command. See
+[`rag/README.md`](rag/README.md) before enabling it.
+
+## Architecture rules
+
+- React displays state; it must not own scoring rules.
+- Node serves assets, tiles, and proxy routes; it must not recompute scores.
+- FastAPI is the application boundary and source of analysis truth.
+- DuckDB/Parquet/H3 own deterministic metrics and evidence.
+- The LLM explains supplied evidence; it does not invent or recalculate scores.
+- OpenShell remains the policy/network isolation boundary for the agent.
+- GPU libraries are adapters. Domain behavior must remain testable without a
+  CUDA device.
+
+Known architectural follow-up: `/api/agent/chat` now uses the dedicated agent,
+but it should ultimately converge with the structured `/api/agent/ask`
+contract so session, trace, evidence, and artifacts have one public API.
+
+## Service endpoints
+
+| Service | Endpoint | Exposure |
+| --- | --- | --- |
+| Frontend/Node | `:3456` | LAN during development/demo |
+| FastAPI | `127.0.0.1:8090` | proxied by Node |
+| vLLM LLM | `:8000` | loopback/Docker bridge policy |
+| OpenClaw Gateway | `127.0.0.1:18789` | authenticated loopback forward |
+| vLLM embeddings | `127.0.0.1:8001` | optional, currently stopped |
+
+## Configuration
+
+- workstation backend runtime: [`deploy/backend.env.example`](deploy/backend.env.example)
+- workstation GPU runtime: [`deploy/gpu.env.example`](deploy/gpu.env.example)
+- portable backend development sample: [`backend/.env.example`](backend/.env.example)
+- persistent service: [`deploy/systemd/urban-dossier-backend.service`](deploy/systemd/urban-dossier-backend.service)
+
+Runtime secrets and downloaded model/data files belong under
+`/mnt/data/urban-dossier/`, not in Git. The OpenClaw Gateway bearer token is
+stored in a mode-`0600` runtime file and must never be copied into documentation
+or a systemd unit.
+
+## Verification
+
+```bash
+# Agent implementation tests
+PYTHONPATH=backend/src .venv/bin/pytest -q \
+  backend/tests/test_agent_service_nemoclaw.py
+
+# Authenticated OpenResponses route, without printing the token
+.venv/bin/python scripts/test_openclaw_gateway.py
+
+# Compose resolution
+docker compose \
+  --env-file /mnt/data/urban-dossier/runtime/gpu.env \
+  -f deploy/compose.gpu.yml config
 ```
-User: "Prepare my data in ~/nyc_open_data/safety/ for neighborhood analysis"
-
-Agent:
-  Phase 1 — Discovery: scans all CSVs, profiles with pandas (or GPU cuDF for large files)
-  Phase 2 — Assessment: filters by relevance, detects quality issues, proposes cleaning plan
-  >>> User confirms plan <<<
-  Phase 3 — Execution: cleans via clean.py, validates before/after, crash-safe logging
-  Phase 4 — Report: generates data dictionary, delivers summary
-```
-
-Supports 12 cleaning operations: `drop_column`, `rename_column`, `replace_values`, `cast_type`, `strip_whitespace`, `transform_case`, `drop_duplicates`, `drop_nulls`, `filter_rows`, `add_h3_index`, `transform_coords`, `polygon_centroid`.
-
-Output goes to `data/ready/`. The Urban Dossier backend auto-discovers and uses it.
-
-### blocksense-report
-
-Deep analysis report. Takes `/api/analyze-point` output, generates per-dimension LLM narratives (safety, transit, amenities, building), renders offline HTML + Markdown.
-
-```
-User: "Generate a report for this area"
-Agent: extracts segments → LLM narratives per dimension → renders report.html + report.md
-```
-
-### blocksense-poster
-
-Printable community flyer. Three templates: portrait (A4 handout), horizontal (community board), analytical (with charts). All offline-safe, no CDN.
-
-```
-User: "Create a poster for this neighborhood"
-Agent: extracts highlights → LLM headline → renders poster.html (print-ready)
-```
-
-## Architecture
-
-```
-urban-dossier/
-├── server.js                       # Node tile server + API proxy (:3456)
-├── public/                         # Static frontend + offline map tiles
-├── interactive-map-explorer/       # React + MapLibre + TailwindCSS
-│   └── dist/                       # Production build (served by server.js)
-├── backend/
-│   ├── src/urban_dossier_backend/  # FastAPI scoring engine (:8090)
-│   │   ├── app.py                  # API endpoints
-│   │   ├── service.py              # Core analysis pipeline
-│   │   ├── report.py               # Staged LLM report generation
-│   │   ├── agent_service.py        # NemoClaw/OpenClaw agent integration
-│   │   └── providers/              # Data access (DuckDB over Parquet)
-│   └── scripts/preprocess_*.py     # Demo data verification scripts
-├── skills/                         # NemoClaw agent skills
-│   ├── nemoclaw-user-prep-data/    # Data preparation pipeline
-│   ├── blocksense-report/          # Deep analysis reports
-│   └── blocksense-poster/          # Community flyers
-└── data/ready/                     # Processed Parquet (auto-discovered)
-```
-
-**Frontend** (React + MapLibre GL) → **Node Proxy** (Express, offline MBTiles, CORS) → **Backend** (FastAPI, DuckDB over Parquet, percentile-rank scoring, staged LLM narrative) → **vLLM** (Nemotron 30B) + **NemoClaw** (OpenClaw agent for deep reports).
-
-## Key Environment Variables
-
-| Variable | Default | What |
-|---|---|---|
-| `URBAN_DOSSIER_DATA_MODE` | `direct` | `direct` reads from `data/ready/` Parquet |
-| `URBAN_DOSSIER_READY_ROOT` | auto-detect | Path to preprocessed data |
-| `URBAN_DOSSIER_RAW_DATA_ROOT` | `~/nyc_open_data` | Raw CSV location |
-| `OPENAI_BASE_URL` | `http://localhost:8000/v1` | vLLM endpoint for LLM narratives |
-| `URBAN_DOSSIER_MODEL` | `auto` | Model name (auto-detects from vLLM) |
-| `URBAN_DOSSIER_USE_LLM` | `auto` | `0` runs template-only reports. **Diagnostic / CI-test only, not for production.** |
-| `URBAN_DOSSIER_AGENT_BACKEND` | `nemoclaw` | `scripts` bypasses the agent and calls scripts directly. **Diagnostic / CI-test only, not for production.** |
-| `URBAN_DOSSIER_AGENT_ENABLED` | `1` | `0` disables agent endpoints entirely |
-| `URBAN_DOSSIER_DEMO_TOKEN` | (empty) | If set, all API requests require this token in header |
-| `URBAN_DOSSIER_BACKEND_URL` | `http://127.0.0.1:8090` | Node proxy target (set in server.js) |
 
 ## License
 

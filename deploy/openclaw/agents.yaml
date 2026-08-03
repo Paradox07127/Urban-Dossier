@@ -1,0 +1,23 @@
+main:
+  tools:
+    profile: minimal
+    allow: [session_status]
+
+agents:
+  - id: urban-dossier
+    description: "Grounded text analysis for the Urban Dossier NYC application"
+    tools:
+      profile: minimal
+      allow: [session_status]
+      deny:
+        - group:fs
+        - group:runtime
+        - group:web
+        - group:messaging
+        - browser
+        - canvas
+        - sessions_spawn
+        - sessions_send
+        - agents_list
+        - subagents
+        - tool_search

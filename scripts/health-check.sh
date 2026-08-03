@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # health-check.sh — verify every Urban Dossier service is reachable and responsive.
-# Run after `bash scripts/vllm/start_vllm.sh` + uvicorn + node server.js are up.
+# Run after the selected vLLM profile, FastAPI, OpenClaw, and Node are up.
 # Exit code is 0 if all services pass, 1 otherwise.
 
 set -uo pipefail
 
 VLLM_HOST="${VLLM_HOST:-http://localhost:8000}"
-OLLAMA_HOST="${OLLAMA_HOST:-http://localhost:11434}"
+OPENCLAW_GATEWAY_HOST="${OPENCLAW_GATEWAY_HOST:-http://127.0.0.1:18789}"
+EMBEDDING_HOST="${EMBEDDING_HOST:-http://127.0.0.1:8001}"
 BACKEND_HOST="${BACKEND_HOST:-http://localhost:8090}"
 FRONTEND_HOST="${FRONTEND_HOST:-http://localhost:3456}"
+CHECK_EMBEDDINGS="${CHECK_EMBEDDINGS:-0}"
 
 PASS=0
 FAIL=0
@@ -35,10 +37,16 @@ echo "Urban Dossier — health check"
 echo "----------------------------"
 
 check "vLLM models"    "${VLLM_HOST}/v1/models"           "data"
-check "Ollama tags"    "${OLLAMA_HOST}/api/tags"          "models"
+check "OpenClaw health" "${OPENCLAW_GATEWAY_HOST}/health"  ""
 check "Backend health" "${BACKEND_HOST}/api/health"       "ok"
 check "Backend agent"  "${BACKEND_HOST}/api/agent/status" ""
 check "Frontend"       "${FRONTEND_HOST}/api/health"      ""
+
+if [[ "$CHECK_EMBEDDINGS" == "1" ]]; then
+  check "Embedding models" "${EMBEDDING_HOST}/v1/models" "data"
+else
+  printf "  [SKIP] %-30s %s\n" "Embedding models" "optional; set CHECK_EMBEDDINGS=1"
+fi
 
 echo "----------------------------"
 printf "Result: %d passed, %d failed\n" "$PASS" "$FAIL"

@@ -1,5 +1,16 @@
 # DGX Spark Deployment Checklist — Urban Dossier v2
 
+> **Independent deployment profile.** This GB10 checklist remains supported as
+> a separate hardware path. The currently validated x86 workstation deployment
+> is documented in [`DEPLOY_WORKSTATION.md`](DEPLOY_WORKSTATION.md). Do not copy
+> the workstation's `gpu-memory-utilization`, container digest, or x86 kernel
+> choice into this DGX profile without benchmarking on GB10.
+>
+> **Shared data contract.** DGX Spark no longer uses a separate flat/cleaned-CSV
+> architecture. It must publish the same Bronze/Silver/Gold/Serving layers and
+> manifests described in [`DATA_ARCHITECTURE.md`](DATA_ARCHITECTURE.md). GB10
+> unified memory changes execution choices, not dataset schemas or score rules.
+
 Target: NVIDIA GB10 Grace Blackwell (Acer Veriton GN100), ARM64, 128 GiB unified memory.
 Run-through this list end-to-end after `git pull` on the box. Each section is independently checkable; do not skip ordering.
 
@@ -13,7 +24,8 @@ Run-through this list end-to-end after `git pull` on the box. Each section is in
 - [ ] At least 80 GiB free in `/` (model + index + Parquet)
 - [ ] vLLM service NOT running yet (`pgrep -f vllm` empty), or already running on `:8000` (LLM) and `:8001` (embeddings) with the new profiles
 - [ ] No legacy `ollama` process running (`pgrep ollama` empty) — embeddings now go through vLLM, see Phase 1
-- [ ] `~/nyc_open_data/` exists with all 18 CSVs (`bash scripts/download_datasets.sh` if not)
+- [ ] `URBAN_DOSSIER_RAW_DATA_ROOT` points to a categorized raw root containing all 18 CSVs
+- [ ] Raw and ready manifests pass with 18/18 CSV and 44/44 Parquet files; do not reuse a workstation manifest
 - [ ] Branch is `main`, latest pulled
 - [ ] `git status` clean
 
@@ -30,10 +42,10 @@ Run-through this list end-to-end after `git pull` on the box. Each section is in
       `curl -s http://localhost:8001/v1/embeddings -H 'Content-Type: application/json' -d '{"model":"Qwen/Qwen3-Embedding-4B","input":"test"}' | jq '.data[0].embedding | length'`
 - [ ] Confirm the returned dimension matches `rag/embed.py`'s expected width before running ingest
 
-### cuVS (required — default GPU vector backend)
+### cuVS (optional for a future large vector corpus)
 - [ ] Try `pip install cuvs-cu13`
 - [ ] If the wheel is not available, try `conda install -c rapidsai cuvs` (RAPIDS conda channel)
-- [ ] If both fail, code falls back to FAISS-CPU but Spark Story score will suffer — fix this on hardware before demo. Do not ship the demo on FAISS-CPU.
+- [ ] For the current small catalog corpus, CPU exact/FAISS is valid; require cuVS only after a measured scale or latency benefit
 
 ### scipy (new, pattern detector)
 - [ ] `pip install 'scipy>=1.11'` — confirm ARM64 wheel installs cleanly (manylinux_2_28_aarch64 or source build)
@@ -48,6 +60,15 @@ Run-through this list end-to-end after `git pull` on the box. Each section is in
 - [ ] `bash skills/urban_dossier_analyst/bootstrap.sh` (creates `.venv`, installs openai/httpx/pydantic)
 - [ ] `cd interactive-map-explorer && npm install && npm run build && cd ..`
 - [ ] `npm install` (root, for tile server)
+
+### Shared data publication gate
+
+- [ ] Follow [`DATA_ARCHITECTURE.md`](DATA_ARCHITECTURE.md) to download and strictly audit all 18 raw datasets
+- [ ] Run all preprocessing specs into staging; do not create a duplicate `*.cleaned.csv` tree
+- [ ] Generate baselines, optimize Parquet, and validate 44/44 ready files
+- [ ] Atomically publish the validated directory to `URBAN_DOSSIER_READY_ROOT`
+- [ ] Confirm `/api/coverage` reports `provider_ready=true`, 13 core datasets, and `ready_baselines_available=true`
+- [ ] Treat `overview_ready=false` as a separate Gold artifact task, not as raw-download failure
 
 ---
 
@@ -65,12 +86,12 @@ Run-through this list end-to-end after `git pull` on the box. Each section is in
 
 ---
 
-## Phase 4 — RAG index build (one-time)
+## Phase 4 — Optional RAG index build
 
 - [ ] `PYTHONPATH=. python -m rag.ingest rag/catalog.json --index-dir rag/index/ 2>&1 | tee rag/ingest.log`
-- [ ] Wait ~30 seconds (75 chunks × 1 vLLM embedding call each, sequential against `:8001`)
-- [ ] Verify index files created: `ls rag/index/` should show the cuVS index files + metadata sidecar JSON (FAISS-CPU fallback writes `.faiss` instead — that path is a demo failure, not a pass)
-- [ ] **Verify cuVS was selected at runtime**: `grep "VectorIndex backend" rag/ingest.log` must show `cuvs` (not `faiss-cpu`). If it shows `faiss-cpu`, return to Phase 1 cuVS install before continuing.
+- [ ] Record ingest time for the current approximately 90 catalog chunks; batch embedding requests if the corpus grows
+- [ ] Verify index files and metadata sidecar were created for the selected backend
+- [ ] Record the selected backend; FAISS-CPU is acceptable for the current catalog, while cuVS requires a separate scale/latency benchmark
 - [ ] Smoke test: `PYTHONPATH=. python -c "from rag import retrieve; r = retrieve('rodent complaints', top_k=3); [print(x.dataset_id, x.score) for x in r]"`
 - [ ] Expected: at least one hit with `dataset_id == "safety_rodent"` ranking high
 
@@ -88,15 +109,18 @@ Run-through this list end-to-end after `git pull` on the box. Each section is in
 - [ ] Verify: `nemoclaw status` shows Phase: Ready
 - [ ] Verify: `nemoclaw nemoshell status` lists all skills including `urban-dossier-analyst`
 
-> Note (in-process cuDF): cuDF is loaded directly inside the backend Python venv (`import cudf`); the legacy Docker HTTP service has been removed. No separate `docker compose up cudf` step is required and no port needs to be opened for it.
+> Data execution note: DuckDB is the shared reference serving path. Keep cuDF
+> outside the critical FastAPI environment until a GB10 benchmark shows a
+> benefit for the actual query. RAPIDS may run as an isolated batch adapter;
+> its availability is not a data-correctness requirement.
 
 ---
 
 ## Phase 6 — Backend (FastAPI)
 
 - [ ] `cd backend`
-- [ ] `URBAN_DOSSIER_GPU_ACCEL=1 uvicorn urban_dossier_backend.app:app --host 0.0.0.0 --port 8090 --log-level info --app-dir src &`
-- [ ] Verify: `curl -s http://localhost:8090/api/health` returns 200, `gpu.cuda_available: true`
+- [ ] Start Uvicorn with explicit `URBAN_DOSSIER_RAW_DATA_ROOT` and `URBAN_DOSSIER_READY_ROOT`; do not require `URBAN_DOSSIER_GPU_ACCEL=1`
+- [ ] Verify: `/api/health` returns 200 and `provider_ready: true`; GPU availability is reported separately and may be false for the reference DuckDB environment
 - [ ] Smoke test pattern detector (calls into Nemotron + scipy): hit `POST /api/analyze-point` with a known dense Brooklyn point — check log for "Pattern detector" entries, no exceptions
 - [ ] Smoke test agent endpoint: `curl -X POST http://localhost:8090/api/agent/ask -H 'Content-Type: application/json' -d '{"message":"What datasets cover noise complaints?","max_iterations":3}'`
 - [ ] Expected: response includes `tools_called` with `retrieve_dataset_docs` invocation, `evidence` cites at least one dataset
@@ -139,7 +163,7 @@ On Mac:
 The following three measurements are required. Capture the raw numbers, paste them into the README "Why DGX Spark" section as falsifiable evidence, and link the raw log file from `docs/perf-baseline-YYYY-MM-DD.md`.
 
 - [ ] **vLLM Nemotron P50 latency on a 256-token completion.** Issue 30 sequential `chat/completions` calls with `max_tokens=256` against `:8000`, sort the wall-clock times, record the P50. Log file: `docs/perf/vllm-256tok-p50.log`.
-- [ ] **cuML DBSCAN throughput on 100K collisions.** Run the city-wide hotspot job over a 100,000-row collisions slice, time the DBSCAN call only (not loading), record rows-per-second. Log file: `docs/perf/cuml-dbscan-100k.log`.
+- [ ] **Data-engine comparison on published Parquet.** Compare DuckDB and the candidate RAPIDS path on the same projection/filter/groupby workload, including cold and warm latency. Log file: `docs/perf/data-engine-comparison.log`.
 - [ ] **`nvidia-smi` GPU memory peak during a full `agent_loop` run with all 8 tools active.** Start `nvidia-smi --query-gpu=memory.used --format=csv -l 1 > docs/perf/nvsmi-agent-peak.log &`, run an agent query that exercises every tool (`score_neighborhood`, `compare_neighborhoods`, `query_dataset`, `find_similar_neighborhoods`, `walking_isochrone`, `simulate_intervention`, `search_address`, `retrieve_dataset_docs`), stop the logger, record the maximum value. This is the falsifiability number cited in README "Why DGX Spark".
 - [ ] Save outputs to `docs/perf-baseline-YYYY-MM-DD.md` and update README with the three captured numbers.
 
@@ -170,7 +194,7 @@ The following three measurements are required. Capture the raw numbers, paste th
 
 ## Documentation tasks (after deployment confirms working)
 
-- [ ] Fix README dataset count: 17 → 18 (preprocess_common.SPECS is the truth)
+- [x] Dataset count and the shared 18-source contract are documented in `DATA_ARCHITECTURE.md`
 - [ ] Add a `## Master Agent Skill` section to README pointing to `skills/urban_dossier_analyst/SKILL.md`
 - [ ] Add a `## RAG Pipeline` section pointing to `rag/README.md`
 - [ ] Update `## Quick Start` to include the second vLLM instance (`--profile embedding`) on `:8001`

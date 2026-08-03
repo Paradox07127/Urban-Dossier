@@ -75,6 +75,9 @@ const style: maplibregl.StyleSpecification = {
       tiles: [`${window.location.origin}/tiles/{z}/{x}/{y}.pbf`],
       minzoom: 0,
       maxzoom: 14,
+      attribution:
+        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a> ' +
+        '&copy; <a href="https://openmaptiles.org/">OpenMapTiles</a>',
     },
     highlightArea: {
       type: 'geojson',
@@ -197,7 +200,7 @@ const style: maplibregl.StyleSpecification = {
       'source-layer': 'transportation',
       filter: ['==', 'class', 'motorway'],
       layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': '#ffa35c', 'line-width': { stops: [[5, 0.5], [14, 6], [18, 12]] } },
+      paint: { 'line-color': '#ffa35c', 'line-width': ['interpolate', ['linear'], ['zoom'], 5, 0.5, 14, 6, 18, 12] },
     },
     {
       id: 'road-primary',
@@ -206,7 +209,7 @@ const style: maplibregl.StyleSpecification = {
       'source-layer': 'transportation',
       filter: ['in', 'class', 'trunk', 'primary'],
       layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': '#ffd080', 'line-width': { stops: [[5, 0.3], [14, 4], [18, 10]] } },
+      paint: { 'line-color': '#ffd080', 'line-width': ['interpolate', ['linear'], ['zoom'], 5, 0.3, 14, 4, 18, 10] },
     },
     {
       id: 'road-secondary',
@@ -215,7 +218,7 @@ const style: maplibregl.StyleSpecification = {
       'source-layer': 'transportation',
       filter: ['==', 'class', 'secondary'],
       layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': '#f0e8c0', 'line-width': { stops: [[8, 0.3], [14, 3], [18, 8]] } },
+      paint: { 'line-color': '#f0e8c0', 'line-width': ['interpolate', ['linear'], ['zoom'], 8, 0.3, 14, 3, 18, 8] },
     },
     {
       id: 'road-minor',
@@ -225,7 +228,7 @@ const style: maplibregl.StyleSpecification = {
       filter: ['in', 'class', 'minor', 'service', 'street'],
       minzoom: 12,
       layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': '#ffffff', 'line-width': { stops: [[12, 0.5], [14, 2], [18, 6]] } },
+      paint: { 'line-color': '#ffffff', 'line-width': ['interpolate', ['linear'], ['zoom'], 12, 0.5, 14, 2, 18, 6] },
     },
     {
       id: 'road-path',

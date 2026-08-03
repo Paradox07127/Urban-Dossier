@@ -1,0 +1,122 @@
+# GPU inference and vector-index profiles for the x86_64 workstation.
+#
+# Usage:
+#   cp deploy/gpu.env.example /mnt/data/urban-dossier/runtime/gpu.env
+#   docker compose --env-file /mnt/data/urban-dossier/runtime/gpu.env \
+#     -f deploy/compose.gpu.yml --profile inference up -d
+#
+# Images are pinned to the digests validated on 2026-08-01.  Refreshing an
+# image is an intentional maintenance operation: update the tag, pull it,
+# validate it on the GPU, then replace the digest here.
+name: urban-dossier
+
+x-gpu: &gpu
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+
+x-hf-cache: &hf-cache ${URBAN_DOSSIER_STATE_ROOT:-/mnt/data/urban-dossier}/hf-cache:/root/.cache/huggingface
+
+services:
+  llm:
+    image: vllm/vllm-openai@sha256:6d8429e38e3747723ca07ee1b17972e09bb9c51c4032b266f24fb1cc3b22ed8f
+    profiles: [inference]
+    restart: unless-stopped
+    # OpenShell rewrites the sandbox's inference.local route to
+    # host.openshell.internal:8000. Host networking makes that route reachable
+    # while the host nftables policy limits :8000 to loopback and Docker
+    # bridge source addresses only.
+    network_mode: host
+    ipc: host
+    shm_size: 16g
+    environment:
+      HF_HOME: /root/.cache/huggingface
+    volumes:
+      - ${URBAN_DOSSIER_STATE_ROOT:-/mnt/data/urban-dossier}/models/llm:/model:ro
+      - *hf-cache
+    entrypoint: [vllm]
+    command:
+      - serve
+      - /model
+      - --served-model-name
+      - ${LLM_SERVED_NAME:-nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4}
+      - --host
+      - 0.0.0.0
+      - --port
+      - ${LLM_PORT:-8000}
+      - --trust-remote-code
+      - --gpu-memory-utilization
+      - ${LLM_GPU_MEMORY_UTILIZATION:-0.45}
+      - --max-model-len
+      - ${LLM_MAX_MODEL_LEN:-32768}
+      - --max-num-seqs
+      - ${LLM_MAX_NUM_SEQS:-8}
+      - --max-num-batched-tokens
+      - ${LLM_MAX_BATCHED_TOKENS:-32768}
+      - --kv-cache-dtype
+      - ${LLM_KV_CACHE_DTYPE:-fp8}
+      - --enable-prefix-caching
+      - --enable-chunked-prefill
+      - --mamba-ssm-cache-dtype
+      - float32
+      # vLLM 0.23 replaces the legacy VLLM_USE_FLASHINFER_MOE_FP4 and
+      # VLLM_FLASHINFER_MOE_BACKEND variables with this CLI option.  CUTLASS is
+      # the supported throughput backend for this Nemotron-H checkpoint.  The
+      # SM12x b12x backend rejects its no-act-and-mul MLP layout in vLLM 0.23.
+      - --moe-backend
+      - ${LLM_MOE_BACKEND:-flashinfer_cutlass}
+      - --reasoning-parser-plugin
+      - /model/nano_v3_reasoning_parser.py
+      - --reasoning-parser
+      - nano_v3
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - qwen3_coder
+    <<: *gpu
+
+  embeddings:
+    image: vllm/vllm-openai@sha256:6d8429e38e3747723ca07ee1b17972e09bb9c51c4032b266f24fb1cc3b22ed8f
+    profiles: [inference]
+    restart: unless-stopped
+    ipc: host
+    shm_size: 8g
+    ports:
+      - 127.0.0.1:${EMBEDDING_PORT:-8001}:8001
+    environment:
+      HF_HOME: /root/.cache/huggingface
+    volumes:
+      - ${URBAN_DOSSIER_STATE_ROOT:-/mnt/data/urban-dossier}/models/embedding:/model:ro
+      - *hf-cache
+    entrypoint: [vllm]
+    command:
+      - serve
+      - /model
+      - --runner
+      - pooling
+      - --served-model-name
+      - ${EMBEDDING_SERVED_NAME:-Qwen/Qwen3-Embedding-4B}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8001"
+      - --trust-remote-code
+      - --gpu-memory-utilization
+      - ${EMBEDDING_GPU_MEMORY_UTILIZATION:-0.15}
+    <<: *gpu
+
+  rapids-smoke:
+    image: rapidsai/base@sha256:c6c8424ecefd77bdf3d4058b42175cdf9f005d3ff3d58f0b8ce18b779ed4c895
+    profiles: [gpu-index]
+    restart: "no"
+    entrypoint: [python]
+    command:
+      - -c
+      - >-
+        import cupy, cudf, cuvs;
+        print({"gpu": cupy.cuda.runtime.getDeviceProperties(0)["name"].decode(),
+        "cudf": cudf.__version__, "cuvs": cuvs.__version__})
+    <<: *gpu

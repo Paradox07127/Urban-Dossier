@@ -664,7 +664,7 @@ function loadNtaBoundaries() {
     const geojson = JSON.parse(raw);
     const byCode = new Map();
     for (const feat of geojson.features || []) {
-      const code = feat.properties?.nta2020;
+      const code = feat.properties?.NTA2020 || feat.properties?.nta2020;
       if (code) byCode.set(code, feat);
     }
     _ntaBoundaryCache = byCode;
@@ -702,8 +702,8 @@ app.get('/api/overview/nta-geojson', (req, res) => {
         type: 'Feature',
         properties: {
           nta_code: zone.nta_code,
-          nta_name: zone.nta_name || boundary.properties?.ntaname || '',
-          borough: zone.borough || boundary.properties?.boroname || '',
+          nta_name: zone.nta_name || boundary.properties?.NTAName || boundary.properties?.ntaname || '',
+          borough: zone.borough || boundary.properties?.BoroName || boundary.properties?.boroname || '',
           nta_type: zone.nta_type || '0',
           score: raw,
           display_score: Math.max(0, Math.min(100, Math.round(raw))),

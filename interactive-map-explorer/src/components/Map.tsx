@@ -1,5 +1,5 @@
 import { useEffect, useRef, type MutableRefObject } from 'react';
-import maplibregl, { GeoJSONSource, Map as MapLibreMap, MapGeoJSONFeature } from 'maplibre-gl';
+import maplibregl, { GeoJSONSource, Map as MapLibreMap } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Location } from '../types';
 
@@ -82,6 +82,9 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       tiles: [`${window.location.origin}/tiles/{z}/{x}/{y}.pbf`],
       minzoom: 0,
       maxzoom: 14,
+      attribution:
+        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a> ' +
+        '&copy; <a href="https://openmaptiles.org/">OpenMapTiles</a>',
     },
     renderedBuildings: {
       type: 'geojson',
@@ -264,7 +267,7 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: {
         'line-color': '#8c8c8c',
-        'line-width': { stops: [[5, 0.5], [14, 6], [18, 12]] },
+        'line-width': ['interpolate', ['linear'], ['zoom'], 5, 0.5, 14, 6, 18, 12],
       },
     },
     {
@@ -276,7 +279,7 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: {
         'line-color': '#a8a8a8',
-        'line-width': { stops: [[5, 0.3], [14, 4], [18, 10]] },
+        'line-width': ['interpolate', ['linear'], ['zoom'], 5, 0.3, 14, 4, 18, 10],
       },
     },
     {
@@ -288,7 +291,7 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: {
         'line-color': '#c0c0c0',
-        'line-width': { stops: [[8, 0.3], [14, 3], [18, 8]] },
+        'line-width': ['interpolate', ['linear'], ['zoom'], 8, 0.3, 14, 3, 18, 8],
       },
     },
     {
@@ -301,7 +304,7 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: {
         'line-color': '#ffffff',
-        'line-width': { stops: [[12, 0.5], [14, 2], [18, 6]] },
+        'line-width': ['interpolate', ['linear'], ['zoom'], 12, 0.5, 14, 2, 18, 6],
       },
     },
     {
@@ -327,7 +330,7 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       layout: {
         'symbol-placement': 'line',
         'text-field': '{name}',
-        'text-size': { stops: [[14, 10], [18, 14]] },
+        'text-size': ['interpolate', ['linear'], ['zoom'], 14, 10, 18, 14],
         'text-font': ['Open Sans Regular'],
         'text-max-angle': 30,
       },
@@ -344,7 +347,7 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       'source-layer': 'water_name',
       layout: {
         'text-field': '{name}',
-        'text-size': { stops: [[3, 10], [14, 16]] },
+        'text-size': ['interpolate', ['linear'], ['zoom'], 3, 10, 14, 16],
         'text-font': ['Open Sans Regular'],
       },
       paint: {
@@ -397,7 +400,7 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       filter: ['==', 'class', 'city'],
       layout: {
         'text-field': '{name}',
-        'text-size': { stops: [[5, 14], [14, 24]] },
+        'text-size': ['interpolate', ['linear'], ['zoom'], 5, 14, 14, 24],
         'text-font': ['Open Sans Bold'],
       },
       paint: {
@@ -635,12 +638,13 @@ function renderVisibleBuildings(
   if (hasOverlay) buildZoneIndex(overlayGeoJSON);
 
   for (const feature of features) {
-    if (!feature.geometry || !isPolygonGeometry(feature)) continue;
+    const geometry = feature.geometry;
+    if (!geometry || (geometry.type !== 'Polygon' && geometry.type !== 'MultiPolygon')) continue;
 
     // Fast dedup + center: compute from outer ring only
-    const outerRing = feature.geometry.type === 'Polygon'
-        ? feature.geometry.coordinates[0]
-        : feature.geometry.coordinates[0][0];
+    const outerRing = geometry.type === 'Polygon'
+        ? geometry.coordinates[0]
+        : geometry.coordinates[0][0];
     const signature = `${outerRing[0][0]}:${outerRing[0][1]}:${outerRing.length}`;
     if (seen.has(signature)) continue;
     seen.add(signature);
@@ -685,7 +689,7 @@ function renderVisibleBuildings(
         render_color: colors.fill,
         outline_color: colors.outline,
       },
-      geometry: feature.geometry,
+      geometry,
     });
   }
 
@@ -773,7 +777,7 @@ function updateHotspotOverlay(map: MapLibreMap, hotspots: HotspotData[]) {
   const features = hotspots.map((hs) => ({
     type: 'Feature' as const,
     properties: { incident_count: hs.incident_count, dominant_type: hs.dominant_type },
-    geometry: createCirclePolygon([hs.center_lon, hs.center_lat], Math.max(hs.radius_m, 40) / 1000).geometry,
+    geometry: createCirclePolygon([hs.center_lon, hs.center_lat], Math.max(hs.radius_m, 40) / 1000),
   }));
   source.setData({ type: 'FeatureCollection', features });
 }
@@ -880,12 +884,6 @@ function updatePostMarkers(
 
     markerStore.current.push(marker);
   });
-}
-
-function isPolygonGeometry(
-  feature: MapGeoJSONFeature,
-): feature is MapGeoJSONFeature & { geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon } {
-  return feature.geometry.type === 'Polygon' || feature.geometry.type === 'MultiPolygon';
 }
 
 function getGeometryCenter(geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon): Coordinate {

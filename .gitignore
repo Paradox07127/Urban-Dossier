@@ -1,14 +1,41 @@
+# Python environments and caches
 __pycache__/
-*.pyc
-.DS_Store
-osm-2020-02-10-v3.11_new-york_new-york.mbtiles
-map_cache/
-node_modules/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 .venv/
+
+# Node dependencies and build output
+node_modules/
+dist/
+
+# Local environment files and secrets; examples remain versioned
+.env
+.env.*
+!.env.example
+!**/.env.example
+
+# Browser/test runner artifacts
+.playwright-cli/
+playwright-report/
+test-results/
+
+# Generated/downloaded datasets, map caches, and runtime output
+# data/ includes ready Parquet, official boundary downloads, and overview cache.
 data/
+map_cache/
+*.mbtiles
 *.pid
 *.log
+
+# Editor/assistant-local state
+.DS_Store
 .claude/
+
+# Superseded generated planning documents
 blocksense-v*.md
 urban-dossier-v*.md
 urban-dossier-ssh-datasets.md

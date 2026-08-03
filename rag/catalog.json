@@ -2,7 +2,7 @@
   {
     "dataset_id": "safety_311",
     "dataset_name": "311 Service Requests from 2010 to Present",
-    "description": "Citywide non-emergency service requests; the demo pipeline filters to RODENT and SANITATION CONDITION complaints under the safety vertical.",
+    "description": "Citywide non-emergency service requests; the demo pipeline filters to RODENT, SANITATION CONDITION, and UNSANITARY CONDITION complaints under the safety vertical.",
     "primary_key": "Unique Key",
     "core_columns": [
       {"name": "Unique Key", "type": "BIGINT", "description": "Globally unique request id."},
@@ -29,7 +29,7 @@
       {"intent": "top h3 cells by sanitation complaint density", "sql": "SELECT h3_r9, raw_count, score FROM read_parquet('safety/311_scores_h3.parquet') ORDER BY raw_count DESC LIMIT 20"}
     ],
     "categories": ["safety", "quality_of_life"],
-    "row_count_estimate": "~30M total, ~5M after rodent/sanitation filter",
+    "row_count_estimate": "~22M in the 2020-present snapshot, ~975K after the current rodent/sanitation filter",
     "update_cadence": "daily",
     "source_url": "https://data.cityofnewyork.us/Social-Services/311-Service-Requests-from-2010-to-Present/erm2-nwe9"
   },
@@ -173,9 +173,9 @@
       {"intent": "h3 cells with subway entrances but low bus shelter coverage", "sql": "SELECT s.h3_r9, s.raw_count AS subway, coalesce(b.raw_count, 0) AS bus FROM read_parquet('transit/subway_scores_h3.parquet') s LEFT JOIN read_parquet('transit/bus_scores_h3.parquet') b USING(h3_r9) WHERE s.raw_count >= 3 AND coalesce(b.raw_count, 0) = 0"}
     ],
     "categories": ["transit"],
-    "row_count_estimate": "~1.9K entrances",
+    "row_count_estimate": "~2.1K entrances",
     "update_cadence": "annual",
-    "source_url": "https://data.cityofnewyork.us/Transportation/Subway-Entrances/drex-xx56"
+    "source_url": "https://data.ny.gov/Transportation/MTA-Subway-Entrances-and-Exits-2024/i9wp-a4ja"
   },
   {
     "dataset_id": "transit_bus",
@@ -204,7 +204,7 @@
     "categories": ["transit"],
     "row_count_estimate": "~3.5K shelters",
     "update_cadence": "monthly",
-    "source_url": "https://data.cityofnewyork.us/Transportation/Bus-Stop-Shelters/qafz-7myz"
+    "source_url": "https://data.cityofnewyork.us/d/t4f2-8md7"
   },
   {
     "dataset_id": "transit_bike_routes",
@@ -212,7 +212,7 @@
     "description": "DOT bike lane geometry as WKT MULTILINESTRING. Pipeline extracts vertices and counts distinct segments per H3 cell.",
     "primary_key": "segmentid",
     "core_columns": [
-      {"name": "segmentid", "type": "BIGINT", "description": "DOT internal segment id."},
+      {"name": "segmentid", "type": "VARCHAR", "description": "DOT internal segment id; treat as an opaque identifier."},
       {"name": "the_geom", "type": "VARCHAR", "description": "WKT MULTILINESTRING geometry. Lowercase column name."},
       {"name": "street", "type": "VARCHAR", "description": "Street name."},
       {"name": "boro", "type": "VARCHAR", "description": "Borough - abbreviated column name 'boro'."},
@@ -222,7 +222,8 @@
       "Geometry is WKT, not lat/lon points. Pipeline uses regex to extract coordinate pairs - no shapely dependency.",
       "WKT order is 'lon lat' (per OGC), not 'lat lon'. Easy to swap.",
       "Per-cell count uses distinct (h3_r9, record_index) pairs to avoid thick polylines inflating density.",
-      "Column name is lowercase 'the_geom'; the open_streets sibling uses 'The_Geom' with capitals."
+      "Column name is lowercase 'the_geom'; the open_streets sibling uses 'The_Geom' with capitals.",
+      "The ready-layer pipeline keeps only status='Current'; retired segments remain only in the immutable raw snapshot."
     ],
     "join_keys": [
       {"to_dataset": "transit_open_streets", "via_columns": ["h3_r9"], "method": "h3_index_r9"}
@@ -231,9 +232,9 @@
       {"intent": "bike route density by borough", "sql": "SELECT boro, count(DISTINCT segmentid) FROM transit_bike_routes_indexed GROUP BY 1"}
     ],
     "categories": ["transit"],
-    "row_count_estimate": "~20K segments",
+    "row_count_estimate": "~29.7K raw segments, ~24.5K current segments",
     "update_cadence": "quarterly",
-    "source_url": "https://data.cityofnewyork.us/Transportation/New-York-City-Bike-Routes/7vsa-caz7"
+    "source_url": "https://data.cityofnewyork.us/d/mzxg-pwib"
   },
   {
     "dataset_id": "transit_open_streets",
@@ -283,7 +284,8 @@
       "CRITICAL FLAG values include 'Critical', 'Not Critical', 'Not Applicable'. Match case-insensitively after upper().",
       "BORO is truncated; do not look for BOROUGH.",
       "The same restaurant (CAMIS) appears in many rows (one per inspection). To count distinct restaurants, use COUNT(DISTINCT CAMIS).",
-      "Score is a 50/50 blend of percentile-rank abundance and inverse-percentile-rank critical_rate."
+      "Ready-layer raw_count is COUNT(DISTINCT CAMIS), while inspection_count preserves the inspection-record denominator used for critical_rate.",
+      "Score is a 50/50 blend of percentile-rank distinct-restaurant abundance and inverse-percentile-rank critical_rate."
     ],
     "join_keys": [
       {"to_dataset": "location_pluto", "via_columns": ["Latitude", "Longitude"], "method": "h3_index_r9"}
@@ -292,7 +294,7 @@
       {"intent": "best-scored amenity h3 cells (high access AND low critical rate)", "sql": "SELECT h3_r9, raw_count, critical_rate, score FROM read_parquet('amenities/restaurants_scores_h3.parquet') ORDER BY score DESC LIMIT 20"}
     ],
     "categories": ["amenities", "health"],
-    "row_count_estimate": "~250K inspections, ~28K restaurants",
+    "row_count_estimate": "~295K raw inspection records, ~31K restaurants",
     "update_cadence": "daily",
     "source_url": "https://data.cityofnewyork.us/Health/DOHMH-New-York-City-Restaurant-Inspection-Results/43nn-pn8j"
   },
@@ -306,12 +308,12 @@
       {"name": "ACRES", "type": "DOUBLE", "description": "Total acreage. Renamed to 'value' in pipeline."},
       {"name": "ZIPCODE", "type": "VARCHAR", "description": "ZIP - single token, all caps."},
       {"name": "BOROUGH", "type": "VARCHAR", "description": "Full borough name."},
-      {"name": "WATERFRONT", "type": "VARCHAR", "description": "Yes/No flag."}
+      {"name": "WATERFRONT", "type": "BOOLEAN", "description": "Source checkbox indicating waterfront property."}
     ],
     "gotchas": [
       "v3.7.8 fix: score is computed from total ACRES per ZIP, not from record count. Counting park polygons under-weights large parks.",
       "Some parks span multiple ZIPs but the source row only lists one - under-counts edge ZIPs.",
-      "WATERFRONT is a free text Y/N; do not assume boolean."
+      "WATERFRONT is currently exported as a checkbox/boolean; tolerate historical Y/N strings when reading archived snapshots."
     ],
     "join_keys": [
       {"to_dataset": "amenities_trees", "via_columns": ["ZIPCODE"], "method": "zip_join"}
@@ -322,7 +324,7 @@
     "categories": ["amenities", "environment"],
     "row_count_estimate": "~2K properties",
     "update_cadence": "monthly",
-    "source_url": "https://data.cityofnewyork.us/Recreation/Parks-Properties/k2ya-ucmv"
+    "source_url": "https://data.cityofnewyork.us/Recreation/Parks-Properties/enfh-gkve"
   },
   {
     "dataset_id": "amenities_trees",
@@ -342,7 +344,7 @@
     "gotchas": [
       "Snapshot dataset from 2015 - no longer updated. Use as a baseline, not a real-time signal.",
       "All column names are lowercase, unlike most other NYC OD tables.",
-      "Status='Dead' or 'Stump' rows are still counted in raw_count; filter to status='Alive' for usable canopy."
+      "The ready-layer pipeline filters to status='Alive'; Dead and Stump rows remain only in the immutable raw snapshot."
     ],
     "join_keys": [
       {"to_dataset": "amenities_parks", "via_columns": ["postcode"], "method": "zip_join"}
@@ -371,7 +373,7 @@
     ],
     "gotchas": [
       "Multiple column-name conventions ('Site ID', 'Street Address') - quote them in SQL.",
-      "Installation Status='Live' is the only status that should count toward 'access'; pipeline does not filter by default."
+      "The ready-layer pipeline keeps only Installation Status='Live'; non-live rows remain only in the immutable raw snapshot."
     ],
     "join_keys": [
       {"to_dataset": "transit_subway", "via_columns": ["Latitude", "Longitude"], "method": "h3_index_r9"}
@@ -386,18 +388,18 @@
   },
   {
     "dataset_id": "amenities_toilets",
-    "dataset_name": "Directory Of Toilets In Public Parks",
-    "description": "Parks Department public toilet directory.",
+    "dataset_name": "Public Restrooms",
+    "description": "Citywide directory of public restrooms compiled from multiple agencies and organizations.",
     "primary_key": "Facility Name + Latitude",
     "core_columns": [
       {"name": "Facility Name", "type": "VARCHAR", "description": "Toilet facility name."},
-      {"name": "Status", "type": "VARCHAR", "description": "Open / Closed / Seasonal."},
+      {"name": "Status", "type": "VARCHAR", "description": "Operational / Not Operational / Closed / Closed for Construction."},
       {"name": "Latitude", "type": "DOUBLE", "description": "Mixed case."},
       {"name": "Longitude", "type": "DOUBLE", "description": "Mixed case."}
     ],
     "gotchas": [
-      "No ZIP, no borough column - pipeline derives them from H3 lookup if needed.",
-      "Status free-text varies; treat as access proxy without filtering by default.",
+      "The current source includes Borough and Postcode, but H3 remains the canonical spatial join key in the ready layer.",
+      "The ready-layer pipeline keeps only Status='Operational'; unavailable facilities remain in the immutable raw snapshot.",
       "Very small dataset - most H3 cells have 0; score gradient is sparse."
     ],
     "join_keys": [
@@ -407,9 +409,9 @@
       {"intent": "h3 cells with public toilets", "sql": "SELECT h3_r9, raw_count FROM read_parquet('amenities/toilets_scores_h3.parquet') WHERE raw_count > 0"}
     ],
     "categories": ["amenities", "quality_of_life"],
-    "row_count_estimate": "~150 facilities",
-    "update_cadence": "annual",
-    "source_url": "https://data.cityofnewyork.us/Recreation/Directory-Of-Toilets-In-Public-Parks/hjae-yuav"
+    "row_count_estimate": "~1.1K raw facilities, 975 operational in the 2026-08 snapshot",
+    "update_cadence": "twice yearly and as needed",
+    "source_url": "https://data.cityofnewyork.us/d/i7jb-7jku"
   },
   {
     "dataset_id": "amenities_facilities",
