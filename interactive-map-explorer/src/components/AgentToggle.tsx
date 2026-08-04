@@ -13,12 +13,16 @@ export default function AgentToggle({ enabled, onToggle, available }: Props) {
       type="button"
       onClick={() => available && onToggle(!enabled)}
       disabled={!available}
-      className={`relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-all select-none ${
+      aria-pressed={enabled}
+      /* Ink, not a brand blue: this switches a mode, it does not report a
+         measurement, and colour in this interface is reserved for measured
+         values. */
+      className={`relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-xs font-medium transition-all select-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${
         !available
           ? 'opacity-40 cursor-not-allowed bg-muted/30 border-transparent text-muted-foreground'
           : enabled
-            ? 'bg-[#0053dc] border-[#0053dc] text-white'
-            : 'bg-muted/50 border-transparent text-foreground hover:bg-muted'
+            ? 'bg-foreground border-foreground text-background'
+            : 'bg-muted border-transparent text-foreground hover:bg-muted/70'
       }`}
       title={!available ? 'Agent not available' : enabled ? 'Switch to Standard mode' : 'Switch to Agent mode'}
     >

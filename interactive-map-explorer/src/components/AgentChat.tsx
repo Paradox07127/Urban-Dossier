@@ -1,23 +1,52 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Bot, Send, User } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { ArrowUp } from 'lucide-react';
 import { Input } from '@/components/ui/input';
-import type { AgentChatMessage } from '../types';
+import ProvenanceThread from './ProvenanceThread';
+import type { AgentChatMessage, AgentTrace } from '../types';
 
 interface Props {
   sessionId: string | null;
   analysisPayload: any;
   onCreateSession: () => Promise<string>;
+  /** Selected point, so the agent knows what "here" refers to. */
+  target?: { latitude: number; longitude: number; label?: string } | null;
+  /** Hands a computed isochrone up to the map. */
+  onIsochrone?: (feature: any | null) => void;
 }
 
-const SUGGESTED_QUESTIONS = [
-  "What's the biggest safety concern here?",
-  "Is this a good area for families?",
-  "How does transit compare to city average?",
+/**
+ * Questions that exercise what this agent can actually do. A suggestion that
+ * the tools cannot answer teaches the wrong thing about the product, so each
+ * of these maps to a real capability: scoring, routing, and scenario
+ * projection.
+ */
+const SUGGESTED = [
+  { label: 'What drives the safety score here?', tool: 'scoring' },
+  { label: 'How far can I walk in 10 minutes?', tool: 'routing' },
+  { label: 'What would 3 more public toilets change?', tool: 'projection' },
 ];
 
-/** Render simple markdown: **bold** and bullet lists */
+/**
+ * Strip machine residue from the answer before it is read.
+ *
+ * The answer prompt asks for a citation list, and the model sometimes emits it
+ * as a raw JSON array or repeats the FINAL_ANSWER marker it was given. Both are
+ * artefacts of the instruction rather than anything a reader asked for, and the
+ * evidence they encode is already rendered properly by the provenance thread.
+ * Only trailing blocks are removed, so prose that merely contains a brace is
+ * left alone.
+ */
+function cleanAnswer(text: string): string {
+  let out = (text ?? '').trim();
+  out = out.replace(/^\s*\**\s*FINAL[_ ]ANSWER\s*:?\s*\**\s*/i, '');
+  // Trailing JSON array or object, optionally fenced.
+  out = out.replace(/\n*```(?:json)?\s*[\[{][\s\S]*?[\]}]\s*```\s*$/i, '');
+  out = out.replace(/\n*\[\s*\{[\s\S]*\}\s*\]\s*$/, '');
+  out = out.replace(/\n*\{\s*"(?:evidence|citations)"[\s\S]*\}\s*$/i, '');
+  return out.trim();
+}
+
 function renderSimpleMarkdown(text: string): React.ReactNode[] {
   const lines = text.split('\n');
   const elements: React.ReactNode[] = [];
@@ -39,13 +68,11 @@ function renderSimpleMarkdown(text: string): React.ReactNode[] {
   for (const line of lines) {
     const trimmed = line.trim();
     if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
-      listItems.push(trimmed.slice(2));
+      listItems.push(trimmed.replace(/^[-*]\s+/, ''));
     } else {
       flushList();
       if (trimmed) {
-        elements.push(
-          <p key={`p-${elements.length}`}>{boldify(trimmed)}</p>,
-        );
+        elements.push(<p key={`p-${elements.length}`}>{boldify(trimmed)}</p>);
       }
     }
   }
@@ -55,35 +82,76 @@ function renderSimpleMarkdown(text: string): React.ReactNode[] {
 
 function boldify(text: string): React.ReactNode {
   const parts = text.split(/(\*\*[^*]+\*\*)/g);
-  return parts.map((part, i) => {
-    if (part.startsWith('**') && part.endsWith('**')) {
-      return <strong key={i}>{part.slice(2, -2)}</strong>;
-    }
-    return part;
-  });
-}
-
-function LoadingDots() {
-  return (
-    <span className="inline-flex gap-1 items-center">
-      {[0, 1, 2].map((i) => (
-        <motion.span
-          key={i}
-          className="w-1.5 h-1.5 rounded-full bg-muted-foreground"
-          animate={{ opacity: [0.3, 1, 0.3] }}
-          transition={{ duration: 1, repeat: Infinity, delay: i * 0.2 }}
-        />
-      ))}
-    </span>
+  return parts.map((part, i) =>
+    part.startsWith('**') && part.endsWith('**') ? (
+      <strong key={i} className="font-semibold">
+        {part.slice(2, -2)}
+      </strong>
+    ) : (
+      part
+    ),
   );
 }
 
-export default function AgentChat({ sessionId, analysisPayload, onCreateSession }: Props) {
+/**
+ * Waiting state. A tool-using turn can run for a minute across several model
+ * calls, and a spinner that says nothing for that long reads as a hang. The
+ * elapsed count is the honest thing available without streaming: it confirms
+ * work is happening and sets expectations.
+ */
+function Working({ startedAt }: { startedAt: number }) {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(
+      () => setElapsed(Math.floor((Date.now() - startedAt) / 1000)),
+      1000,
+    );
+    return () => window.clearInterval(id);
+  }, [startedAt]);
+
+  return (
+    <div className="flex items-center gap-2.5 py-1">
+      <span className="relative flex h-1.5 w-1.5" aria-hidden="true">
+        <motion.span
+          className="absolute inline-flex h-full w-full rounded-full bg-foreground"
+          animate={{ opacity: [1, 0.25, 1] }}
+          transition={{ duration: 1.4, repeat: Infinity }}
+        />
+      </span>
+      <span className="ud-label">Consulting the data</span>
+      <span className="font-mono text-[10px] text-muted-foreground tabular-nums">
+        {elapsed}s
+      </span>
+    </div>
+  );
+}
+
+export default function AgentChat({
+  sessionId,
+  analysisPayload,
+  onCreateSession,
+  target,
+  onIsochrone,
+}: Props) {
   const [messages, setMessages] = useState<AgentChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  const [startedAt, setStartedAt] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasStarted = messages.length > 0;
+
+  const resolvedTarget = useMemo(() => {
+    if (target) return target;
+    const t = analysisPayload?.target;
+    if (t?.latitude != null && t?.longitude != null) {
+      return {
+        latitude: t.latitude,
+        longitude: t.longitude,
+        label: t.matched_address ?? undefined,
+      };
+    }
+    return null;
+  }, [target, analysisPayload]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -92,40 +160,90 @@ export default function AgentChat({ sessionId, analysisPayload, onCreateSession 
   }, [messages, sending]);
 
   const sendMessage = async (text: string) => {
-    if (!text.trim() || sending) return;
-    const userMsg: AgentChatMessage = { role: 'user', content: text.trim(), timestamp: Date.now() };
-    setMessages((prev) => [...prev, userMsg]);
+    const trimmed = text.trim();
+    if (!trimmed || sending) return;
+
+    setMessages((prev) => [
+      ...prev,
+      { role: 'user', content: trimmed, timestamp: Date.now() },
+    ]);
     setInput('');
     setSending(true);
+    setStartedAt(Date.now());
 
     try {
       let sid = sessionId;
-      if (!sid) {
-        sid = await onCreateSession();
-      }
-      const resp = await fetch('/api/agent/chat', {
+      if (!sid) sid = await onCreateSession();
+
+      // The agent fetches its own evidence, but it still needs to know which
+      // point the map has selected. This goes through the API's history field
+      // rather than being pasted into the user's message, so what the reader
+      // sees stays what the reader typed.
+      const history = resolvedTarget
+        ? [
+            {
+              role: 'user',
+              content:
+                `Context: the location under discussion is ` +
+                `${resolvedTarget.latitude.toFixed(5)}, ${resolvedTarget.longitude.toFixed(5)}` +
+                `${resolvedTarget.label ? ` (${resolvedTarget.label})` : ''}. ` +
+                `Use it for any tool that needs coordinates unless I name another place.`,
+            },
+          ]
+        : [];
+
+      const resp = await fetch('/api/agent/ask', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sid, message: text.trim() }),
+        body: JSON.stringify({
+          message: trimmed,
+          session_id: sid,
+          history,
+          max_iterations: 6,
+        }),
       });
+
       if (!resp.ok) {
         const body = await resp.json().catch(() => ({}));
-        throw new Error(body?.detail || body?.error || `Chat request failed (${resp.status})`);
+        throw new Error(
+          body?.error || body?.detail || `The agent could not complete that request (${resp.status}).`,
+        );
       }
+
       const data = await resp.json();
-      const assistantMsg: AgentChatMessage = {
-        role: 'assistant',
-        content: data.response,
-        timestamp: Date.now(),
-      };
-      setMessages((prev) => [...prev, assistantMsg]);
+      const trace: AgentTrace[] = data.trace ?? [];
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: cleanAnswer(data.answer ?? ''),
+          timestamp: Date.now(),
+          trace,
+          evidence: data.evidence ?? [],
+          iterations: data.iterations,
+        },
+      ]);
+
+      // Anything spatial the agent computed belongs on the map, not buried in
+      // a JSON blob.
+      const iso = [...trace]
+        .reverse()
+        .find((t) => t.tool_name === 'walking_isochrone' && !t.result?.error);
+      if (iso && onIsochrone) onIsochrone(iso.result);
     } catch (err) {
-      const errorMsg: AgentChatMessage = {
-        role: 'assistant',
-        content: `Error: ${err instanceof Error ? err.message : 'Failed to get response.'}`,
-        timestamp: Date.now(),
-      };
-      setMessages((prev) => [...prev, errorMsg]);
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          content:
+            err instanceof Error
+              ? err.message
+              : 'The agent could not complete that request.',
+          timestamp: Date.now(),
+          failed: true,
+        },
+      ]);
     } finally {
       setSending(false);
     }
@@ -140,111 +258,110 @@ export default function AgentChat({ sessionId, analysisPayload, onCreateSession 
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      {/* Messages area */}
-      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto px-5 py-4">
         <AnimatePresence mode="popLayout">
           {!hasStarted && !sending && (
             <motion.div
-              key="empty-state"
+              key="empty"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="flex flex-col items-center justify-center h-full gap-3 text-center py-12"
+              className="py-6"
             >
-              <Bot className="w-10 h-10 text-muted-foreground/50" />
-              <p className="text-sm text-muted-foreground">
-                Ask a question about this neighborhood to start a conversation.
+              <h3 className="ud-display text-[1.35rem] leading-tight text-foreground">
+                Ask about this place.
+              </h3>
+              <p className="mt-2 text-sm leading-relaxed text-muted-foreground max-w-[42ch]">
+                The agent queries the city datasets directly and shows every call
+                it made. Scores come from the data, not from the model.
               </p>
+
+              {/* Kept next to the invitation rather than pinned above the input:
+                  these are examples of what to ask, so they belong with the
+                  sentence that asks. */}
+              <ul className="mt-5 space-y-1.5">
+                {SUGGESTED.map((q) => (
+                  <li key={q.label}>
+                    <button
+                      type="button"
+                      onClick={() => sendMessage(q.label)}
+                      disabled={sending}
+                      className="flex w-full items-center gap-3 rounded-md border border-border bg-card px-3 py-2.5 text-left transition-colors hover:bg-muted disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                    >
+                      <span className="text-[13px] text-foreground">{q.label}</span>
+                      <span className="ml-auto font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+                        {q.tool}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
             </motion.div>
           )}
 
-          {messages.map((msg, i) => (
-            <motion.div
-              key={`${msg.timestamp}-${i}`}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              className={`flex gap-2.5 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-            >
-              {msg.role === 'assistant' && (
-                <div className="w-6 h-6 rounded-full bg-muted flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <Bot className="w-3.5 h-3.5 text-muted-foreground" />
-                </div>
-              )}
-              <div
-                className={`max-w-[80%] rounded-lg px-3 py-2 text-sm leading-relaxed space-y-2 ${
-                  msg.role === 'user'
-                    ? 'bg-primary text-primary-foreground'
-                    : 'bg-muted text-foreground'
-                }`}
+          {messages.map((msg, i) =>
+            msg.role === 'user' ? (
+              <motion.div
+                key={`${msg.timestamp}-${i}`}
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="mb-4 flex justify-end"
               >
-                {msg.role === 'assistant'
-                  ? renderSimpleMarkdown(msg.content)
-                  : <p>{msg.content}</p>
-                }
-              </div>
-              {msg.role === 'user' && (
-                <div className="w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <User className="w-3.5 h-3.5 text-primary" />
+                <p className="max-w-[85%] rounded-md bg-foreground px-3 py-2 text-sm leading-relaxed text-background">
+                  {msg.content}
+                </p>
+              </motion.div>
+            ) : (
+              <motion.div
+                key={`${msg.timestamp}-${i}`}
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="mb-6"
+              >
+                <div
+                  className={`space-y-2 text-sm leading-relaxed ${
+                    msg.failed ? 'text-muted-foreground' : 'text-foreground'
+                  }`}
+                >
+                  {msg.failed ? <p>{msg.content}</p> : renderSimpleMarkdown(msg.content)}
                 </div>
-              )}
-            </motion.div>
-          ))}
+                {msg.trace && msg.trace.length > 0 && (
+                  <ProvenanceThread trace={msg.trace} />
+                )}
+              </motion.div>
+            ),
+          )}
 
           {sending && (
-            <motion.div
-              key="loading"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="flex gap-2.5 justify-start"
-            >
-              <div className="w-6 h-6 rounded-full bg-muted flex items-center justify-center flex-shrink-0 mt-0.5">
-                <Bot className="w-3.5 h-3.5 text-muted-foreground" />
-              </div>
-              <div className="bg-muted rounded-lg px-3 py-2">
-                <LoadingDots />
-              </div>
+            <motion.div key="working" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+              <Working startedAt={startedAt} />
             </motion.div>
           )}
         </AnimatePresence>
       </div>
 
-      {/* Suggested questions */}
-      {!hasStarted && (
-        <div className="px-4 pb-2 flex flex-wrap gap-1.5">
-          {SUGGESTED_QUESTIONS.map((q) => (
-            <button
-              key={q}
-              type="button"
-              onClick={() => sendMessage(q)}
-              disabled={sending}
-              className="text-xs px-2.5 py-1.5 rounded-lg border border-border bg-card hover:bg-muted transition-colors text-foreground disabled:opacity-50"
-            >
-              {q}
-            </button>
-          ))}
+      <div className="border-t border-border px-4 py-3">
+        <div className="flex items-center gap-2">
+          <Input
+            placeholder="Ask about this neighborhood"
+            className="h-9 flex-1 rounded-md border-border bg-card text-sm"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            disabled={sending}
+            maxLength={2000}
+            aria-label="Ask about this neighborhood"
+          />
+          <button
+            type="button"
+            onClick={() => sendMessage(input)}
+            disabled={!input.trim() || sending}
+            aria-label="Send question"
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-foreground text-background transition-opacity disabled:opacity-30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+          >
+            <ArrowUp className="h-4 w-4" />
+          </button>
         </div>
-      )}
-
-      {/* Input area */}
-      <div className="border-t border-border p-3 flex items-center gap-2">
-        <Input
-          placeholder="Ask about this neighborhood..."
-          className="flex-1 h-9 text-sm rounded-lg"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          disabled={sending}
-          maxLength={2000}
-        />
-        <Button
-          type="button"
-          size="icon"
-          onClick={() => sendMessage(input)}
-          disabled={!input.trim() || sending}
-          className="h-9 w-9 rounded-lg flex-shrink-0"
-        >
-          <Send className="w-4 h-4" />
-        </Button>
       </div>
     </div>
   );

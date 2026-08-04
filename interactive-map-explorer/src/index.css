@@ -2,6 +2,10 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
+@import "@fontsource-variable/archivo";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+@import "@fontsource/ibm-plex-mono/600.css";
 @import "leaflet/dist/leaflet.css";
 
 @custom-variant dark (&:is(.dark *));
@@ -17,8 +21,26 @@
 }
 
 @theme inline {
-    --font-heading: var(--font-sans);
+    /* Three roles, three voices.
+       Archivo carries the display line: a grotesque with roots in American
+       signage and job printing, set wide and heavy so section headings read
+       like a stamped record rather than a web headline.
+       Geist stays the reading face.
+       Plex Mono is not decoration -- this interface is full of things that are
+       genuinely tabular: H3 cell ids, coordinates, row counts, latencies,
+       0-100 scores. They all belong in a mono with tabular figures. */
+    --font-heading: 'Archivo Variable', 'Geist Variable', sans-serif;
+    --font-display: 'Archivo Variable', 'Geist Variable', sans-serif;
+    --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
     --font-sans: 'Geist Variable', sans-serif;
+
+    /* Score ramp, exposed as utilities so charts and chips agree. */
+    --color-ud-low: var(--ud-low);
+    --color-ud-mid: var(--ud-mid);
+    --color-ud-high: var(--ud-high);
+    --color-ud-rule: var(--ud-rule);
+    --color-ud-thread: var(--ud-thread);
+    --color-ud-ink-2: var(--ud-ink-2);
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);
     --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -59,73 +81,116 @@
     --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/* ---------------------------------------------------------------------------
+   Urban Dossier palette
+
+   One rule governs this system: chroma is reserved for measured values.
+   Scores, deltas and trends carry the only saturated colour on the page;
+   every other surface, control and label is ink on paper. The product's whole
+   architecture rests on the claim that numbers come from data and the model
+   only explains them, so colour is treated as a data channel rather than
+   decoration. When a control is coloured here, it is because it is reporting
+   a measurement.
+
+   The paper is cooled rather than warmed: this is an administrative record of
+   a city, not an editorial page.
+--------------------------------------------------------------------------- */
 :root {
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.145 0 0);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.145 0 0);
-    --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.145 0 0);
-    --primary: oklch(0.205 0 0);
-    --primary-foreground: oklch(0.985 0 0);
-    --secondary: oklch(0.97 0 0);
-    --secondary-foreground: oklch(0.205 0 0);
-    --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
-    --accent: oklch(0.97 0 0);
-    --accent-foreground: oklch(0.205 0 0);
-    --destructive: oklch(0.577 0.245 27.325);
-    --border: oklch(0.922 0 0);
-    --input: oklch(0.922 0 0);
-    --ring: oklch(0.708 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --radius: 0.625rem;
-    --sidebar: oklch(0.985 0 0);
-    --sidebar-foreground: oklch(0.145 0 0);
-    --sidebar-primary: oklch(0.205 0 0);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.97 0 0);
-    --sidebar-accent-foreground: oklch(0.205 0 0);
-    --sidebar-border: oklch(0.922 0 0);
-    --sidebar-ring: oklch(0.708 0 0);
+    --ud-paper: #F4F6F8;
+    --ud-card: #FFFFFF;
+    --ud-sunk: #E9EDF1;
+    --ud-ink: #0E1218;
+    --ud-ink-2: #59626F;
+    --ud-rule: #D9DFE6;
+    --ud-thread: #AEB8C4;
+
+    /* The score ramp: the only chroma in the system. */
+    --ud-low: #A81E1A;
+    --ud-mid: #96928A;
+    --ud-high: #1B6E4B;
+
+    --background: var(--ud-paper);
+    --foreground: var(--ud-ink);
+    --card: var(--ud-card);
+    --card-foreground: var(--ud-ink);
+    --popover: var(--ud-card);
+    --popover-foreground: var(--ud-ink);
+    --primary: var(--ud-ink);
+    --primary-foreground: #FFFFFF;
+    --secondary: var(--ud-sunk);
+    --secondary-foreground: var(--ud-ink);
+    --muted: var(--ud-sunk);
+    --muted-foreground: var(--ud-ink-2);
+    --accent: var(--ud-sunk);
+    --accent-foreground: var(--ud-ink);
+    --destructive: var(--ud-low);
+    --border: var(--ud-rule);
+    --input: var(--ud-rule);
+    --ring: #7C8798;
+    --chart-1: var(--ud-low);
+    --chart-2: var(--ud-mid);
+    --chart-3: var(--ud-high);
+    --chart-4: var(--ud-ink-2);
+    --chart-5: var(--ud-thread);
+    /* Tightened from 0.625rem: a record should feel cut, not cushioned. */
+    --radius: 0.375rem;
+    --sidebar: var(--ud-card);
+    --sidebar-foreground: var(--ud-ink);
+    --sidebar-primary: var(--ud-ink);
+    --sidebar-primary-foreground: #FFFFFF;
+    --sidebar-accent: var(--ud-sunk);
+    --sidebar-accent-foreground: var(--ud-ink);
+    --sidebar-border: var(--ud-rule);
+    --sidebar-ring: #7C8798;
 }
 
 .dark {
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.922 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.269 0 0);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
-    --accent-foreground: oklch(0.985 0 0);
-    --destructive: oklch(0.704 0.191 22.216);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.556 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.556 0 0);
+    /* Same rule after dark: ink and paper invert, the score ramp is lifted
+       just enough to hold contrast on a dark ground and stays the only
+       chroma present. */
+    --ud-paper: #0E1218;
+    --ud-card: #161B23;
+    --ud-sunk: #1E242E;
+    --ud-ink: #EDF0F4;
+    --ud-ink-2: #9AA5B4;
+    --ud-rule: #2A313C;
+    --ud-thread: #4A5462;
+
+    --ud-low: #E4635C;
+    --ud-mid: #A8A399;
+    --ud-high: #4FB98A;
+
+    --background: var(--ud-paper);
+    --foreground: var(--ud-ink);
+    --card: var(--ud-card);
+    --card-foreground: var(--ud-ink);
+    --popover: var(--ud-card);
+    --popover-foreground: var(--ud-ink);
+    --primary: var(--ud-ink);
+    --primary-foreground: #0E1218;
+    --secondary: var(--ud-sunk);
+    --secondary-foreground: var(--ud-ink);
+    --muted: var(--ud-sunk);
+    --muted-foreground: var(--ud-ink-2);
+    --accent: var(--ud-sunk);
+    --accent-foreground: var(--ud-ink);
+    --destructive: var(--ud-low);
+    --border: var(--ud-rule);
+    --input: var(--ud-rule);
+    --ring: #6B7789;
+    --chart-1: var(--ud-low);
+    --chart-2: var(--ud-mid);
+    --chart-3: var(--ud-high);
+    --chart-4: var(--ud-ink-2);
+    --chart-5: var(--ud-thread);
+    --sidebar: var(--ud-card);
+    --sidebar-foreground: var(--ud-ink);
+    --sidebar-primary: var(--ud-ink);
+    --sidebar-primary-foreground: #0E1218;
+    --sidebar-accent: var(--ud-sunk);
+    --sidebar-accent-foreground: var(--ud-ink);
+    --sidebar-border: var(--ud-rule);
+    --sidebar-ring: #6B7789;
 }
 
 @layer base {
@@ -144,4 +209,64 @@
     @apply font-sans;
     font-size: 16px;
     }
+
+  /* Every figure in this interface is comparable to another figure, so all
+     numerals line up by default. */
+  :where(.font-mono, [class*="tabular"]) {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer components {
+  /* The record label: small, wide, letterspaced Archivo used for section
+     headings. Wide-and-tracked is doing the work that a rule or a numbered
+     marker would otherwise do, without implying a sequence that isn't there. */
+  .ud-label {
+    font-family: var(--font-display);
+    font-variation-settings: 'wdth' 112, 'wght' 700;
+    font-size: 0.6875rem;
+    line-height: 1;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ud-ink-2);
+  }
+
+  .ud-display {
+    font-family: var(--font-display);
+    font-variation-settings: 'wdth' 110, 'wght' 700;
+    letter-spacing: -0.02em;
+  }
+
+  /* Provenance thread: the vertical line that ties a claim to the tool call
+     that produced it. Drawn with a gradient so it fades in at the first node
+     and out after the last, instead of colliding with the container edges. */
+  .ud-thread-line {
+    background: linear-gradient(
+      to bottom,
+      transparent 0,
+      var(--ud-thread) 0.75rem,
+      var(--ud-thread) calc(100% - 0.75rem),
+      transparent 100%
+    );
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .ud-thread-node {
+      transition: none !important;
+    }
+  }
+}
+
+/* Quality floor. The panel and thread animate on entry via motion/react, which
+   does not consult the OS setting on its own, so it is enforced here for
+   everything rather than per component. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

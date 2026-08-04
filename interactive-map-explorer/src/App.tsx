@@ -61,13 +61,23 @@ function priorityOrderKey(priorities: string[]): string[] {
   return priorities.map((p) => p.toLowerCase());
 }
 
-// Match the map heatmap gradient: red → orange → yellow → light-green → green
+/*
+ * The score ramp. This is the only chroma the interface spends, so it has to
+ * do real work.
+ *
+ * The previous ramp was RdYlGn in five stops, which put a pale yellow at the
+ * midpoint: mid-range scores washed out to khaki against the panel, and the
+ * light middle meant the scale carried almost no information in greyscale or
+ * to a red-green colourblind reader. This ramp keeps the bad-to-good reading
+ * the domain expects but separates the ends by lightness as well as hue, so a
+ * low score stays the darkest, heaviest mark on the page whatever you can see.
+ *
+ * Kept in sync with --ud-low / --ud-mid / --ud-high in index.css.
+ */
 const GRADIENT_STOPS = [
-  { at: 0,   r: 215, g: 48,  b: 39  }, // #d73027
-  { at: 25,  r: 252, g: 141, b: 89  }, // #fc8d59
-  { at: 50,  r: 254, g: 224, b: 139 }, // #fee08b
-  { at: 75,  r: 145, g: 207, b: 96  }, // #91cf60
-  { at: 100, r: 26,  g: 152, b: 80  }, // #1a9850
+  { at: 0,   r: 140, g: 29,  b: 24  }, // #8C1D18
+  { at: 50,  r: 150, g: 146, b: 138 }, // #96928A
+  { at: 100, r: 46,  g: 139, b: 98  }, // #2E8B62
 ];
 
 function lerpGradient(score: number): [number, number, number] {
@@ -90,17 +100,21 @@ function lerpGradient(score: number): [number, number, number] {
 function scoreGradientStyle(score: number | null | undefined): React.CSSProperties {
   if (score == null) return {};
   const [r, g, b] = lerpGradient(score);
+  /* A wash, not a fill: the card stays paper and the colour reads as a
+     measurement sitting on it. */
   return {
-    backgroundColor: `rgba(${r}, ${g}, ${b}, 0.12)`,
-    borderColor: `rgba(${r}, ${g}, ${b}, 0.35)`,
+    backgroundColor: `rgba(${r}, ${g}, ${b}, 0.07)`,
+    borderColor: `rgba(${r}, ${g}, ${b}, 0.28)`,
   };
 }
 
 function scoreTextStyle(score: number | null | undefined): React.CSSProperties {
   if (score == null) return {};
   const [r, g, b] = lerpGradient(score);
-  // Darken for text readability
-  return { color: `rgb(${Math.round(r * 0.7)}, ${Math.round(g * 0.7)}, ${Math.round(b * 0.7)})` };
+  /* The ramp is already chosen to be legible as text on paper, so it is used
+     as-is. The previous multiply-by-0.7 darkening is what turned mid scores
+     into mud. */
+  return { color: `rgb(${r}, ${g}, ${b})` };
 }
 
 function scoreColor(score: number | null | undefined): string {
@@ -228,6 +242,8 @@ export default function App() {
   const [agentMode, setAgentMode] = useState(false);
   const [agentAvailable, setAgentAvailable] = useState(false);
   const [agentSessionId, setAgentSessionId] = useState<string | null>(null);
+  /* Isochrone the agent computed for the current point, drawn on the map. */
+  const [isochrone, setIsochrone] = useState<any | null>(null);
 
   const reportRef = useRef<HTMLDivElement>(null);
 
@@ -465,7 +481,15 @@ export default function App() {
     setReportModalOpen(false);
     setReportCache({});
     setActiveReportMode(null);
+    setIsochrone(null);
   };
+
+  /* An isochrone belongs to the point it was computed from. Moving the
+     selection has to drop it, or the map shows a walkable area for somewhere
+     the reader is no longer looking at. */
+  useEffect(() => {
+    setIsochrone(null);
+  }, [selectedTarget?.position[0], selectedTarget?.position[1]]);
 
   const handleGlobalView = () => {
     handleClose();
@@ -529,6 +553,7 @@ export default function App() {
           refreshKey={refreshKey}
           markers={display ? [{ id: 'sel', title: display.title, description: display.description, position: display.position, category: display.category, scores: display.scores, aiSummary: '', evidence: [] }] : []}
           hotspots={(hotspots as any[]) ?? []}
+          isochrone={isochrone}
           onMarkerClick={handleMarkerClick}
           onMapClick={handleMapClick}
         />
@@ -536,6 +561,35 @@ export default function App() {
 
       {/* Bottom-left controls */}
       <div className="absolute bottom-6 left-6 z-30 flex flex-col items-start gap-4 max-w-[calc(100vw-3rem)]">
+        {/* Isochrone readout. Something appeared on the map, so it gets a
+            label and a way to remove it. */}
+        <AnimatePresence>
+          {isochrone?.properties && (
+            <motion.div
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 6 }}
+              className="flex items-center gap-3 rounded-md border border-border bg-background/95 px-3 py-2 shadow-sm backdrop-blur-md"
+            >
+              <span className="ud-label">Walkable area</span>
+              <span className="font-mono text-xs tabular-nums text-foreground">
+                {(isochrone.properties.area_m2 / 1e6).toFixed(2)} km²
+              </span>
+              <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
+                {isochrone.properties.minutes} min · {Number(isochrone.properties.reachable_nodes ?? 0).toLocaleString()} nodes
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsochrone(null)}
+                className="rounded-sm p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                aria-label="Remove walkable area from map"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* Search bar */}
         <AnimatePresence>
           {isSearchOpen && (
@@ -669,7 +723,7 @@ export default function App() {
             {/* Panel header */}
             <div className="px-5 py-4 flex items-start justify-between border-b border-border/60 gap-3">
               <div className="min-w-0 flex-1">
-                <h2 className="text-base font-semibold leading-snug break-words">{display.title}</h2>
+                <h2 className="ud-display text-lg leading-snug break-words">{display.title}</h2>
                 <span className="text-xs text-muted-foreground">
                   {display.description || display.category}
                 </span>
@@ -715,6 +769,16 @@ export default function App() {
                   sessionId={agentSessionId}
                   onCreateSession={createAgentSession}
                   analysisPayload={preview}
+                  target={
+                    selectedTarget
+                      ? {
+                          latitude: selectedTarget.position[0],
+                          longitude: selectedTarget.position[1],
+                          label: display?.title,
+                        }
+                      : null
+                  }
+                  onIsochrone={setIsochrone}
                 />
               ) : (
               <>
@@ -776,17 +840,17 @@ export default function App() {
                 <div className="grid grid-cols-2 gap-3">
                   {/* Overall score - spans full width */}
                   <div
-                    className="col-span-2 rounded-xl border px-5 py-4 flex items-center justify-between"
+                    className="col-span-2 rounded-md border px-5 py-4 flex items-center justify-between"
                     style={scoreGradientStyle(scores?.overall)}
                   >
                     <div>
-                      <div className="text-sm font-semibold text-foreground">Overall Score</div>
+                      <div className="text-sm font-semibold text-foreground">Overall score</div>
                       <div className="text-xs text-muted-foreground">
-                        {selectedRadiusM}m radius
+                        <span className="font-mono tabular-nums">{selectedRadiusM} m</span> radius
                       </div>
                     </div>
                     <span
-                      className="text-4xl font-bold tabular-nums"
+                      className="ud-display text-5xl tabular-nums leading-none"
                       style={scoreTextStyle(scores?.overall)}
                     >
                       {formatScore(scores?.overall)}
@@ -804,13 +868,13 @@ export default function App() {
                     return (
                       <div
                         key={label}
-                        className="rounded-xl border px-4 py-3 flex items-center gap-3"
+                        className="rounded-md border px-4 py-3 flex items-center gap-3"
                         style={scoreGradientStyle(val)}
                       >
                         <Icon className="w-5 h-5 text-muted-foreground flex-shrink-0" />
                         <div className="min-w-0">
                           <div
-                            className="text-2xl font-bold tabular-nums leading-none"
+                            className="ud-display text-[1.75rem] tabular-nums leading-none"
                             style={scoreTextStyle(val)}
                           >
                             {formatScore(val)}
@@ -827,7 +891,7 @@ export default function App() {
                 {/* Neighborhood Insights — surfacing hidden backend data */}
                 {!loading && preview && enrichedContext && (
                   <div className="space-y-3">
-                    <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    <h3 className="ud-label">
                       Neighborhood Insights
                     </h3>
 
@@ -968,7 +1032,7 @@ export default function App() {
                 {/* Priority actions */}
                 {!loading && priorityActions.length > 0 && (
                   <div className="space-y-2">
-                    <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    <h3 className="ud-label">
                       Priority Actions
                     </h3>
                     <div className="space-y-2">
@@ -992,7 +1056,7 @@ export default function App() {
 
                 {/* Report buttons — always visible */}
                 <div className="space-y-3">
-                  <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  <h3 className="ud-label">
                     Generate Report
                   </h3>
                   <div className="flex items-center gap-2">
@@ -1030,7 +1094,7 @@ export default function App() {
                 {/* Building signals */}
                 {buildingFlags.length > 0 && (
                   <div className="space-y-2">
-                    <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    <h3 className="ud-label">
                       Building Signals
                     </h3>
                     <div className="space-y-2">
@@ -1054,7 +1118,7 @@ export default function App() {
                 {/* Evidence table */}
                 {evidenceTable.length > 0 && (
                   <div className="space-y-2">
-                    <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    <h3 className="ud-label">
                       Evidence ({evidenceTable.length})
                     </h3>
                     <div className="space-y-2">

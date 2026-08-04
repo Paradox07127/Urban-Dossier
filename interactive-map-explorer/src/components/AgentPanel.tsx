@@ -8,6 +8,8 @@ interface Props {
   sessionId: string | null;
   onCreateSession: () => Promise<string>;
   analysisPayload: any;
+  target?: { latitude: number; longitude: number; label?: string } | null;
+  onIsochrone?: (feature: any | null) => void;
 }
 
 const TABS = [
@@ -18,13 +20,19 @@ const TABS = [
 
 type TabId = (typeof TABS)[number]['id'];
 
-export default function AgentPanel({ sessionId, onCreateSession, analysisPayload }: Props) {
+export default function AgentPanel({
+  sessionId,
+  onCreateSession,
+  analysisPayload,
+  target,
+  onIsochrone,
+}: Props) {
   const [activeTab, setActiveTab] = useState<TabId>('chat');
 
   return (
     <div className="flex flex-col h-full min-h-0">
       {/* Tab bar */}
-      <div className="flex items-center border-b border-border/60 px-4">
+      <div className="flex items-center border-b border-border px-4">
         {TABS.map((tab) => {
           const Icon = tab.icon;
           const isActive = activeTab === tab.id;
@@ -33,8 +41,9 @@ export default function AgentPanel({ sessionId, onCreateSession, analysisPayload
               key={tab.id}
               type="button"
               onClick={() => setActiveTab(tab.id)}
-              className={`relative flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium transition-colors ${
-                isActive ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
+              aria-current={isActive ? 'page' : undefined}
+              className={`ud-label relative flex items-center gap-1.5 px-3 py-3 transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring ${
+                isActive ? '!text-foreground' : 'hover:!text-foreground'
               }`}
             >
               <Icon className="w-3.5 h-3.5" />
@@ -42,7 +51,7 @@ export default function AgentPanel({ sessionId, onCreateSession, analysisPayload
               {isActive && (
                 <motion.div
                   layoutId="agent-tab-underline"
-                  className="absolute bottom-0 left-2 right-2 h-0.5 bg-primary rounded-full"
+                  className="absolute bottom-[-1px] left-2 right-2 h-[2px] bg-foreground"
                   transition={{ type: 'spring', stiffness: 400, damping: 30 }}
                 />
               )}
@@ -58,6 +67,8 @@ export default function AgentPanel({ sessionId, onCreateSession, analysisPayload
             sessionId={sessionId}
             analysisPayload={analysisPayload}
             onCreateSession={onCreateSession}
+            target={target}
+            onIsochrone={onIsochrone}
           />
         )}
         {activeTab === 'report' && (

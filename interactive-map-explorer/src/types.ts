@@ -130,10 +130,29 @@ export interface AgentStatus {
   model: string;
 }
 
+/** One dispatched tool call, as returned in the /api/agent/ask trace. */
+export interface AgentTrace {
+  iteration: number;
+  tool_name: string;
+  args: Record<string, unknown>;
+  result: Record<string, any>;
+  latency_ms: number;
+}
+
+export interface AgentEvidence {
+  source: string;
+  detail: string;
+}
+
 export interface AgentChatMessage {
   role: "user" | "assistant";
   content: string;
   timestamp: number;
+  /** Present on assistant turns answered by the tool-using agent loop. */
+  trace?: AgentTrace[];
+  evidence?: AgentEvidence[];
+  iterations?: number;
+  failed?: boolean;
 }
 
 export interface AgentReportResult {

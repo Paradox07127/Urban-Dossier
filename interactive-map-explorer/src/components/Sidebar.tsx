@@ -52,7 +52,7 @@ export default function Sidebar({
         </div>
 
         <div className="space-y-2">
-          <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+          <div className="flex items-center gap-2 ud-label">
             <SortAsc className="w-3 h-3" />
             Sort by Standard
           </div>
@@ -141,7 +141,7 @@ export default function Sidebar({
       </ScrollArea>
 
       <div className="p-4 bg-muted/20 border-t border-border">
-        <p className="text-[10px] text-center text-muted-foreground uppercase tracking-widest font-medium">
+        <p className="ud-label text-center">
           NYC Open Data • Local AI Analysis
         </p>
       </div>

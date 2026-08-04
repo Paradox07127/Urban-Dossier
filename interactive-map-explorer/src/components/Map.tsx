@@ -29,6 +29,8 @@ interface MapProps {
   refreshKey?: number;
   markers?: Location[];
   hotspots?: HotspotData[];
+  /** GeoJSON Feature returned by POST /api/isochrone, or null to clear. */
+  isochrone?: GeoJSON.Feature | null;
   onMarkerClick: (location: Location) => void;
   onMapClick: (lat: number, lng: number) => void;
 }
@@ -103,6 +105,10 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       data: EMPTY_FEATURE_COLLECTION,
     },
     hexOverlay: {
+      type: 'geojson',
+      data: EMPTY_FEATURE_COLLECTION,
+    },
+    isochroneOverlay: {
       type: 'geojson',
       data: EMPTY_FEATURE_COLLECTION,
     },
@@ -256,6 +262,27 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
         'line-width': 2.5,
         'line-opacity': 0.7,
         'line-dasharray': [3, 2],
+      },
+    },
+    /* Walking isochrone. Drawn in ink rather than colour: it is a boundary of
+       reach, not a measured value, and colour is reserved for measurements. */
+    {
+      id: 'isochrone-fill',
+      type: 'fill',
+      source: 'isochroneOverlay',
+      paint: {
+        'fill-color': '#0E1218',
+        'fill-opacity': 0.07,
+      },
+    },
+    {
+      id: 'isochrone-line',
+      type: 'line',
+      source: 'isochroneOverlay',
+      paint: {
+        'line-color': '#0E1218',
+        'line-width': 1.75,
+        'line-opacity': 0.85,
       },
     },
     {
@@ -1037,6 +1064,7 @@ export default function Map({
   refreshKey = 0,
   markers = [],
   hotspots = [],
+  isochrone = null,
   onMarkerClick,
   onMapClick,
 }: MapProps) {
@@ -1262,6 +1290,48 @@ export default function Map({
     hotspots,
   ]);
 
+  /* Draw whatever isochrone the agent computed, and frame it once so the
+     result is visible without the reader hunting for it. */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const apply = () => {
+      const source = map.getSource('isochroneOverlay') as GeoJSONSource | undefined;
+      if (!source) return;
+      if (!isochrone?.geometry) {
+        source.setData(EMPTY_FEATURE_COLLECTION);
+        return;
+      }
+      source.setData({ type: 'FeatureCollection', features: [isochrone] });
+
+      const coords: number[][] = [];
+      const walk = (node: any) => {
+        if (!Array.isArray(node)) return;
+        if (typeof node[0] === 'number' && typeof node[1] === 'number') {
+          coords.push(node as number[]);
+          return;
+        }
+        node.forEach(walk);
+      };
+      walk((isochrone.geometry as any).coordinates);
+      if (coords.length < 2) return;
+
+      const lons = coords.map((c) => c[0]);
+      const lats = coords.map((c) => c[1]);
+      map.fitBounds(
+        [
+          [Math.min(...lons), Math.min(...lats)],
+          [Math.max(...lons), Math.max(...lats)],
+        ],
+        { padding: 72, duration: 700, maxZoom: 16 },
+      );
+    };
+
+    if (map.isStyleLoaded()) apply();
+    else map.once('load', apply);
+  }, [isochrone]);
+
   useEffect(() => {
     markersRef.current.forEach((marker) => marker.remove());
     markersRef.current = [];
@@ -1317,14 +1387,20 @@ export default function Map({
       />
       <div className="pointer-events-none absolute top-4 right-4 z-20">
         <div className="bg-background/95 backdrop-blur-md border border-border rounded-xl shadow-lg px-4 py-2.5">
-          <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider text-center mb-1.5">{legendStyle.label} Score</div>
+          <div className="ud-label text-center mb-1.5">{legendStyle.label} Score</div>
           <div className="flex items-center gap-2">
-            <span className="text-xs font-medium text-muted-foreground leading-none w-4 text-right">0</span>
+            <span className="font-mono text-[11px] text-muted-foreground leading-none w-4 text-right tabular-nums">0</span>
+            {/* The legend now shows the ramp the map is actually drawing.
+                It previously showed a fixed red-yellow-green gradient while
+                the map coloured each category in its own hue, so the key did
+                not describe the picture next to it. */}
             <div
-              className="h-3 w-36 rounded-full"
-              style={{ background: 'linear-gradient(90deg, #d73027, #fc8d59, #fee08b, #91cf60, #1a9850)' }}
+              className="h-2.5 w-36 rounded-sm"
+              style={{
+                background: `linear-gradient(90deg, ${legendStyle.low}, ${legendStyle.high})`,
+              }}
             />
-            <span className="text-xs font-medium text-muted-foreground leading-none w-6">100</span>
+            <span className="font-mono text-[11px] text-muted-foreground leading-none w-6 tabular-nums">100</span>
           </div>
         </div>
       </div>
