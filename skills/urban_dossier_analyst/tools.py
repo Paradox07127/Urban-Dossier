@@ -253,16 +253,31 @@ def _score_neighborhood(args: ScoreNeighborhoodArgs) -> dict[str, Any]:
 
 
 def _compare_neighborhoods(args: CompareNeighborhoodsArgs) -> dict[str, Any]:
-    raise NotImplementedError(
-        "Tool compare_neighborhoods requires backend endpoint "
-        "POST /api/compare-points (not yet implemented). "
-        "Required request schema: "
-        "{point_a: {latitude, longitude}, point_b: {latitude, longitude}, "
-        "radius_m: int, priority_order: list[str]}. "
-        "Required response schema: "
-        "{point_a: <analyze-point payload>, point_b: <analyze-point payload>, "
-        "deltas: {category_id: float}}."
-    )
+    """Score two points and return the per-category delta (b - a).
+
+    In-process via ``service.compare_points`` when the backend is importable,
+    otherwise HTTP loopback to ``POST /api/compare-points``.
+    """
+
+    _log_dispatch_mode_once()
+    radius_m = _snap_radius(args.radius_m)
+    backend = _resolve_backend_module()
+    if backend is not None:
+        return backend.compare_points(
+            point_a=args.point_a.model_dump(),
+            point_b=args.point_b.model_dump(),
+            radius_m=radius_m,
+            priority_order=list(DEFAULT_PRIORITY_ORDER),
+            time_window_days=365,
+        )
+    body = {
+        "point_a": args.point_a.model_dump(),
+        "point_b": args.point_b.model_dump(),
+        "radius_m": radius_m,
+        "priority_order": DEFAULT_PRIORITY_ORDER,
+        "time_window_days": 365,
+    }
+    return _backend_post("/api/compare-points", body)
 
 
 def _query_dataset(args: QueryDatasetArgs) -> dict[str, Any]:
@@ -279,13 +294,23 @@ def _query_dataset(args: QueryDatasetArgs) -> dict[str, Any]:
     allowed_categories = {"safety", "transit", "amenities", "building", "overall"}
     normalized = args.dataset_id.strip().lower()
     if normalized not in allowed_categories:
-        raise NotImplementedError(
-            f"Tool query_dataset for dataset_id='{args.dataset_id}' requires "
-            "backend endpoint POST /api/dataset/query (not yet implemented). "
-            "Required request schema: "
-            "{dataset_id: str, filters: dict, limit: int}. "
-            "Required response schema: "
-            "{dataset_id: str, columns: list[str], rows: list[dict], total: int}."
+        # Real per-dataset row query against the published ready Parquet.
+        # Category aliases keep the cell-aggregate path below because they are
+        # score layers, not source datasets.
+        backend = _resolve_backend_module()
+        if backend is not None:
+            return backend.query_dataset_rows(
+                dataset_id=normalized,
+                filters=args.filters,
+                limit=args.limit,
+            )
+        return _backend_post(
+            "/api/dataset/query",
+            {
+                "dataset_id": normalized,
+                "filters": args.filters,
+                "limit": args.limit,
+            },
         )
     view_mode = "category" if normalized != "overall" else "overall"
     category_id = normalized if normalized != "overall" else None

@@ -36,6 +36,8 @@ logger = logging.getLogger(__name__)
 from .schemas import DetailPreviewRequest, DetailRequest, OverviewRequest, WatchlistRequest
 from .service import (
     analyze_point,
+    compare_points,
+    query_dataset_rows,
     get_categories_payload,
     get_coverage_payload,
     get_health_payload,
@@ -262,6 +264,54 @@ class AskResponse(BaseModel):
     session_id: str
 
 
+# ---------------------------------------------------------------------------
+# Agent tool endpoints
+#
+# These back the urban-dossier-analyst tools that previously raised
+# NotImplementedError. Request/response shapes follow the contracts the tool
+# layer already documented, so tools.py needs no translation layer.
+# ---------------------------------------------------------------------------
+
+
+class PointModel(BaseModel):
+    latitude: float = Field(ge=40.4, le=40.95)
+    longitude: float = Field(ge=-74.3, le=-73.7)
+
+
+class ComparePointsRequest(BaseModel):
+    point_a: PointModel
+    point_b: PointModel
+    radius_m: int = Field(default=500, ge=50, le=2000)
+    priority_order: list[str] | None = None
+    time_window_days: int = Field(default=365, ge=1, le=3650)
+
+
+class DatasetQueryRequest(BaseModel):
+    dataset_id: str = Field(min_length=2, max_length=64)
+    filters: dict = Field(default_factory=dict)
+    limit: int = Field(default=100, ge=1, le=1000)
+
+
+@app.post("/api/compare-points")
+def compare_points_endpoint(request: ComparePointsRequest) -> dict:
+    return compare_points(
+        point_a=request.point_a.model_dump(),
+        point_b=request.point_b.model_dump(),
+        radius_m=request.radius_m,
+        priority_order=request.priority_order,
+        time_window_days=request.time_window_days,
+    )
+
+
+@app.post("/api/dataset/query")
+def dataset_query_endpoint(request: DatasetQueryRequest) -> dict:
+    return query_dataset_rows(
+        dataset_id=request.dataset_id,
+        filters=request.filters,
+        limit=request.limit,
+    )
+
+
 def _normalize_tools_called(raw: object) -> list[dict]:
     """Adapt the skill's ``list[str]`` tool log to this API's ``list[dict]``.
 
@@ -319,6 +369,7 @@ async def ask(request: AskRequest) -> AskResponse | JSONResponse:
     # inside the skill's modules (`from .schemas import ...`) resolve correctly.
     try:
         from urban_dossier_analyst.agent_loop import run_agent  # type: ignore[import-not-found]
+        from urban_dossier_analyst.gateway import gateway_client_factory
     except ImportError as exc:
         logger.error("agent_loop import failed (skill not yet available?): %s", exc)
         return JSONResponse(
@@ -336,9 +387,18 @@ async def ask(request: AskRequest) -> AskResponse | JSONResponse:
     # and persist the new turn below. Do not add ``session_id`` to the skill's
     # signature; the skill deliberately knows nothing about our session store.
     #
-    # The endpoint/model come from the same env vars the rest of the backend
-    # uses (see deploy/backend.env.example) so /api/agent/ask cannot silently
-    # talk to a different vLLM than the one the deployment configured.
+    # Transport: agent traffic goes through the authenticated OpenClaw Gateway
+    # inside OpenShell, which is the deployment's policy/network boundary. The
+    # direct-to-vLLM path this endpoint used to take bypassed that boundary.
+    # Setting URBAN_DOSSIER_ASK_TRANSPORT=vllm restores it for local debugging
+    # on a host with no sandbox; it is not a supported production setting.
+    transport = os.environ.get("URBAN_DOSSIER_ASK_TRANSPORT", "gateway").strip().lower()
+    client_factory = None
+    if transport == "gateway":
+        # One Gateway session per ask-session keeps server-side conversation
+        # state aligned with our AgentSession.
+        client_factory = gateway_client_factory(session_key=f"ask-{session_id[:12]}")
+
     try:
         result = run_agent(
             user_message=request.message,
@@ -348,6 +408,7 @@ async def ask(request: AskRequest) -> AskResponse | JSONResponse:
             model=os.environ.get(
                 "URBAN_DOSSIER_MODEL", "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4"
             ),
+            client_factory=client_factory,
         )
     except Exception as exc:  # noqa: BLE001 -- structured error surface for clients
         elapsed_ms = (time.perf_counter() - start_ms) * 1000.0

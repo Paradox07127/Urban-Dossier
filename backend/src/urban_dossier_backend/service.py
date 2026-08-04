@@ -360,3 +360,176 @@ def run_watchlist(
         "fixed_priority_order": order,
         "items": items,
     }
+
+
+# --------------------------------------------------------------------------- #
+# Agent tool endpoints
+#
+# The urban-dossier-analyst tools declared these contracts long before the
+# endpoints existed and raised NotImplementedError with the required request /
+# response schema in the message. The shapes below match those contracts
+# exactly so the tool layer needs no translation.
+# --------------------------------------------------------------------------- #
+
+
+def compare_points(
+    point_a: dict[str, float],
+    point_b: dict[str, float],
+    radius_m: int = 500,
+    priority_order: list[str] | None = None,
+    time_window_days: int = 365,
+    data_mode: str | None = None,
+) -> dict[str, Any]:
+    """Score two locations and report the per-category delta.
+
+    Contract (from ``tools._compare_neighborhoods``):
+      response {point_a: <analyze-point payload>, point_b: <...>,
+                deltas: {category_id: float}}
+
+    ``deltas`` is b - a, so a positive value means point_b scores higher on
+    that category. Categories missing from either side are omitted rather than
+    defaulted to zero -- a missing score is not the same as "no difference".
+    """
+
+    order = _normalize_priority_order(priority_order)
+
+    def _score(point: dict[str, float]) -> dict[str, Any]:
+        return analyze_point(
+            latitude=float(point["latitude"]),
+            longitude=float(point["longitude"]),
+            radius_m=radius_m,
+            priority_order=order,
+            time_window_days=time_window_days,
+            data_mode=data_mode,
+            use_llm=False,
+            report_mode="individual",
+        )
+
+    payload_a = _score(point_a)
+    payload_b = _score(point_b)
+
+    scores_a = payload_a.get("scores") or {}
+    scores_b = payload_b.get("scores") or {}
+    deltas: dict[str, float] = {}
+    for category in sorted(set(scores_a) | set(scores_b)):
+        value_a = scores_a.get(category)
+        value_b = scores_b.get(category)
+        if value_a is None or value_b is None:
+            continue
+        deltas[category] = round(float(value_b) - float(value_a), 2)
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "mode": "compare",
+        "point_a": payload_a,
+        "point_b": payload_b,
+        "deltas": deltas,
+        "radius_m": radius_m,
+        "priority_order": order,
+    }
+
+
+def query_dataset_rows(
+    dataset_id: str,
+    filters: dict[str, Any] | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Filtered row query against a published ready Parquet dataset.
+
+    Contract (from ``tools._query_dataset``):
+      response {dataset_id: str, columns: list[str], rows: list[dict], total: int}
+
+    ``total`` is the number of rows matching the filters *before* the limit, so
+    the agent can tell "only 5 rows exist" from "showing the first 5 of 900".
+
+    Filter values are bound as query parameters. Column names cannot be bound,
+    so they are validated against the file's real schema and quoted -- several
+    NYC columns contain spaces (e.g. ``ZIP CODE``), which makes rejecting them
+    outright too strict.
+    """
+
+    from .config import READY_DATA_DIR
+    from .providers.direct_provider import READY_DATASET_PATHS
+
+    normalized = (dataset_id or "").strip().lower()
+    relative = READY_DATASET_PATHS.get(normalized)
+    if relative is None:
+        return {
+            "error": f"Unknown dataset_id '{dataset_id}'.",
+            "available_datasets": sorted(READY_DATASET_PATHS),
+            "dataset_id": dataset_id,
+            "columns": [],
+            "rows": [],
+            "total": 0,
+        }
+
+    path = READY_DATA_DIR / relative
+    if not path.exists():
+        return {
+            "error": f"Dataset '{normalized}' is registered but not published at {path}.",
+            "retry_hint": "Run the ready-Parquet publication step for this dataset.",
+            "dataset_id": normalized,
+            "columns": [],
+            "rows": [],
+            "total": 0,
+        }
+
+    import duckdb
+
+    con = duckdb.connect()
+    try:
+        source = f"read_parquet('{path.as_posix()}')"
+        # DESCRIBE yields (column_name, column_type, ...) -- index 0, not 1.
+        # Reading the type column here silently turned every filter into an
+        # "unknown column" and returned the dataset unfiltered.
+        columns = [row[0] for row in con.execute(f"DESCRIBE SELECT * FROM {source}").fetchall()]
+
+        where_parts: list[str] = []
+        params: list[Any] = []
+        unknown: list[str] = []
+        for column, value in (filters or {}).items():
+            if column not in columns:
+                unknown.append(column)
+                continue
+            quoted = '"' + str(column).replace('"', '""') + '"'
+            if isinstance(value, (list, tuple, set)):
+                values = list(value)
+                if not values:
+                    continue
+                placeholders = ", ".join(["?"] * len(values))
+                where_parts.append(f"{quoted} IN ({placeholders})")
+                params.extend(values)
+            else:
+                where_parts.append(f"{quoted} = ?")
+                params.append(value)
+
+        where_sql = f" WHERE {' AND '.join(where_parts)}" if where_parts else ""
+        total = con.execute(
+            f"SELECT count(*) FROM {source}{where_sql}", params
+        ).fetchone()[0]
+
+        cursor = con.execute(
+            f"SELECT * FROM {source}{where_sql} LIMIT {int(limit)}", params
+        )
+        row_columns = [col[0] for col in cursor.description]
+        rows = [dict(zip(row_columns, record)) for record in cursor.fetchall()]
+    finally:
+        con.close()
+
+    payload: dict[str, Any] = {
+        "dataset_id": normalized,
+        "columns": columns,
+        "rows": rows,
+        "total": int(total),
+        "limit": int(limit),
+        "source": relative,
+    }
+    if unknown:
+        # Surface rather than silently ignore: a typo'd filter would otherwise
+        # look like a legitimately unfiltered result.
+        payload["ignored_filters"] = unknown
+        payload["ignored_filters_note"] = (
+            "These filter keys are not columns in this dataset and were not "
+            "applied. Check `columns` for valid names."
+        )
+    return payload

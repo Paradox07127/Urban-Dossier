@@ -815,6 +815,26 @@ app.post('/api/analyze-point', async (req, res) => {
   }
 });
 
+// Agent tool endpoints. Node stays a pure proxy: scoring and dataset access
+// belong to FastAPI.
+app.post('/api/compare-points', async (req, res) => {
+  try {
+    const payload = await backendRequest('/api/compare-points', { method: 'POST', body: req.body });
+    res.json(payload);
+  } catch (error) {
+    sendProxyError(res, 502, 'Compare points failed', { details: error.payload ?? null });
+  }
+});
+
+app.post('/api/dataset/query', async (req, res) => {
+  try {
+    const payload = await backendRequest('/api/dataset/query', { method: 'POST', body: req.body });
+    res.json(payload);
+  } catch (error) {
+    sendProxyError(res, 502, 'Dataset query failed', { details: error.payload ?? null });
+  }
+});
+
 app.post('/api/watchlist/run', async (req, res) => {
   try {
     const payload = await backendRequest('/api/watchlist/run', {
