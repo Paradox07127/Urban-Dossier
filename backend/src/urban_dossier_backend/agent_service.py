@@ -121,7 +121,7 @@ OPENCLAW_GATEWAY_URL = os.environ.get(
 ).rstrip("/")
 OPENCLAW_GATEWAY_TOKEN_FILE = os.environ.get(
     "OPENCLAW_GATEWAY_TOKEN_FILE",
-    "/mnt/data/urban-dossier/runtime/openclaw-gateway.token",
+    "/mnt/data/urban-dossier-state/runtime/openclaw-gateway.token",
 )
 AGENT_ENABLED = os.environ.get("URBAN_DOSSIER_AGENT_ENABLED", "1").strip() in ("1", "true", "yes")
 

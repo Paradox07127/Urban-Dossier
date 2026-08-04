@@ -107,7 +107,7 @@ Recommended roots:
 
 | Profile | Raw state | Published ready layer |
 | --- | --- | --- |
-| x86 workstation | `/mnt/data/urban-dossier/datasets/raw` | `/mnt/data/Urban-Dossier/data/ready` |
+| x86 workstation | `/mnt/data/urban-dossier-state/datasets/raw` | `/mnt/data/Urban-Dossier/data/ready` |
 | DGX Spark | `${HOME}/urban-dossier-data/datasets/raw` or dedicated NVMe | `<repo>/data/ready` |
 | Mac | external/local data root | `<repo>/data/ready` |
 

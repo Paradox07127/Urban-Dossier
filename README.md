@@ -66,7 +66,7 @@ cd /mnt/data/Urban-Dossier
 # LLM only. The embedding service is optional and is not part of the current
 # frontend/backend critical path.
 docker compose \
-  --env-file /mnt/data/urban-dossier/runtime/gpu.env \
+  --env-file /mnt/data/urban-dossier-state/runtime/gpu.env \
   -f deploy/compose.gpu.yml up -d llm
 
 # Reconcile the dedicated agent and restore its Gateway forward/token.
@@ -98,7 +98,7 @@ transit, amenities, buildings, and PLUTO location reference data.
 
 ```bash
 # Workstation production location
-bash scripts/download_datasets.sh /mnt/data/urban-dossier/datasets/raw
+bash scripts/download_datasets.sh /mnt/data/urban-dossier-state/datasets/raw
 ```
 
 Processed Parquet files used by the backend live under `data/ready/` in the
@@ -216,7 +216,7 @@ contract so session, trace, evidence, and artifacts have one public API.
 - persistent service: [`deploy/systemd/urban-dossier-backend.service`](deploy/systemd/urban-dossier-backend.service)
 
 Runtime secrets and downloaded model/data files belong under
-`/mnt/data/urban-dossier/`, not in Git. The OpenClaw Gateway bearer token is
+`/mnt/data/urban-dossier-state/`, not in Git. The OpenClaw Gateway bearer token is
 stored in a mode-`0600` runtime file and must never be copied into documentation
 or a systemd unit.
 
@@ -232,7 +232,7 @@ PYTHONPATH=backend/src .venv/bin/pytest -q \
 
 # Compose resolution
 docker compose \
-  --env-file /mnt/data/urban-dossier/runtime/gpu.env \
+  --env-file /mnt/data/urban-dossier-state/runtime/gpu.env \
   -f deploy/compose.gpu.yml config
 ```
 

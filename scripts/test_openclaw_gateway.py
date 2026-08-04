@@ -16,7 +16,7 @@ def main() -> int:
     parser.add_argument("--agent", default="urban-dossier")
     parser.add_argument(
         "--token-file",
-        default="/mnt/data/urban-dossier/runtime/openclaw-gateway.token",
+        default="/mnt/data/urban-dossier-state/runtime/openclaw-gateway.token",
     )
     parser.add_argument("--session", default="gateway-route-smoke")
     args = parser.parse_args()

@@ -53,7 +53,7 @@ huggingface-cli download Qwen/Qwen3-Embedding-4B
 
 # x86 workstation: start only the optional embeddings service.
 docker compose \
-  --env-file /mnt/data/urban-dossier/runtime/gpu.env \
+  --env-file /mnt/data/urban-dossier-state/runtime/gpu.env \
   -f deploy/compose.gpu.yml up -d embeddings
 ```
 

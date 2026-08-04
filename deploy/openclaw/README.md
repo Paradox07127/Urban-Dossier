@@ -109,7 +109,7 @@ NEMOCLAW_SANDBOX=urban-dossier-agent
 OPENCLAW_TRANSPORT=gateway
 OPENCLAW_AGENT_ID=urban-dossier
 OPENCLAW_GATEWAY_URL=http://127.0.0.1:18789
-OPENCLAW_GATEWAY_TOKEN_FILE=/mnt/data/urban-dossier/runtime/openclaw-gateway.token
+OPENCLAW_GATEWAY_TOKEN_FILE=/mnt/data/urban-dossier-state/runtime/openclaw-gateway.token
 ```
 
 Set `OPENCLAW_TRANSPORT=cli` for explicit rollback. A Gateway request failure

@@ -8,11 +8,11 @@
 #
 # Usage:
 #   bash scripts/maps/build_nyc_mbtiles.sh [state_root]
-# Default state_root: /mnt/data/urban-dossier
+# Default state_root: /mnt/data/urban-dossier-state
 
 set -euo pipefail
 
-STATE_ROOT="${1:-/mnt/data/urban-dossier}"
+STATE_ROOT="${1:-/mnt/data/urban-dossier-state}"
 MAP_ROOT="${STATE_ROOT}/maps"
 SOURCE_DIR="${MAP_ROOT}/source"
 SUPPORT_DIR="${MAP_ROOT}/sources"

@@ -1,8 +1,8 @@
 # GPU inference and vector-index profiles for the x86_64 workstation.
 #
 # Usage:
-#   cp deploy/gpu.env.example /mnt/data/urban-dossier/runtime/gpu.env
-#   docker compose --env-file /mnt/data/urban-dossier/runtime/gpu.env \
+#   cp deploy/gpu.env.example /mnt/data/urban-dossier-state/runtime/gpu.env
+#   docker compose --env-file /mnt/data/urban-dossier-state/runtime/gpu.env \
 #     -f deploy/compose.gpu.yml --profile inference up -d
 #
 # Images are pinned to the digests validated on 2026-08-01.  Refreshing an
@@ -19,7 +19,7 @@ x-gpu: &gpu
             count: all
             capabilities: [gpu]
 
-x-hf-cache: &hf-cache ${URBAN_DOSSIER_STATE_ROOT:-/mnt/data/urban-dossier}/hf-cache:/root/.cache/huggingface
+x-hf-cache: &hf-cache ${URBAN_DOSSIER_STATE_ROOT:-/mnt/data/urban-dossier-state}/hf-cache:/root/.cache/huggingface
 
 services:
   llm:
@@ -36,7 +36,7 @@ services:
     environment:
       HF_HOME: /root/.cache/huggingface
     volumes:
-      - ${URBAN_DOSSIER_STATE_ROOT:-/mnt/data/urban-dossier}/models/llm:/model:ro
+      - ${URBAN_DOSSIER_STATE_ROOT:-/mnt/data/urban-dossier-state}/models/llm:/model:ro
       - *hf-cache
     entrypoint: [vllm]
     command:
@@ -89,7 +89,7 @@ services:
     environment:
       HF_HOME: /root/.cache/huggingface
     volumes:
-      - ${URBAN_DOSSIER_STATE_ROOT:-/mnt/data/urban-dossier}/models/embedding:/model:ro
+      - ${URBAN_DOSSIER_STATE_ROOT:-/mnt/data/urban-dossier-state}/models/embedding:/model:ro
       - *hf-cache
     entrypoint: [vllm]
     command:

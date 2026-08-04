@@ -68,11 +68,11 @@ only after benchmarking with `URBAN_DOSSIER_PARQUET_*` environment variables.
 Validate the immutable raw snapshot and the complete ready publication with:
 
 ```bash
-.venv/bin/python scripts/audit_datasets.py /mnt/data/urban-dossier/datasets/raw \
-  --output /mnt/data/urban-dossier/datasets/manifests/raw-audit.json
+.venv/bin/python scripts/audit_datasets.py /mnt/data/urban-dossier-state/datasets/raw \
+  --output /mnt/data/urban-dossier-state/datasets/manifests/raw-audit.json
 
 .venv/bin/python scripts/validate_ready_parquet.py /path/to/data/ready \
-  --output /mnt/data/urban-dossier/datasets/manifests/ready-audit.json
+  --output /mnt/data/urban-dossier-state/datasets/manifests/ready-audit.json
 ```
 
 ## Gold overview and NTA publication

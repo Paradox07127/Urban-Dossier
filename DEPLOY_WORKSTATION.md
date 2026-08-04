@@ -16,7 +16,7 @@ Validated 2026-08-02:
 - NemoClaw 0.0.100, OpenShell 0.0.85, OpenClaw 2026.7.1;
 - Python 3.12 with `uv`, Node.js 24;
 - repository at `/mnt/data/Urban-Dossier`;
-- mutable state at `/mnt/data/urban-dossier` on the second SSD.
+- mutable state at `/mnt/data/urban-dossier-state` on the second SSD.
 - 18/18 raw datasets, 44/44 ready Parquet files, and NTA 2020 release 26B
   overview layers available to the frontend.
 
@@ -24,18 +24,18 @@ Validated 2026-08-02:
 
 ```text
 /mnt/data/Urban-Dossier/                 Git checkout
-/mnt/data/urban-dossier/datasets/raw/    downloaded source data
-/mnt/data/urban-dossier/models/llm/      Nemotron model mount
-/mnt/data/urban-dossier/models/embedding optional Qwen embedding model
-/mnt/data/urban-dossier/hf-cache/         shared Hugging Face cache
-/mnt/data/urban-dossier/runtime/          env files and Gateway token
+/mnt/data/urban-dossier-state/datasets/raw/    downloaded source data
+/mnt/data/urban-dossier-state/models/llm/      Nemotron model mount
+/mnt/data/urban-dossier-state/models/embedding optional Qwen embedding model
+/mnt/data/urban-dossier-state/hf-cache/         shared Hugging Face cache
+/mnt/data/urban-dossier-state/runtime/          env files and Gateway token
 ```
 
 Create the mutable directories once:
 
 ```bash
-mkdir -p /mnt/data/urban-dossier/{datasets/raw,models/llm,models/embedding,hf-cache,runtime}
-chmod 700 /mnt/data/urban-dossier/runtime
+mkdir -p /mnt/data/urban-dossier-state/{datasets/raw,models/llm,models/embedding,hf-cache,runtime}
+chmod 700 /mnt/data/urban-dossier-state/runtime
 ```
 
 ## 2. Clone and Python/Node environments
@@ -59,7 +59,7 @@ use conda if that platform's wheel support requires it.
 ## 3. Download data
 
 ```bash
-bash scripts/download_datasets.sh /mnt/data/urban-dossier/datasets/raw
+bash scripts/download_datasets.sh /mnt/data/urban-dossier-state/datasets/raw
 ```
 
 The download catalog contains 18 source datasets. The backend consumes prepared
@@ -70,8 +70,8 @@ Audit the entire CSV snapshot with a strict full-file parse before cleaning:
 
 ```bash
 .venv/bin/python scripts/audit_datasets.py \
-  /mnt/data/urban-dossier/datasets/raw \
-  --output /mnt/data/urban-dossier/datasets/manifests/raw-audit.json
+  /mnt/data/urban-dossier-state/datasets/raw \
+  --output /mnt/data/urban-dossier-state/datasets/manifests/raw-audit.json
 ```
 
 The workstation data plane is deliberately layered:
@@ -100,7 +100,7 @@ Before publication, normalize row groups and validate every file:
 ```bash
 .venv/bin/python scripts/optimize_parquet.py /path/to/data/ready
 .venv/bin/python scripts/validate_ready_parquet.py /path/to/data/ready \
-  --output /mnt/data/urban-dossier/datasets/manifests/ready-audit.json
+  --output /mnt/data/urban-dossier-state/datasets/manifests/ready-audit.json
 ```
 
 Download the official NYC Planning boundary and build the Gold overview layer
@@ -129,14 +129,14 @@ Git and must be reproduced on each deployment host.
 ## 4. Configure and start vLLM
 
 ```bash
-cp deploy/gpu.env.example /mnt/data/urban-dossier/runtime/gpu.env
+cp deploy/gpu.env.example /mnt/data/urban-dossier-state/runtime/gpu.env
 
 docker compose \
-  --env-file /mnt/data/urban-dossier/runtime/gpu.env \
+  --env-file /mnt/data/urban-dossier-state/runtime/gpu.env \
   -f deploy/compose.gpu.yml pull llm
 
 docker compose \
-  --env-file /mnt/data/urban-dossier/runtime/gpu.env \
+  --env-file /mnt/data/urban-dossier-state/runtime/gpu.env \
   -f deploy/compose.gpu.yml up -d llm
 ```
 
@@ -178,7 +178,7 @@ critical path. Start it only after mounting its model and following
 
 ```bash
 docker compose \
-  --env-file /mnt/data/urban-dossier/runtime/gpu.env \
+  --env-file /mnt/data/urban-dossier-state/runtime/gpu.env \
   -f deploy/compose.gpu.yml up -d embeddings
 ```
 
@@ -216,8 +216,8 @@ workaround and recovery details.
 ## 6. Install the persistent FastAPI service
 
 ```bash
-cp deploy/backend.env.example /mnt/data/urban-dossier/runtime/backend.env
-chmod 600 /mnt/data/urban-dossier/runtime/backend.env
+cp deploy/backend.env.example /mnt/data/urban-dossier-state/runtime/backend.env
+chmod 600 /mnt/data/urban-dossier-state/runtime/backend.env
 
 mkdir -p ~/.config/systemd/user
 cp deploy/systemd/urban-dossier-backend.service ~/.config/systemd/user/
@@ -303,7 +303,7 @@ the candidate, run the 8K C1/C4 benchmark and real Agent smoke test, then update
 systemctl --user stop urban-dossier-backend.service
 nemoclaw urban-dossier-agent stop
 docker compose \
-  --env-file /mnt/data/urban-dossier/runtime/gpu.env \
+  --env-file /mnt/data/urban-dossier-state/runtime/gpu.env \
   -f deploy/compose.gpu.yml stop
 ```
 

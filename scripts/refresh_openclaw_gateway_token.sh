@@ -3,7 +3,7 @@ set -euo pipefail
 
 SANDBOX_NAME="${NEMOCLAW_SANDBOX:-urban-dossier-agent}"
 NEMOCLAW_BIN="${NEMOCLAW_BIN:-$(command -v nemoclaw || true)}"
-TOKEN_FILE="${OPENCLAW_GATEWAY_TOKEN_FILE:-/mnt/data/urban-dossier/runtime/openclaw-gateway.token}"
+TOKEN_FILE="${OPENCLAW_GATEWAY_TOKEN_FILE:-/mnt/data/urban-dossier-state/runtime/openclaw-gateway.token}"
 
 if [[ -z "$NEMOCLAW_BIN" || ! -x "$NEMOCLAW_BIN" ]]; then
   echo "ERROR: nemoclaw not found; set NEMOCLAW_BIN to its executable path" >&2

@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/mnt/data/Urban-Dossier
-EnvironmentFile=/mnt/data/urban-dossier/runtime/backend.env
+EnvironmentFile=/mnt/data/urban-dossier-state/runtime/backend.env
 ExecStartPre=-/home/taijial/.local/bin/nemoclaw urban-dossier-agent recover
 ExecStartPre=/mnt/data/Urban-Dossier/scripts/refresh_openclaw_gateway_token.sh
 ExecStart=/mnt/data/Urban-Dossier/.venv/bin/python /mnt/data/Urban-Dossier/.venv/bin/uvicorn urban_dossier_backend.app:app --app-dir /mnt/data/Urban-Dossier/backend/src --host 127.0.0.1 --port 8090
