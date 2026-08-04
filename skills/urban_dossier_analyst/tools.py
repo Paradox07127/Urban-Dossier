@@ -379,26 +379,56 @@ def _find_similar_neighborhoods(args: FindSimilarNeighborhoodsArgs) -> dict[str,
 
 
 def _walking_isochrone(args: WalkingIsochroneArgs) -> dict[str, Any]:
-    raise NotImplementedError(
-        "Tool walking_isochrone requires backend endpoint "
-        "POST /api/isochrone (not yet implemented). "
-        "Required request schema: "
-        "{latitude: float, longitude: float, minutes: int, mode: 'walk'}. "
-        "Required response schema: GeoJSON Feature with Polygon geometry, "
-        "properties: {minutes: int, area_m2: float, mode: 'walk'}."
-    )
+    """Street-network walking isochrone as a GeoJSON Feature.
+
+    In-process via ``scenarios.walking_isochrone`` when the backend is
+    importable, otherwise HTTP loopback to ``POST /api/isochrone``.
+    """
+
+    _log_dispatch_mode_once()
+    backend = _resolve_backend_module()
+    if backend is not None:
+        from urban_dossier_backend.scenarios import walking_isochrone
+
+        return walking_isochrone(
+            latitude=args.latitude,
+            longitude=args.longitude,
+            minutes=args.minutes,
+        )
+    body = {
+        "latitude": args.latitude,
+        "longitude": args.longitude,
+        "minutes": args.minutes,
+        "mode": "walk",
+    }
+    return _backend_post("/api/isochrone", body)
 
 
 def _simulate_intervention(args: SimulateInterventionArgs) -> dict[str, Any]:
-    raise NotImplementedError(
-        "Tool simulate_intervention requires backend endpoint "
-        "POST /api/simulate (not yet implemented). "
-        "Required request schema: "
-        "{latitude: float, longitude: float, intervention_type: str, count: int}. "
-        "Required response schema: "
-        "{baseline_scores: dict, projected_scores: dict, "
-        "deltas: dict, affected_cells: list[str]}."
-    )
+    """Project scores after adding assets, using fitted count->score curves.
+
+    Correlational, not causal; the response carries that caveat and the fit
+    quality so the agent can qualify what it reports.
+    """
+
+    _log_dispatch_mode_once()
+    backend = _resolve_backend_module()
+    if backend is not None:
+        from urban_dossier_backend.scenarios import simulate_intervention
+
+        return simulate_intervention(
+            latitude=args.latitude,
+            longitude=args.longitude,
+            intervention_type=args.intervention_type,
+            count=args.count,
+        )
+    body = {
+        "latitude": args.latitude,
+        "longitude": args.longitude,
+        "intervention_type": args.intervention_type,
+        "count": args.count,
+    }
+    return _backend_post("/api/simulate", body)
 
 
 def _search_address(args: SearchAddressArgs) -> dict[str, Any]:

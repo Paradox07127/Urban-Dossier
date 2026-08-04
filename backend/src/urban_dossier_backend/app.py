@@ -312,6 +312,56 @@ def dataset_query_endpoint(request: DatasetQueryRequest) -> dict:
     )
 
 
+class IsochroneRequest(BaseModel):
+    latitude: float = Field(ge=40.4, le=40.95)
+    longitude: float = Field(ge=-74.3, le=-73.7)
+    minutes: int = Field(default=10, ge=1, le=60)
+    mode: str = Field(default="walk")
+
+
+class SimulateRequest(BaseModel):
+    latitude: float = Field(ge=40.4, le=40.95)
+    longitude: float = Field(ge=-74.3, le=-73.7)
+    intervention_type: str
+    count: int = Field(default=1, ge=1, le=20)
+    radius_m: int = Field(default=500, ge=50, le=2000)
+
+
+@app.post("/api/isochrone")
+def isochrone_endpoint(request: IsochroneRequest) -> dict:
+    from .scenarios import walking_isochrone
+
+    if request.mode != "walk":
+        return JSONResponse(
+            status_code=400,
+            content={"detail": f"Unsupported mode '{request.mode}'; only 'walk' is built."},
+        )
+    result = walking_isochrone(
+        latitude=request.latitude,
+        longitude=request.longitude,
+        minutes=request.minutes,
+    )
+    if result.get("error"):
+        return JSONResponse(status_code=503, content=result)
+    return result
+
+
+@app.post("/api/simulate")
+def simulate_endpoint(request: SimulateRequest) -> dict:
+    from .scenarios import simulate_intervention
+
+    result = simulate_intervention(
+        latitude=request.latitude,
+        longitude=request.longitude,
+        intervention_type=request.intervention_type,
+        count=request.count,
+        radius_m=request.radius_m,
+    )
+    if result.get("error"):
+        return JSONResponse(status_code=503, content=result)
+    return result
+
+
 def _normalize_tools_called(raw: object) -> list[dict]:
     """Adapt the skill's ``list[str]`` tool log to this API's ``list[dict]``.
 

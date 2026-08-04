@@ -835,6 +835,24 @@ app.post('/api/dataset/query', async (req, res) => {
   }
 });
 
+app.post('/api/isochrone', async (req, res) => {
+  try {
+    const payload = await backendRequest('/api/isochrone', { method: 'POST', body: req.body });
+    res.json(payload);
+  } catch (error) {
+    sendProxyError(res, 502, 'Isochrone failed', { details: error.payload ?? null });
+  }
+});
+
+app.post('/api/simulate', async (req, res) => {
+  try {
+    const payload = await backendRequest('/api/simulate', { method: 'POST', body: req.body });
+    res.json(payload);
+  } catch (error) {
+    sendProxyError(res, 502, 'Simulation failed', { details: error.payload ?? null });
+  }
+});
+
 app.post('/api/watchlist/run', async (req, res) => {
   try {
     const payload = await backendRequest('/api/watchlist/run', {

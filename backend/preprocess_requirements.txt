@@ -2,3 +2,7 @@ duckdb>=1.4.2
 pandas>=2.2.3
 pyarrow>=18.1.0
 h3>=4.1.2
+# Build-only: backend/scripts/build_walking_graph.py parses the OSM extract
+# into the walk_nodes/walk_edges Parquet pair. Not needed to serve requests.
+pyrosm>=0.13.1
+geopandas>=1.0

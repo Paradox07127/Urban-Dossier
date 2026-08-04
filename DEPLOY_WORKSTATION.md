@@ -120,6 +120,38 @@ bash scripts/maps/download_nta_2020.sh
   --overview-root /mnt/data/Urban-Dossier/data/cache/overview
 ```
 
+Build the two agent-tool artifacts. Both are reproducible local files, ignored
+by Git, and must be generated on each deployment host:
+
+```bash
+# Pedestrian routing graph for POST /api/isochrone.
+# Needs the build-only extras: uv pip install --python .venv/bin/python \
+#   -r backend/preprocess_requirements.txt
+.venv/bin/python backend/scripts/build_walking_graph.py \
+  --pbf /mnt/data/urban-dossier-state/maps/source/NewYork.osm.pbf \
+  --out /mnt/data/urban-dossier-state/maps/walk
+
+# Empirical count->score curves for POST /api/simulate.
+.venv/bin/python backend/scripts/fit_intervention_elasticity.py \
+  --ready-root /mnt/data/Urban-Dossier/data/ready \
+  --out /mnt/data/Urban-Dossier/data/cache/simulation/elasticity.json
+```
+
+The validated workstation build produced 2,109,327 walking nodes and 2,432,374
+edges from the 146 MB extract in about 41 s, stored as 53 MB of Parquet. The
+graph is deliberately **not** loaded into the FastAPI process: each isochrone
+request selects only the nodes inside a bounding box with DuckDB and runs
+Dijkstra on that subgraph, which keeps the resident footprint flat and answers
+a 10-minute isochrone in about one second.
+
+The elasticity fit reports a Spearman correlation per intervention. On the
+validated snapshot `bike_lane`, `bus_stop`, `toilet` and `linknyc` fit at 1.0
+because the published score is a rank transform of the asset count, while
+`park` fits at 0.45 — `parks_access` scores on total acreage, so park *count*
+is only a weak proxy. `/api/simulate` marks that projection `"quality":
+"weak"` and attaches a warning rather than presenting it with equal
+confidence.
+
 `download_nta_2020.sh` publishes atomically only after validating the GeoJSON,
 262 unique NTA codes, polygon geometry, ArcGIS layer definition, and official
 metadata PDF. Its manifest records release 26B, source URLs, byte sizes, field

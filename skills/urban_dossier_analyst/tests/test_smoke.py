@@ -164,13 +164,42 @@ class DispatchToolErrorHandlingTest(unittest.TestCase):
         self.assertIn("validation", out["error"].lower())
 
     def test_not_implemented_returns_dict_with_endpoint_hint(self) -> None:
-        out = tools.dispatch_tool(
-            "walking_isochrone",
-            {"latitude": 40.75, "longitude": -73.99, "minutes": 10},
-        )
+        """dispatch_tool must convert NotImplementedError into an observation.
+
+        This used to probe walking_isochrone, which was a stub. It now does
+        real street-network routing, so the contract is exercised against an
+        injected raiser instead -- the guarantee under test is that
+        dispatch_tool never propagates the exception, not that any particular
+        tool is still unimplemented.
+        """
+
+        arg_model, original = tools._TOOL_REGISTRY["walking_isochrone"]
+
+        def _raise(_args):
+            raise NotImplementedError(
+                "Tool walking_isochrone requires backend endpoint POST /api/isochrone."
+            )
+
+        tools._TOOL_REGISTRY["walking_isochrone"] = (arg_model, _raise)
+        try:
+            out = tools.dispatch_tool(
+                "walking_isochrone",
+                {"latitude": 40.75, "longitude": -73.99, "minutes": 10},
+            )
+        finally:
+            tools._TOOL_REGISTRY["walking_isochrone"] = (arg_model, original)
+
         self.assertIn("error", out)
         self.assertIn("/api/isochrone", out["error"])
         self.assertIn("retry_hint", out)
+
+    def test_walking_isochrone_is_implemented(self) -> None:
+        """Guard against the tool silently regressing to a stub."""
+
+        _arg_model, impl = tools._TOOL_REGISTRY["walking_isochrone"]
+        import inspect
+
+        self.assertNotIn("raise NotImplementedError", inspect.getsource(impl))
 
 
 # --------------------------------------------------------------------------- #
