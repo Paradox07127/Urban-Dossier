@@ -10,6 +10,9 @@ htmlcov/
 
 # Node dependencies and build output
 node_modules/
+# also ignore a bare node_modules symlink; the trailing-slash pattern
+# above only matches real directories.
+node_modules
 dist/
 
 # Local environment files and secrets; examples remain versioned
