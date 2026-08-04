@@ -3,7 +3,10 @@ const path = require('path');
 const fs = require('fs');
 
 const app = express();
-const PORT = 3456;
+// 3456 stays the deployment default. The override exists so a second instance
+// can be brought up alongside the running one to verify a change end-to-end
+// without taking the LAN demo down.
+const PORT = Number(process.env.URBAN_DOSSIER_PORT || 3456);
 const HOST = (process.env.URBAN_DOSSIER_BIND_HOST || '0.0.0.0').trim();
 const BACKEND_BASE_URL = (process.env.URBAN_DOSSIER_BACKEND_URL || 'http://127.0.0.1:8090').replace(/\/$/, '');
 const DEMO_TOKEN = (process.env.URBAN_DOSSIER_DEMO_TOKEN || '').trim();
@@ -851,6 +854,19 @@ app.post('/api/agent/chat', async (req, res) => {
     res.json(payload);
   } catch (error) {
     sendProxyError(res, 502, 'Agent chat failed', { details: error.payload ?? null });
+  }
+});
+
+// v2 structured agent loop. Node stays a pure proxy here: the ReAct loop,
+// tool dispatch and evidence assembly all belong to FastAPI. Note this route
+// can run for several LLM round-trips, so it relies on BACKEND_TIMEOUT_MS
+// (default 180s) rather than a shorter per-route timeout.
+app.post('/api/agent/ask', async (req, res) => {
+  try {
+    const payload = await backendRequest('/api/agent/ask', { method: 'POST', body: req.body });
+    res.json(payload);
+  } catch (error) {
+    sendProxyError(res, 502, 'Agent ask failed', { details: error.payload ?? null });
   }
 });
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -261,6 +262,30 @@ class AskResponse(BaseModel):
     session_id: str
 
 
+def _normalize_tools_called(raw: object) -> list[dict]:
+    """Adapt the skill's ``list[str]`` tool log to this API's ``list[dict]``.
+
+    ``schemas.AgentResponse.tools_called`` is a locked cross-agent contract and
+    yields bare tool names in dispatch order. ``AskResponse`` publishes richer
+    objects so callers can gain fields without another breaking change, so the
+    conversion happens here at the boundary instead of in the skill.
+
+    Accepts both shapes: a plain name becomes ``{"name": ...}``, a dict is
+    passed through. Anything else is stringified rather than dropped, so a
+    future skill change degrades into data instead of a 500.
+    """
+
+    if not raw:
+        return []
+    normalized: list[dict] = []
+    for entry in raw if isinstance(raw, (list, tuple)) else [raw]:
+        if isinstance(entry, dict):
+            normalized.append(entry)
+        else:
+            normalized.append({"name": str(entry)})
+    return normalized
+
+
 @app.post("/api/agent/ask", response_model=AskResponse)
 async def ask(request: AskRequest) -> AskResponse | JSONResponse:
     """Run the v2 analyst agent loop and return a structured answer.
@@ -305,12 +330,24 @@ async def ask(request: AskRequest) -> AskResponse | JSONResponse:
             },
         )
 
+    # ``run_agent`` is a *stateless* pure function: it takes the conversation it
+    # should reason over and returns a structured result. Session ownership
+    # stays here, in FastAPI -- we load ``history`` from the AgentSession above
+    # and persist the new turn below. Do not add ``session_id`` to the skill's
+    # signature; the skill deliberately knows nothing about our session store.
+    #
+    # The endpoint/model come from the same env vars the rest of the backend
+    # uses (see deploy/backend.env.example) so /api/agent/ask cannot silently
+    # talk to a different vLLM than the one the deployment configured.
     try:
         result = run_agent(
-            message=request.message,
+            user_message=request.message,
             history=history,
             max_iterations=request.max_iterations,
-            session_id=session_id,
+            vllm_base_url=os.environ.get("OPENAI_BASE_URL", "http://127.0.0.1:8000/v1"),
+            model=os.environ.get(
+                "URBAN_DOSSIER_MODEL", "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4"
+            ),
         )
     except Exception as exc:  # noqa: BLE001 -- structured error surface for clients
         elapsed_ms = (time.perf_counter() - start_ms) * 1000.0
@@ -346,7 +383,7 @@ async def ask(request: AskRequest) -> AskResponse | JSONResponse:
     return AskResponse(
         answer=str(payload.get("answer", "")),
         evidence=list(payload.get("evidence", []) or []),
-        tools_called=list(payload.get("tools_called", []) or []),
+        tools_called=_normalize_tools_called(payload.get("tools_called")),
         iterations=int(payload.get("iterations", 0) or 0),
         trace=list(payload.get("trace", []) or []),
         session_id=session_id,

@@ -81,6 +81,68 @@ def _to_dict(obj: Any) -> dict[str, Any]:
     return {"value": str(obj)}
 
 
+def _message_text(msg_dict: dict[str, Any]) -> str:
+    """Return the model's user-facing text.
+
+    Nemotron is a reasoning model: vLLM puts the chain of thought in
+    ``reasoning`` (older builds: ``reasoning_content``) and the answer in
+    ``content``. When a response is cut off mid-reasoning ``content`` is None,
+    so falling back to the reasoning text is the difference between surfacing a
+    partial answer and returning nothing at all.
+    """
+
+    for key in ("content", "reasoning", "reasoning_content"):
+        value = msg_dict.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _compact_observation(result: dict[str, Any], budget_chars: int) -> str:
+    """Serialize a tool result for the model under a context budget.
+
+    ``score_neighborhood`` returns the full detail payload -- about 59k chars
+    (~15k tokens) for a single point, half of a 32k context window. Feeding
+    that back verbatim left so little room that the model exhausted its budget
+    mid-reasoning and returned a truncated response with empty content.
+
+    Large top-level fields are dropped biggest-first until the payload fits.
+    The dropped names are reported back to the model so it can re-query for a
+    specific slice instead of silently reasoning over a hole. The trace and the
+    API response keep the untouched result, so the UI loses nothing.
+    """
+
+    encoded = json.dumps(result, default=str)
+    if len(encoded) <= budget_chars:
+        return encoded
+
+    kept = dict(result)
+    omitted: list[str] = []
+    # Never drop the small fields that carry the actual answer.
+    protected = {"scores", "target", "error", "retry_hint", "latency_ms"}
+
+    by_size = sorted(
+        ((k, len(json.dumps(v, default=str))) for k, v in kept.items()),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    for key, _size in by_size:
+        if len(json.dumps(kept, default=str)) <= budget_chars:
+            break
+        if key in protected:
+            continue
+        kept.pop(key, None)
+        omitted.append(key)
+
+    if omitted:
+        kept["_omitted_fields"] = omitted
+        kept["_omitted_note"] = (
+            "Large fields were removed to fit the context window. Call "
+            "query_dataset for a specific slice if you need them."
+        )
+    return json.dumps(kept, default=str)
+
+
 def _extract_evidence_from_trace(trace: list[ToolCallTrace]) -> list[dict[str, Any]]:
     """Derive a minimal evidence list from successful tool calls."""
 
@@ -123,6 +185,7 @@ def run_agent(
     vllm_base_url: str = "http://localhost:8000/v1",
     model: str = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4",
     client_factory: ClientFactory | None = None,
+    observation_budget_chars: int = 8000,
 ) -> dict[str, Any]:
     """Run the ReAct loop and return the structured agent response.
 
@@ -134,6 +197,10 @@ def run_agent(
       vllm_base_url:   OpenAI-compatible base URL of the local vLLM server.
       model:           Model name registered with vLLM at startup.
       client_factory:  Test seam. Defaults to the real openai.OpenAI client.
+      observation_budget_chars: Max serialized size of a single tool result fed
+                       back to the model. Oversized results are reduced by
+                       dropping their largest fields; the full result is still
+                       recorded in the returned trace.
 
     Returns:
       Dict matching schemas.AgentResponse.
@@ -180,7 +247,13 @@ def run_agent(
         msg = choice.message
         msg_dict = _to_dict(msg)
         tool_calls = msg_dict.get("tool_calls") or []
-        content = msg_dict.get("content") or ""
+        # Keep these separate: ``content`` is a real user-facing answer, while
+        # ``fallback_text`` may be raw chain of thought. Reasoning is a last
+        # resort only -- never the preferred answer.
+        raw_content = msg_dict.get("content")
+        content = raw_content.strip() if isinstance(raw_content, str) else ""
+        fallback_text = _message_text(msg_dict)
+        finish_reason = getattr(choice, "finish_reason", None)
 
         # The OpenAI SDK requires the assistant message echoed back into
         # history before any tool messages are appended.
@@ -190,8 +263,37 @@ def run_agent(
         messages.append(assistant_msg)
 
         # Termination: model produced text and no tool calls.
+        #
+        # ``finish_reason == "length"`` means the response was cut off, not
+        # that the model was done. Treating that as a final answer is what made
+        # a truncated reasoning block look like a completed-but-empty turn, so
+        # ask for a bounded wrap-up instead of terminating on the fragment.
         if not tool_calls:
-            final_answer = content.strip()
+            if content:
+                final_answer = content
+            elif finish_reason == "length":
+                # Cut off before it produced an answer. Ask for a short one
+                # rather than handing the user raw chain of thought.
+                messages.append({"role": "system", "content": FINAL_ANSWER_PROMPT})
+                try:
+                    wrapup = client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        tool_choice="none",
+                        temperature=0.2,
+                        max_tokens=1024,
+                    )
+                    final_answer = _message_text(_to_dict(wrapup.choices[0].message))
+                except Exception as exc:  # noqa: BLE001
+                    final_answer = (
+                        f"Agent loop hit the model's token limit at iteration "
+                        f"{iterations} and the wrap-up call failed with "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                if not final_answer:
+                    final_answer = fallback_text
+            else:
+                final_answer = fallback_text
             break
 
         # Dispatch each requested tool call.
@@ -265,7 +367,7 @@ def run_agent(
                     "role": "tool",
                     "tool_call_id": call_id,
                     "name": tool_name,
-                    "content": json.dumps(result, default=str),
+                    "content": _compact_observation(result, observation_budget_chars),
                 }
             )
     else:
@@ -278,8 +380,9 @@ def run_agent(
                 messages=messages,
                 tool_choice="none",
                 temperature=0.2,
+                max_tokens=1024,
             )
-            final_answer = (_to_dict(wrapup.choices[0].message).get("content") or "").strip()
+            final_answer = _message_text(_to_dict(wrapup.choices[0].message))
         except Exception as exc:  # noqa: BLE001
             final_answer = (
                 f"Agent loop hit max_iterations={max_iterations} and the "
