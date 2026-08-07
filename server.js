@@ -1132,19 +1132,45 @@ app.get('/api/building-tiles/status', (req, res) => {
 });
 
 // Font glyph endpoint for MapLibre
+// Glyphs for every label on the map.
+//
+// This served nothing at all. res.sendFile was given an absolute path, which
+// Express 5 answers with "Not Found" when the path contains spaces -- and every
+// fontstack here is "Open Sans Regular" or "Open Sans Bold". The handler then
+// fell through to its own last resort and returned an empty buffer with a 200,
+// so the failure was completely silent: the client saw a valid, glyphless font.
+//
+// The visible result was subtle enough to be mistaken for a data problem. No
+// Latin label rendered anywhere, while the handful of POIs whose OSM name is in
+// Chinese still appeared, because MapLibre draws CJK locally from system fonts
+// and never asks this endpoint for them. A map that shows eight Chinatown
+// restaurants and no street names looks like dirty data; it was a broken file
+// server.
+//
+// Uses the root form, which is what Express 5 documents and which also confines
+// the lookup to the font directory rather than relying on the segment check
+// alone.
+const FONT_ROOT = path.join(__dirname, 'public', 'fonts');
+const FALLBACK_FONTSTACK = 'Open Sans Regular';
+
 app.get('/fonts/:fontstack/:range.pbf', (req, res) => {
   const { fontstack, range } = req.params;
   if (!isSafePathSegment(fontstack) || !isSafePathSegment(range)) {
     return res.status(400).send('Invalid font path');
   }
-  const fontPath = path.join(__dirname, 'public', 'fonts', fontstack, `${range}.pbf`);
-  res.sendFile(fontPath, (err) => {
-    if (err) {
-      const fallback = path.join(__dirname, 'public', 'fonts', 'Open Sans Regular', `${range}.pbf`);
-      res.sendFile(fallback, (err2) => {
-        if (err2) res.status(200).set('Content-Type', 'application/x-protobuf').send(Buffer.alloc(0));
-      });
-    }
+  const opts = { root: FONT_ROOT };
+  res.sendFile(path.join(fontstack, `${range}.pbf`), opts, (err) => {
+    if (!err) return;
+    res.sendFile(path.join(FALLBACK_FONTSTACK, `${range}.pbf`), opts, (err2) => {
+      if (!err2) return;
+      // A genuinely absent range -- most of Unicode is not in these files, and
+      // MapLibre expects an empty response for the ranges a font does not
+      // cover. Logged so an absent *font* cannot hide here again.
+      if (range === '0-255') {
+        console.warn(`  Glyphs missing for the basic Latin range of "${fontstack}"`);
+      }
+      res.status(200).set('Content-Type', 'application/x-protobuf').send(Buffer.alloc(0));
+    });
   });
 });
 

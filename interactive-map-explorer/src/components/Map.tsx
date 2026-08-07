@@ -97,6 +97,28 @@ function extrusionHeight(): maplibregl.ExpressionSpecification {
   ];
 }
 
+/**
+ * Label text, in Latin script wherever the tiles can supply it.
+ *
+ * OSM's `name` is the name in the local language -- what is on the sign -- so
+ * a handful of Chinatown businesses carry Chinese names while the rest of the
+ * city is in English. That is correct data, not dirty data: of 12,131 named
+ * POIs in a Manhattan viewport, 8 have a Chinese `name`, because eight mappers
+ * typed what the shopfront said and the others typed the English name. The
+ * result is still a problem, though -- an English interface with eight
+ * characters-only labels reads as broken rather than as multilingual.
+ *
+ * OpenMapTiles ships `name:latin` for exactly this, and the tiles already have
+ * it: 寶榮行食品中心 comes with "Po Wing Hong Food Market". Preferred first,
+ * then `name_en`, then the raw name, so nothing ever renders blank.
+ */
+const LABEL_TEXT: maplibregl.ExpressionSpecification = [
+  'coalesce',
+  ['get', 'name:latin'],
+  ['get', 'name_en'],
+  ['get', 'name'],
+];
+
 /** Which tile property backs each map tag. */
 const TAG_TO_SCORE_FIELD: Record<RenderTag, string> = {
   general: 'overall',
@@ -721,7 +743,7 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       minzoom: 14,
       layout: {
         'symbol-placement': 'line',
-        'text-field': '{name}',
+        'text-field': LABEL_TEXT,
         'text-size': ['interpolate', ['linear'], ['zoom'], 14, 10, 18, 14],
         'text-font': ['Open Sans Regular'],
         'text-max-angle': 30,
@@ -738,7 +760,7 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       source: 'openmaptiles',
       'source-layer': 'water_name',
       layout: {
-        'text-field': '{name}',
+        'text-field': LABEL_TEXT,
         'text-size': ['interpolate', ['linear'], ['zoom'], 3, 10, 14, 16],
         'text-font': ['Open Sans Regular'],
       },
@@ -755,7 +777,7 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       'source-layer': 'park',
       minzoom: 11,
       layout: {
-        'text-field': '{name}',
+        'text-field': LABEL_TEXT,
         'text-size': 11,
         'text-font': ['Open Sans Regular'],
       },
@@ -772,7 +794,7 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       'source-layer': 'poi',
       minzoom: 15,
       layout: {
-        'text-field': '{name}',
+        'text-field': LABEL_TEXT,
         'text-size': 11,
         'text-font': ['Open Sans Regular'],
         'text-offset': [0, 0.6],
@@ -791,7 +813,7 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       'source-layer': 'place',
       filter: ['==', 'class', 'city'],
       layout: {
-        'text-field': '{name}',
+        'text-field': LABEL_TEXT,
         'text-size': ['interpolate', ['linear'], ['zoom'], 5, 14, 14, 24],
         'text-font': ['Open Sans Bold'],
       },
@@ -809,7 +831,7 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       filter: ['in', 'class', 'suburb', 'neighbourhood', 'quarter'],
       minzoom: 12,
       layout: {
-        'text-field': '{name}',
+        'text-field': LABEL_TEXT,
         'text-size': 13,
         'text-font': ['Open Sans Regular'],
         'text-transform': 'uppercase',
