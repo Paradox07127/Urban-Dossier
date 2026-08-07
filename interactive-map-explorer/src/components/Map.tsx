@@ -51,10 +51,17 @@ const FULL_RANGE_DOMAIN: ColourDomain = { low: 0, mid: 50, high: 100 };
    buildings then start at the slab's top face. Visually identical to a carved
    block, and it stays inside what the renderer actually supports.
 --------------------------------------------------------------------------- */
-const SLAB_TOP_M = 700;
+// A plate, not a plinth. Thick enough to read as a solid object cut from
+// something -- about five pixels of edge when the whole city is on screen --
+// and no thicker, because every metre of it is also the distance by which a
+// ground-level overlay would sit below the surface the buildings stand on.
+const SLAB_TOP_M = 150;
 const SLAB_SIDE = '#C9C3B8';
 const SLAB_TOP = '#E4DFD5';
 const VOID_COLOUR = '#DCE3E8';
+// How far a dropped pin stands above the model surface.
+const PIN_HEIGHT_M = 260;
+const PIN_RADIUS_KM = 0.018;
 
 /* Vertical exaggeration.
  *
@@ -237,6 +244,29 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
     // the same coastline the overview cells are clipped against, so the base
     // and the choropleth end at one line rather than two that nearly agree.
     landOutline: {
+      type: 'geojson',
+      data: EMPTY_FEATURE_COLLECTION,
+    },
+    // Pins that live inside the 3D scene.
+    //
+    // A maplibregl.Marker is a DOM element positioned by map.project(), which
+    // takes a lng/lat and no elevation -- there is no supported way to project
+    // a point that sits on top of an extrusion. So in the sandbox a marker
+    // lands on the slab's underside while the buildings stand on its top, and
+    // no amount of pixel offsetting fixes it, because the error depends on
+    // pitch, bearing and zoom together. Drawing the pin as extruded geometry
+    // based at the slab surface makes it part of the model instead, and it is
+    // then correct from every angle by construction.
+    sandboxPins: {
+      type: 'geojson',
+      data: EMPTY_FEATURE_COLLECTION,
+    },
+    // A sheet covering the world with New York City punched out of it, so the
+    // flat map stops where the data does. Everything outside the five boroughs
+    // -- New Jersey, Nassau, Westchester -- has no NYC Open Data behind it, and
+    // drawing its streets in the same ink as the scored city invites reading
+    // the blank as "nothing happening here" rather than "not measured".
+    cityMask: {
       type: 'geojson',
       data: EMPTY_FEATURE_COLLECTION,
     },
@@ -470,6 +500,33 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
         'fill-extrusion-base': SLAB_TOP_M,
         'fill-extrusion-opacity': 1,
         'fill-extrusion-vertical-gradient': true,
+      },
+    },
+    {
+      // The analysis radius, drawn as a shallow disc lying on the model
+      // surface rather than the flat circle used on the map, which would cut
+      // through the slab at ground level.
+      id: 'sandbox-radius',
+      type: 'fill-extrusion',
+      source: 'renderRadius',
+      layout: { visibility: 'none' },
+      paint: {
+        'fill-extrusion-color': UD_INK,
+        'fill-extrusion-base': SLAB_TOP_M,
+        'fill-extrusion-height': SLAB_TOP_M + 4,
+        'fill-extrusion-opacity': 0.13,
+      },
+    },
+    {
+      id: 'sandbox-pin',
+      type: 'fill-extrusion',
+      source: 'sandboxPins',
+      layout: { visibility: 'none' },
+      paint: {
+        'fill-extrusion-color': UD_INK,
+        'fill-extrusion-base': SLAB_TOP_M,
+        'fill-extrusion-height': SLAB_TOP_M + PIN_HEIGHT_M,
+        'fill-extrusion-opacity': 0.95,
       },
     },
     {
@@ -737,6 +794,31 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
         'text-halo-width': 1.5,
       },
     },
+    /* Everything beyond the five boroughs, veiled.
+       Last in the list so it covers the roads and labels below it. Not opaque:
+       the surrounding street network is useful for orientation -- you should
+       still be able to tell that the blank across the Hudson is Jersey City --
+       but it must not read as part of the analysis. */
+    {
+      id: 'city-mask',
+      type: 'fill',
+      source: 'cityMask',
+      paint: {
+        'fill-color': '#F1EEE9',
+        'fill-opacity': 0.82,
+        'fill-antialias': false,
+      },
+    },
+    {
+      id: 'city-mask-edge',
+      type: 'line',
+      source: 'cityMask',
+      paint: {
+        'line-color': UD_INK,
+        'line-width': 0.8,
+        'line-opacity': 0.18,
+      },
+    },
   ],
 };
 
@@ -794,6 +876,36 @@ async function fetchBuildingTileStatus(): Promise<{
   } catch {
     return { available: false, domains: {} };
   }
+}
+
+/**
+ * Turn the land outline into a sheet with the city punched out of it.
+ *
+ * A GeoJSON polygon's first ring is its outline and the rest are holes, so the
+ * mask is one big rectangle whose holes are the boroughs. Winding order is not
+ * enforced by MapLibre's renderer, which fills by even-odd, so the rings are
+ * passed through as they come.
+ */
+function buildCityMask(outline: GeoJSON.Feature): GeoJSON.Feature | null {
+  const geom = outline.geometry;
+  const holes: GeoJSON.Position[][] = [];
+  if (geom.type === 'Polygon') {
+    holes.push(geom.coordinates[0]);
+  } else if (geom.type === 'MultiPolygon') {
+    for (const poly of geom.coordinates) holes.push(poly[0]);
+  } else {
+    return null;
+  }
+  // Comfortably past any viewport the app can reach, but short of the poles,
+  // where the Mercator projection sends the corners to infinity.
+  const world: GeoJSON.Position[] = [
+    [-180, -85], [180, -85], [180, 85], [-180, 85], [-180, -85],
+  ];
+  return {
+    type: 'Feature',
+    properties: {},
+    geometry: { type: 'Polygon', coordinates: [world, ...holes] },
+  };
 }
 
 /** The city's landmass, for the sandbox slab. Null when unavailable. */
@@ -1177,10 +1289,18 @@ const FLAT_MAP_LAYERS = [
   'hex-overlay-fill', 'hex-overlay-line',
   'building-scores-fill', 'building', 'building-3d',
   'isochrone-fill', 'isochrone-line',
+  // Ground-level overlays. Left on, these lie on the slab's underside and cut
+  // through the model at the waterline.
+  'render-radius-fill', 'render-radius-line', 'render-radius-line-glow',
+  'hotspot-fill', 'hotspot-line',
+  // Nothing left to veil once the basemap is gone; the slab's edge is the
+  // boundary.
+  'city-mask', 'city-mask-edge',
 ];
 
 const SANDBOX_LAYERS = [
   'land-slab', 'land-slab-top', 'sandbox-massing', 'sandbox-buildings',
+  'sandbox-radius', 'sandbox-pin',
 ];
 
 /**
@@ -1190,6 +1310,45 @@ const SANDBOX_LAYERS = [
  * MapLibre, so the model physically cannot be turned upside down, and bearing
  * is free through 360. Nothing here has to enforce that.
  */
+/**
+ * Hide or restore the HTML markers.
+ *
+ * They are absolutely-positioned DOM nodes sitting above the canvas, so in the
+ * sandbox they neither respect the model's surface nor occlude behind its
+ * towers -- they float over the scene at the wrong height. The in-scene pin
+ * replaces the one that matters; the rest are map furniture that has no place
+ * on a physical model anyway.
+ */
+function setDomMarkersVisible(
+  refs: MutableRefObject<maplibregl.Marker[]>[], visible: boolean,
+) {
+  for (const ref of refs) {
+    for (const marker of ref.current) {
+      marker.getElement().style.display = visible ? '' : 'none';
+    }
+  }
+}
+
+/** Put a pin into the model at the selected point. */
+function updateSandboxPin(map: MapLibreMap, target: LocalRenderTarget | null | undefined) {
+  const source = map.getSource('sandboxPins') as GeoJSONSource | undefined;
+  if (!source) return;
+  if (!target) {
+    source.setData(EMPTY_FEATURE_COLLECTION);
+    return;
+  }
+  source.setData({
+    type: 'FeatureCollection',
+    features: [{
+      type: 'Feature',
+      properties: {},
+      geometry: createCirclePolygon(
+        [target.center[1], target.center[0]], PIN_RADIUS_KM, 18,
+      ),
+    }],
+  });
+}
+
 function setSandboxMode(map: MapLibreMap, on: boolean, tag: RenderTag,
                         domains: Record<string, ColourDomain>) {
   for (const id of FLAT_MAP_LAYERS) {
@@ -1549,8 +1708,20 @@ export default function Map({
     const map = mapRef.current;
     if (!map || !map.isStyleLoaded()) return;
     setSandboxMode(map, sandbox, renderTag, colourDomainsRef.current);
+    setDomMarkersVisible([markersRef, postMarkersRef], !sandbox);
+    updateSandboxPin(map, sandbox ? localRenderTargetRef.current : null);
     if (sandbox) setExaggeration(exaggerationAtZoom(map.getZoom()));
   }, [sandbox, renderTag]);
+
+  // Keep the in-scene pin on the current selection, and keep newly created DOM
+  // markers hidden while the sandbox is open -- they are rebuilt on every
+  // selection change and would otherwise reappear over the model.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) return;
+    setDomMarkersVisible([markersRef, postMarkersRef], !sandboxRef.current);
+    if (sandboxRef.current) updateSandboxPin(map, localRenderTarget);
+  }, [localRenderTarget, refreshKey, markers, hotspots]);
 
   useEffect(() => {
     if (!mapContainer.current || mapRef.current) return;
@@ -1576,13 +1747,18 @@ export default function Map({
 
       // The sandbox needs both the baked prisms and the coastline to stand
       // them on; without either it is not offered rather than shown broken.
-      if (status.available) {
-        const outline = await fetchLandOutline();
-        if (outline) {
-          const src = map.getSource('landOutline') as GeoJSONSource | undefined;
-          src?.setData(outline);
-          setSandboxReady(true);
+      // The outline serves both the sandbox slab and the flat map's mask, so
+      // it is fetched whether or not the building tiles exist.
+      const outline = await fetchLandOutline();
+      if (outline) {
+        (map.getSource('landOutline') as GeoJSONSource | undefined)?.setData(outline);
+        const mask = buildCityMask(outline);
+        if (mask) {
+          (map.getSource('cityMask') as GeoJSONSource | undefined)?.setData(mask);
         }
+        // The sandbox also needs the baked prisms; without them it would be an
+        // empty plate, so it is not offered rather than shown broken.
+        if (status.available) setSandboxReady(true);
       }
 
       const config = localRenderTarget
