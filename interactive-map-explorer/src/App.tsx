@@ -251,7 +251,6 @@ export default function App() {
   const [sandbox, setSandbox] = useState(false);
   const [sandboxAvailable, setSandboxAvailable] = useState(false);
   const [colourDomains, setColourDomains] = useState<Record<string, ColourDomain>>({});
-  const [exaggeration, setExaggeration] = useState(6);
 
   const reportRef = useRef<HTMLDivElement>(null);
 
@@ -568,7 +567,6 @@ export default function App() {
           sandbox={sandbox}
           onSandboxAvailable={setSandboxAvailable}
           onColourDomains={setColourDomains}
-          onExaggerationChange={setExaggeration}
           onMarkerClick={handleMarkerClick}
           onMapClick={handleMapClick}
         />
@@ -590,7 +588,6 @@ export default function App() {
         sandbox={sandbox}
         sandboxAvailable={sandboxAvailable}
         onSandboxChange={setSandbox}
-        exaggeration={exaggeration}
         domains={colourDomains}
         onSearch={(q) => { setSearchQuery(q); handleSearch(q); }}
         onResetView={handleGlobalView}

@@ -15,8 +15,6 @@ interface Props {
   sandbox: boolean;
   sandboxAvailable: boolean;
   onSandboxChange: (on: boolean) => void;
-  /** Vertical exaggeration currently applied in the sandbox. */
-  exaggeration: number;
   domains: Record<string, ColourDomain>;
   onSearch: (query: string) => void;
   onResetView: () => void;
@@ -147,7 +145,6 @@ export default function InstrumentRail({
   sandbox,
   sandboxAvailable,
   onSandboxChange,
-  exaggeration,
   domains,
   onSearch,
   onResetView,
@@ -243,16 +240,6 @@ export default function InstrumentRail({
                 </button>
               ))}
             </div>
-            {sandbox && (
-              // The towers are stretched at city scale or they would be
-              // sub-pixel; saying so is cheaper than letting the reader assume
-              // the skyline is to scale.
-              <p className="mt-1.5 px-1 font-mono text-[10px] tabular-nums text-muted-foreground">
-                {exaggeration <= 1.05
-                  ? 'heights true to scale'
-                  : `heights ×${exaggeration.toFixed(1)} at this zoom`}
-              </p>
-            )}
           </div>
         )}
 

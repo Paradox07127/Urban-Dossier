@@ -57,62 +57,44 @@ const FULL_RANGE_DOMAIN: ColourDomain = { low: 0, mid: 50, high: 100 };
    buildings then start at the slab's top face. Visually identical to a carved
    block, and it stays inside what the renderer actually supports.
 --------------------------------------------------------------------------- */
-// A plate, not a plinth. Thick enough to read as a solid object cut from
-// something -- about five pixels of edge when the whole city is on screen --
-// and no thicker, because every metre of it is also the distance by which a
-// ground-level overlay would sit below the surface the buildings stand on.
-const SLAB_TOP_M = 150;
+// A plate, not a plinth. Every metre of it is also a metre by which the
+// surface the buildings stand on sits above the plane a map click lands on, so
+// thinness is a correctness property here and not only a look.
+const SLAB_TOP_M = 75;
 const SLAB_SIDE = '#C9C3B8';
 const SLAB_TOP = '#E4DFD5';
 const VOID_COLOUR = '#DCE3E8';
-// How far a dropped pin stands above the model surface.
-const PIN_HEIGHT_M = 260;
-const PIN_RADIUS_KM = 0.018;
 
-/* Vertical exaggeration.
+/* The dropped pin: a thin shaft with a ring around its foot.
  *
- * NYC is 40 km across. At the zoom where the whole city fits, one pixel is
- * about 27 m, so a 100 m tower is under four pixels and the skyline is
- * invisible -- a true-scale model of a city this wide reads as a flat sheet.
- * Heights are stretched at city scale and relax to true scale by z15, where a
- * building occupies enough screen for its real proportions to be readable.
+ * Sized after the way night-mode city maps mark a location -- a beam narrow
+ * enough to point at one building rather than cover a block, tall enough to
+ * clear the towers around it. The previous shaft was as wide as the buildings
+ * it stood among, so it read as another building. */
+const PIN_HEIGHT_M = 420;
+const PIN_RADIUS_KM = 0.0045;
+
+/* Building height.
  *
- * This distorts, so the view labels the current factor rather than leaving the
- * reader to assume the towers are to scale.
+ * Heights used to be stretched 6x at city scale and relaxed to true scale as
+ * you came in, which made the skyline visible from far away at the cost of
+ * every tower being the wrong size and changing size as you moved. A model
+ * whose proportions depend on the camera is not a model.
+ *
+ * True scale throughout instead, with a floor. A 7.9 m rowhouse -- the median
+ * here -- is sub-pixel at city zoom either way, so lifting it to the floor
+ * costs no accuracy anyone could see and keeps the low-rise fabric reading as
+ * a surface rather than dropping out to nothing. Anything already taller than
+ * the floor is drawn exactly as measured, so the skyline is the real skyline.
  */
-const EXAGGERATION_STOPS: [number, number][] = [[10, 6], [13, 3], [15, 1]];
+const MIN_BUILDING_HEIGHT_M = 6;
 
-function exaggerationAtZoom(zoom: number): number {
-  const stops = EXAGGERATION_STOPS;
-  if (zoom <= stops[0][0]) return stops[0][1];
-  if (zoom >= stops[stops.length - 1][0]) return 1;
-  for (let i = 0; i < stops.length - 1; i++) {
-    const [z0, v0] = stops[i];
-    const [z1, v1] = stops[i + 1];
-    if (zoom >= z0 && zoom <= z1) {
-      return v0 + ((v1 - v0) * (zoom - z0)) / (z1 - z0);
-    }
-  }
-  return 1;
-}
-
-/** Building prism, standing on the slab.
- *
- * The zoom interpolation has to be the outermost expression and take ['zoom']
- * directly -- MapLibre allows zoom only as the input of a top-level step or
- * interpolate, and rejects the entire style otherwise, leaving a blank map
- * rather than a degraded layer. So the exaggeration cannot multiply a feature
- * value from inside; instead each zoom stop carries its own fully-formed
- * height expression.
- */
 function extrusionHeight(): maplibregl.ExpressionSpecification {
-  const atStop = (factor: number): maplibregl.ExpressionSpecification => [
-    '+', SLAB_TOP_M, ['*', ['coalesce', ['get', 'height'], 8], factor],
-  ];
   return [
-    'interpolate', ['linear'], ['zoom'],
-    ...EXAGGERATION_STOPS.flatMap(([zoom, factor]) => [zoom, atStop(factor)]),
-  ] as maplibregl.ExpressionSpecification;
+    '+',
+    SLAB_TOP_M,
+    ['max', MIN_BUILDING_HEIGHT_M, ['coalesce', ['get', 'height'], MIN_BUILDING_HEIGHT_M]],
+  ];
 }
 
 /** Which tile property backs each map tag. */
@@ -178,8 +160,6 @@ interface MapProps {
   onSandboxAvailable?: (available: boolean) => void;
   /** Measured colour domains, hoisted so the rail can draw the legend. */
   onColourDomains?: (domains: Record<string, ColourDomain>) => void;
-  /** Vertical exaggeration in force at the current zoom. */
-  onExaggerationChange?: (factor: number) => void;
   onMarkerClick: (location: Location) => void;
   onMapClick: (lat: number, lng: number) => void;
 }
@@ -520,6 +500,8 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       // The analysis radius, drawn as a shallow disc lying on the model
       // surface rather than the flat circle used on the map, which would cut
       // through the slab at ground level.
+      // The analysis radius, as a disc lying on the model surface. Kept faint
+      // so it tints the ground rather than hiding what is standing on it.
       id: 'sandbox-radius',
       type: 'fill-extrusion',
       source: 'renderRadius',
@@ -527,8 +509,26 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       paint: {
         'fill-extrusion-color': UD_INK,
         'fill-extrusion-base': SLAB_TOP_M,
-        'fill-extrusion-height': SLAB_TOP_M + 4,
-        'fill-extrusion-opacity': 0.13,
+        'fill-extrusion-height': SLAB_TOP_M + 2,
+        'fill-extrusion-opacity': 0.1,
+      },
+    },
+    {
+      // The rim.
+      //
+      // A wash alone has no definite edge once buildings sit on top of it, and
+      // the reader needs to see exactly where the measurement stops -- that
+      // boundary is the difference between "within 200 m" and "nearby". Drawn
+      // as a line rather than a taller extrusion so it stays one pixel wide
+      // from any angle instead of becoming a wall when the camera drops.
+      id: 'sandbox-radius-rim',
+      type: 'line',
+      source: 'renderRadius',
+      layout: { visibility: 'none', 'line-join': 'round' },
+      paint: {
+        'line-color': UD_INK,
+        'line-width': 1.4,
+        'line-opacity': 0.55,
       },
     },
     {
@@ -540,7 +540,9 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
         'fill-extrusion-color': UD_INK,
         'fill-extrusion-base': SLAB_TOP_M,
         'fill-extrusion-height': SLAB_TOP_M + PIN_HEIGHT_M,
-        'fill-extrusion-opacity': 0.95,
+        // Slightly translucent so a tower behind the shaft still reads, which
+        // matters now that the shaft is tall enough to cross the skyline.
+        'fill-extrusion-opacity': 0.82,
       },
     },
     {
@@ -1354,7 +1356,7 @@ const FLAT_MAP_LAYERS = [
 
 const SANDBOX_LAYERS = [
   'land-slab', 'land-slab-top', 'sandbox-massing', 'sandbox-buildings',
-  'sandbox-radius', 'sandbox-pin',
+  'sandbox-radius', 'sandbox-radius-rim', 'sandbox-pin',
 ];
 
 /**
@@ -1381,6 +1383,66 @@ function setDomMarkersVisible(
       marker.getElement().style.display = visible ? '' : 'none';
     }
   }
+}
+
+/**
+ * Where in the city did a click on the model actually land?
+ *
+ * ``event.lngLat`` is the screen point unprojected onto the plane at elevation
+ * zero. In the sandbox nothing is at elevation zero: the ground is the slab's
+ * top face, and every building stands on that. With the camera pitched, a
+ * point on the surface appears higher up the screen than the same horizontal
+ * position on the plane below it, so clicking a building selected somewhere
+ * short of it -- the further from the horizon and the greater the pitch, the
+ * bigger the miss. That is the interaction error; it is not a rounding
+ * problem, it is a different plane.
+ *
+ * Two ways out, in order of confidence:
+ *
+ *  1. Ask the renderer what is under the cursor. If a building was hit, the
+ *     answer is that building, which is both exact and the thing the reader
+ *     meant to point at.
+ *  2. Otherwise the click is on bare ground, so re-unproject a screen point
+ *     pushed down by the slab's apparent height. An object h metres up appears
+ *     h*cos(pitch) metres' worth of pixels higher, so looking that far below
+ *     the cursor finds the horizontal position whose surface sits under it.
+ */
+function resolveSandboxClick(
+  map: MapLibreMap,
+  point: maplibregl.Point,
+  fallback: maplibregl.LngLat,
+): { lat: number; lng: number } {
+  const layers = ['sandbox-buildings', 'sandbox-massing'].filter((id) => map.getLayer(id));
+  if (layers.length) {
+    const hit = map.queryRenderedFeatures(point, { layers })[0];
+    const centre = hit && featureCentre(hit.geometry as GeoJSON.Geometry);
+    if (centre) return { lng: centre[0], lat: centre[1] };
+  }
+
+  const metresPerPixel =
+    (156543.03392 * Math.cos((map.getCenter().lat * Math.PI) / 180)) /
+    Math.pow(2, map.getZoom());
+  if (!Number.isFinite(metresPerPixel) || metresPerPixel <= 0) {
+    return { lat: fallback.lat, lng: fallback.lng };
+  }
+  const dy = (SLAB_TOP_M / metresPerPixel) * Math.cos((map.getPitch() * Math.PI) / 180);
+  const corrected = map.unproject([point.x, point.y + dy]);
+  return { lat: corrected.lat, lng: corrected.lng };
+}
+
+/** Centroid of a polygonal feature's outer ring, in [lng, lat]. */
+function featureCentre(geometry: GeoJSON.Geometry): Coordinate | null {
+  let ring: GeoJSON.Position[] | null = null;
+  if (geometry.type === 'Polygon') ring = geometry.coordinates[0];
+  else if (geometry.type === 'MultiPolygon') ring = geometry.coordinates[0]?.[0] ?? null;
+  if (!ring || ring.length < 3) return null;
+  let lng = 0;
+  let lat = 0;
+  for (const [x, y] of ring) {
+    lng += x;
+    lat += y;
+  }
+  return [lng / ring.length, lat / ring.length];
 }
 
 /** Put a pin into the model at the selected point. */
@@ -1737,7 +1799,6 @@ export default function Map({
   sandbox = false,
   onSandboxAvailable,
   onColourDomains,
-  onExaggerationChange,
   onMarkerClick,
   onMapClick,
 }: MapProps) {
@@ -1756,11 +1817,6 @@ export default function Map({
   // Mirrored into state purely so the legend can label its own ends; the map
   // itself reads the ref.
   const sandboxRef = useRef(false);
-  // Callbacks are held in refs so the map's own listeners can reach the latest
-  // one without the effect that creates the map depending on them, which would
-  // tear the map down and rebuild it on every parent render.
-  const onExaggerationRef = useRef(onExaggerationChange);
-  onExaggerationRef.current = onExaggerationChange;
 
   const activeRadiusM = localRenderTarget?.radiusM ?? 200;
 
@@ -1783,7 +1839,6 @@ export default function Map({
     // entirely in the sandbox and have to come back on the way out.
     updatePostMarkers(map, postMarkersRef, activeConfigRef.current, sandbox);
     updateSandboxPin(map, sandbox ? localRenderTargetRef.current : null);
-    if (sandbox) onExaggerationRef.current?.(exaggerationAtZoom(map.getZoom()));
   }, [sandbox, renderTag]);
 
   // Keep the in-scene pin on the current selection, and keep newly created DOM
@@ -1813,7 +1868,10 @@ export default function Map({
     // it is the way back to north after turning the model.
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'bottom-right');
     map.on('click', (event) => {
-      onMapClick(event.lngLat.lat, event.lngLat.lng);
+      const at = sandboxRef.current
+        ? resolveSandboxClick(map, event.point, event.lngLat)
+        : { lat: event.lngLat.lat, lng: event.lngLat.lng };
+      onMapClick(at.lat, at.lng);
     });
 
     map.on('load', async () => {
@@ -1947,12 +2005,9 @@ export default function Map({
     // Re-render buildings after map movement (flyTo, pan, zoom)
     map.on('moveend', () => {
       if (!map.isStyleLoaded()) return;
-      if (sandboxRef.current) {
-        // Report the exaggeration actually in force, since it changes with
-        // zoom and the reader would otherwise assume the towers are to scale.
-        onExaggerationRef.current?.(exaggerationAtZoom(map.getZoom()));
-        return;
-      }
+      // Nothing to recompute in the sandbox: the buildings are baked and
+      // their heights no longer depend on the camera.
+      if (sandboxRef.current) return;
       const config = activeConfigRef.current;
       if (!needsJsRender(config)) return;
       if (config.mode === 'local') {
