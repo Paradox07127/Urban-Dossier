@@ -442,9 +442,15 @@ async def ask(request: AskRequest) -> AskResponse | JSONResponse:
     # direct-to-vLLM path this endpoint used to take bypassed that boundary.
     # Setting URBAN_DOSSIER_ASK_TRANSPORT=vllm restores it for local debugging
     # on a host with no sandbox; it is not a supported production setting.
+    #
+    # The test is written against the bypass value rather than the sandboxed one
+    # so that it fails closed: an unset, misspelled or empty setting keeps
+    # traffic inside the boundary, and only a deliberate, correctly spelled
+    # opt-out leaves it. Matching on "gateway" instead would turn any typo into
+    # a silent bypass of the very boundary this endpoint exists to enforce.
     transport = os.environ.get("URBAN_DOSSIER_ASK_TRANSPORT", "gateway").strip().lower()
     client_factory = None
-    if transport == "gateway":
+    if transport != "vllm":
         # One Gateway session per ask-session keeps server-side conversation
         # state aligned with our AgentSession.
         client_factory = gateway_client_factory(session_key=f"ask-{session_id[:12]}")
