@@ -1253,10 +1253,28 @@ function renderHexOverlay(
   if (overlayRef) overlayRef.current = geojson;
 }
 
-function setGlobalVisualizationMode(map: MapLibreMap, isGlobal: boolean) {
-  // Buildings are always visible — in global mode they get colored from
-  // global render points when zoomed in (>= 15), in local mode from
-  // the selected point's data. Only hide the 3D layer when at overview zoom.
+/* Basemap furniture that the id prefixes below do not catch.
+ *
+ * The original test matched ids *starting* with "label", which misses
+ * water-label and park-label -- they end with it. Suffix and prefix are both
+ * checked now, and the list is the authority for anything neither rule finds. */
+function isBasemapFurniture(id: string): boolean {
+  return /^(road|bridge|tunnel|place|poi|boundary)/.test(id) || /label$/.test(id);
+}
+
+/**
+ * Show the flat map's own building layers.
+ *
+ * Does nothing while the sandbox is open. Three functions used to set the
+ * visibility of these layers independently -- this one, setBuildingRenderer,
+ * and setSandboxMode -- and whichever ran last won. The sandbox lost, so the
+ * flat choropleth and the flat extrusion stayed on top of the model, which is
+ * what put a sheet of 2D building footprints across the scene. The sandbox
+ * flag is now checked by every one of them, so there is a single answer to
+ * "should the flat map be drawn" rather than three competing ones.
+ */
+function setGlobalVisualizationMode(map: MapLibreMap, isGlobal: boolean, sandbox: boolean) {
+  if (sandbox) return;
   if (map.getLayer('building')) {
     map.setLayoutProperty('building', 'visibility', 'visible');
   }
@@ -1295,7 +1313,13 @@ function setBuildingScoreTag(
  * harmful: it would draw its own differently-derived colours on top. So the
  * two are mutually exclusive rather than layered.
  */
-function setBuildingRenderer(map: MapLibreMap, baked: boolean, isGlobal: boolean) {
+function setBuildingRenderer(
+  map: MapLibreMap, baked: boolean, isGlobal: boolean, sandbox: boolean,
+) {
+  // The sandbox draws its own buildings; neither flat renderer belongs on top
+  // of the model, and turning one on here is what leaked the flat choropleth
+  // into the 3D scene.
+  if (sandbox) return;
   const useBaked = baked && isGlobal;
   if (map.getLayer('building-scores-fill')) {
     map.setLayoutProperty(
@@ -1380,12 +1404,19 @@ function updateSandboxPin(map: MapLibreMap, target: LocalRenderTarget | null | u
 }
 
 function setSandboxMode(map: MapLibreMap, on: boolean, tag: RenderTag,
-                        domains: Record<string, ColourDomain>) {
+                        domains: Record<string, ColourDomain>,
+                        baked = false, isGlobal = true) {
   for (const id of FLAT_MAP_LAYERS) {
     if (map.getLayer(id)) {
       map.setLayoutProperty(id, 'visibility', on ? 'none' : 'visible');
     }
   }
+  // 'building' and 'building-scores-fill' draw the same buildings two ways and
+  // are mutually exclusive, so restoring the flat map cannot simply turn every
+  // layer in the list back on -- that would stack the JavaScript renderer on
+  // top of the baked one. Which of the two applies is setBuildingRenderer's
+  // decision, so it is asked rather than guessed at.
+  if (!on) setBuildingRenderer(map, baked, isGlobal, false);
   for (const id of SANDBOX_LAYERS) {
     if (map.getLayer(id)) {
       map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
@@ -1396,10 +1427,10 @@ function setSandboxMode(map: MapLibreMap, on: boolean, tag: RenderTag,
       'background', 'background-color', on ? VOID_COLOUR : '#f0ede9',
     );
   }
-  // Road and label layers come from the basemap and are matched by prefix
-  // rather than listed, since the style grows them over time.
+  // Basemap furniture is matched by pattern rather than listed, since the
+  // style grows more of it over time.
   for (const layer of map.getStyle().layers ?? []) {
-    if (/^(road|bridge|tunnel|place|poi|boundary|label)/.test(layer.id)) {
+    if (isBasemapFurniture(layer.id)) {
       map.setLayoutProperty(layer.id, 'visibility', on ? 'none' : 'visible');
     }
   }
@@ -1523,11 +1554,15 @@ function updatePostMarkers(
   map: MapLibreMap,
   markerStore: MutableRefObject<maplibregl.Marker[]>,
   config: RenderConfig,
+  sandbox = false,
 ) {
   markerStore.current.forEach((marker) => marker.remove());
   markerStore.current = [];
 
-  if (config.mode !== 'local') {
+  // Not created at all in the sandbox rather than created and hidden: these
+  // are dozens of HTML pins that would sit at ground level under the model,
+  // and a physical model has no use for map furniture in the first place.
+  if (config.mode !== 'local' || sandbox) {
     return;
   }
 
@@ -1739,8 +1774,14 @@ export default function Map({
     sandboxRef.current = sandbox;
     const map = mapRef.current;
     if (!map || !map.isStyleLoaded()) return;
-    setSandboxMode(map, sandbox, renderTag, colourDomainsRef.current);
+    setSandboxMode(
+      map, sandbox, renderTag, colourDomainsRef.current,
+      bakedTilesRef.current, activeConfigRef.current.mode === 'global',
+    );
     setDomMarkersVisible([markersRef, postMarkersRef], !sandbox);
+    // Rebuild the point markers for the mode we are entering: they are skipped
+    // entirely in the sandbox and have to come back on the way out.
+    updatePostMarkers(map, postMarkersRef, activeConfigRef.current, sandbox);
     updateSandboxPin(map, sandbox ? localRenderTargetRef.current : null);
     if (sandbox) onExaggerationRef.current?.(exaggerationAtZoom(map.getZoom()));
   }, [sandbox, renderTag]);
@@ -1804,12 +1845,12 @@ export default function Map({
       activeConfigRef.current = config;
       updateRadiusOverlay(map, localRenderTarget, renderTag);
       updateHotspotOverlay(map, hotspots);
-      updatePostMarkers(map, postMarkersRef, config);
+      updatePostMarkers(map, postMarkersRef, config, sandboxRef.current);
       if (config.mode === 'global') {
         const hexGeoJSON = await fetchHexOverlayGeoJSON(renderTag);
         renderHexOverlay(map, hexGeoJSON, hexOverlayRef);
-        setGlobalVisualizationMode(map, true);
-        setBuildingRenderer(map, bakedTilesRef.current, true);
+        setGlobalVisualizationMode(map, true, sandboxRef.current);
+        setBuildingRenderer(map, bakedTilesRef.current, true, sandboxRef.current);
         if (bakedTilesRef.current) {
           setBuildingScoreTag(map, config.tag, colourDomainsRef.current);
         } else {
@@ -1817,8 +1858,8 @@ export default function Map({
         }
       } else {
         renderHexOverlay(map, EMPTY_FEATURE_COLLECTION, hexOverlayRef);
-        setGlobalVisualizationMode(map, false);
-        setBuildingRenderer(map, bakedTilesRef.current, false);
+        setGlobalVisualizationMode(map, false, sandboxRef.current);
+        setBuildingRenderer(map, bakedTilesRef.current, false, sandboxRef.current);
         renderVisibleBuildings(map, config, localRenderTargetRef.current);
       }
     });
@@ -1941,6 +1982,12 @@ export default function Map({
     });
 
     mapRef.current = map;
+    // The map instance is otherwise unreachable from outside React, and this
+    // style has twice been taken down entirely by a malformed expression that
+    // only a screenshot revealed. Exposing the instance lets a headless check
+    // enumerate layers and paint properties instead of guessing from pixels.
+    // Read-only by convention; nothing in the app reads it back.
+    (window as unknown as { __udMap?: MapLibreMap }).__udMap = map;
 
     return () => {
       map.remove();
@@ -1982,13 +2029,13 @@ export default function Map({
       activeConfigRef.current = config;
       updateRadiusOverlay(map, localRenderTarget, renderTag);
       updateHotspotOverlay(map, hotspots);
-      updatePostMarkers(map, postMarkersRef, config);
+      updatePostMarkers(map, postMarkersRef, config, sandboxRef.current);
       if (config.mode === 'global') {
         const hexGeoJSON = await fetchHexOverlayGeoJSON(renderTag);
         if (!cancelled && mapRef.current) {
           renderHexOverlay(map, hexGeoJSON, hexOverlayRef);
-          setGlobalVisualizationMode(map, true);
-          setBuildingRenderer(map, bakedTilesRef.current, true);
+          setGlobalVisualizationMode(map, true, sandboxRef.current);
+          setBuildingRenderer(map, bakedTilesRef.current, true, sandboxRef.current);
           if (bakedTilesRef.current) {
             // Tag change only: the geometry and every category already sit in
             // the tiles the map is holding, so this is a paint write.
@@ -1999,8 +2046,8 @@ export default function Map({
         }
       } else {
         renderHexOverlay(map, EMPTY_FEATURE_COLLECTION, hexOverlayRef);
-        setGlobalVisualizationMode(map, false);
-        setBuildingRenderer(map, bakedTilesRef.current, false);
+        setGlobalVisualizationMode(map, false, sandboxRef.current);
+        setBuildingRenderer(map, bakedTilesRef.current, false, sandboxRef.current);
         renderVisibleBuildings(map, config, localRenderTarget ?? undefined);
       }
     };
@@ -2077,6 +2124,13 @@ export default function Map({
         box-shadow: 0 10px 28px rgba(0,0,0,0.3);
         cursor: pointer;
       `;
+      // Hidden at birth while the sandbox is open, and after cssText, which
+      // replaces the whole declaration. Doing this in an effect instead loses
+      // a race: markers are rebuilt when the selection changes, and the effect
+      // that hides them has already run for that same change, so a fresh
+      // marker reappeared over the model -- drawn at ground level, well below
+      // the surface its own point sits on.
+      if (sandboxRef.current) element.style.display = 'none';
 
       const marker = new maplibregl.Marker({ element })
         .setLngLat([location.position[1], location.position[0]])
