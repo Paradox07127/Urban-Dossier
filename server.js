@@ -1088,8 +1088,31 @@ app.get('/building-tiles/:z/:x/:y.pbf', (req, res) => {
 
 // Lets the client decide between the baked tileset and its JS fallback without
 // probing for a 404 on a tile that may legitimately be empty.
+//
+// Also carries the colour domain the scoring pass measured. The scores do not
+// span 0-100 -- overall sits between 34 and 68 for 96% of buildings -- so a
+// ramp stretched over the full range paints the whole city its midpoint
+// colour. Serving the measured percentiles keeps that decision with the data
+// instead of hardcoding numbers in the client that quietly go stale.
+const BUILDING_SCORES_MANIFEST =
+  process.env.URBAN_DOSSIER_BUILDING_MANIFEST ||
+  '/mnt/data/urban-dossier-state/maps/buildings/building_scores.manifest.json';
+
+function readColourDomains() {
+  try {
+    const raw = fs.readFileSync(BUILDING_SCORES_MANIFEST, 'utf8');
+    const parsed = JSON.parse(raw);
+    return parsed?.colour_domains ?? null;
+  } catch {
+    return null;
+  }
+}
+
 app.get('/api/building-tiles/status', (req, res) => {
-  res.json({ available: buildingDb != null });
+  res.json({
+    available: buildingDb != null,
+    colour_domains: buildingDb != null ? readColourDomains() : null,
+  });
 });
 
 // Font glyph endpoint for MapLibre

@@ -1,4 +1,4 @@
-import { useEffect, useRef, type MutableRefObject } from 'react';
+import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import maplibregl, { GeoJSONSource, Map as MapLibreMap } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Location } from '../types';
@@ -10,15 +10,34 @@ type RadiusMeters = 200 | 500 | 1000;
 // Design tokens duplicated from index.css (--ud-low/--ud-mid/--ud-high/--ud-ink).
 // MapLibre paint expressions run on the GPU and cannot read CSS custom
 // properties, so the values have to be literals here. Change them together.
-const UD_LOW = '#8C1D18';
-const UD_MID = '#96928A';
-const UD_HIGH = '#2E8B62';
 const UD_INK = '#0E1218';
-// Buildings the pipeline could not score. Deliberately a neutral stone rather
-// than a mid-ramp grey: "we have no reading here" must not be mistakeable for
-// "this scored 50". Roughly a quarter of footprints fall in r9 cells with no
-// dataset coverage, so this is a real and visible state, not an edge case.
-const UD_NO_DATA = '#CDCAC4';
+
+/* The score ramp.
+ *
+ * The midpoint used to be a mid-grey (#96928A), chosen when chroma appeared
+ * only in scattered patches. Once the overlay tiled the whole city that choice
+ * failed badly: 93% of buildings score between 35 and 65, so a grey midpoint
+ * meant a grey city under a heavy wash, and the map read as though something
+ * dark had been laid over it.
+ *
+ * The midpoint is now a warm near-paper tone. It keeps the same rule -- chroma
+ * is reserved for measured values -- but applies it more strictly: an
+ * unremarkable score should recede into the page and let the genuinely high
+ * and low places carry the only colour on the map. Both ends stay light enough
+ * to tint the basemap rather than bury it.
+ */
+const UD_LOW = '#B3382C';
+const UD_MID = '#E8DFD0';
+const UD_HIGH = '#2F8C63';
+// Buildings the pipeline could not score. A cool grey, deliberately off the
+// ramp's warm axis: "no reading here" must not be mistakeable for "scored
+// mid". Roughly a quarter of footprints sit in r9 cells with no dataset
+// coverage, so this is a common state rather than an edge case.
+const UD_NO_DATA = '#C6CACE';
+
+/** 2nd/50th/98th percentile per field, as measured by the scoring pass. */
+type ColourDomain = { low: number; mid: number; high: number };
+const FULL_RANGE_DOMAIN: ColourDomain = { low: 0, mid: 50, high: 100 };
 
 /** Which tile property backs each map tag. */
 const TAG_TO_SCORE_FIELD: Record<RenderTag, string> = {
@@ -34,7 +53,10 @@ const TAG_TO_SCORE_FIELD: Record<RenderTag, string> = {
  * Evaluated per feature on the GPU, so the whole choropleth costs one uniform
  * upload rather than a pass over every building in JavaScript.
  */
-function buildingScoreColor(field: string): maplibregl.ExpressionSpecification {
+function buildingScoreColor(
+  field: string,
+  domain: ColourDomain = FULL_RANGE_DOMAIN,
+): maplibregl.ExpressionSpecification {
   return [
     'case',
     ['==', ['get', field], null],
@@ -43,9 +65,9 @@ function buildingScoreColor(field: string): maplibregl.ExpressionSpecification {
       'interpolate',
       ['linear'],
       ['to-number', ['get', field]],
-      0, UD_LOW,
-      50, UD_MID,
-      100, UD_HIGH,
+      domain.low, UD_LOW,
+      domain.mid, UD_MID,
+      domain.high, UD_HIGH,
     ],
   ];
 }
@@ -242,8 +264,13 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
         // contiguous (measured: 846 of 1171 cells have all six neighbours
         // present, 11 genuine holes), so any visible gap is this artefact.
         'fill-antialias': false,
-        // Crossfade: hex overlay fades out as buildings fade in
-        'fill-opacity': ['interpolate', ['linear'], ['zoom'], 12, 0.55, 15, 0.08],
+        // Lowered from 0.55. That value was set when the cells were drawn at
+        // half size and covered about a quarter of the map; at full coverage
+        // the same alpha is a wash over the entire city that hides the street
+        // network the scores are supposed to be read against. This tints the
+        // basemap instead of replacing it, and clears out entirely once
+        // buildings carry the colour.
+        'fill-opacity': ['interpolate', ['linear'], ['zoom'], 11, 0.42, 14.5, 0],
       },
     },
     {
@@ -251,14 +278,28 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       type: 'line',
       source: 'hexOverlay',
       paint: {
-        // Ink, not white. A white stroke on a light basemap reads as a gap
-        // between cells rather than a border between them, which made a
-        // contiguous grid look perforated. H3 cells are an analysis grain, not
-        // a place, so their edges should barely register; NTA zones use the
-        // same layer and are real boundaries worth a faint line.
+        // Off by default for H3.
+        //
+        // A stroke on a contiguous grid draws the grid, and the grid is an
+        // artefact of how the analysis is bucketed rather than anything in the
+        // city -- outlining it invites reading the hexagon as a place. White
+        // made it worse (it read as a gap); ink still made every seam a line.
+        // NTA zones share this layer and are real boundaries, so the layer
+        // stays and its opacity is raised only for features that name one.
         'line-color': UD_INK,
-        'line-width': 0.5,
-        'line-opacity': ['interpolate', ['linear'], ['zoom'], 12, 0.1, 15, 0.0],
+        'line-width': 0.6,
+        // ``zoom`` is only legal as the direct input of a top-level step or
+        // interpolate, so the per-feature test has to sit in the output
+        // values rather than wrap the interpolation. Nesting it the other way
+        // round is not a warning -- MapLibre rejects the whole style and the
+        // map renders nothing at all.
+        'line-opacity': [
+          'interpolate',
+          ['linear'],
+          ['zoom'],
+          11, ['case', ['has', 'nta_name'], 0.22, 0],
+          14.5, 0,
+        ],
       },
     },
     // Per-building choropleth, coloured straight from the tileset.
@@ -281,7 +322,11 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       minzoom: 13,
       paint: {
         'fill-color': buildingScoreColor('overall'),
-        'fill-opacity': ['interpolate', ['linear'], ['zoom'], 13, 0.35, 15, 0.9],
+        // Not fully opaque even when zoomed in: the basemap's own building
+        // shading carries roof/height detail that a flat fill would erase, and
+        // letting a little of it through keeps the blocks legible as buildings
+        // rather than as coloured rectangles.
+        'fill-opacity': ['interpolate', ['linear'], ['zoom'], 13, 0.3, 15.5, 0.82],
         // Buildings abut across tile boundaries; the feathered outline that
         // antialiasing adds shows up as a seam there for the same reason it did
         // between hexagons.
@@ -582,14 +627,33 @@ async function fetchGlobalRenderConfig(tag: RenderTag): Promise<RenderConfig> {
  * Answered false on any error: the JS renderer is the safe fallback, so an
  * unreachable status endpoint must not leave the map with no buildings at all.
  */
-async function fetchBuildingTilesAvailable(): Promise<boolean> {
+async function fetchBuildingTileStatus(): Promise<{
+  available: boolean;
+  domains: Record<string, ColourDomain>;
+}> {
   try {
     const resp = await fetch('/api/building-tiles/status');
-    if (!resp.ok) return false;
+    if (!resp.ok) return { available: false, domains: {} };
     const data = await resp.json();
-    return data?.available === true;
+    const raw = data?.colour_domains;
+    const domains: Record<string, ColourDomain> = {};
+    if (raw && typeof raw === 'object') {
+      for (const [field, d] of Object.entries(raw as Record<string, unknown>)) {
+        const v = d as Partial<ColourDomain> | null;
+        // Reject anything non-monotonic: a bad domain would make the
+        // interpolation throw and take the whole style down, and falling back
+        // to the full range is merely dull rather than broken.
+        if (
+          v && typeof v.low === 'number' && typeof v.mid === 'number' &&
+          typeof v.high === 'number' && v.low < v.mid && v.mid < v.high
+        ) {
+          domains[field] = { low: v.low, mid: v.mid, high: v.high };
+        }
+      }
+    }
+    return { available: data?.available === true, domains };
   } catch {
-    return false;
+    return { available: false, domains: {} };
   }
 }
 
@@ -916,10 +980,19 @@ function setGlobalVisualizationMode(map: MapLibreMap, isGlobal: boolean) {
  * buildings. That is the payoff for baking all five scores instead of only the
  * active one.
  */
-function setBuildingScoreTag(map: MapLibreMap, tag: RenderTag) {
+function setBuildingScoreTag(
+  map: MapLibreMap,
+  tag: RenderTag,
+  domains: Record<string, ColourDomain> = {},
+) {
   if (!map.getLayer('building-scores-fill')) return;
   const field = TAG_TO_SCORE_FIELD[tag] ?? 'overall';
-  map.setPaintProperty('building-scores-fill', 'fill-color', buildingScoreColor(field));
+  const domain = domains[field] ?? FULL_RANGE_DOMAIN;
+  map.setPaintProperty(
+    'building-scores-fill',
+    'fill-color',
+    buildingScoreColor(field, domain),
+  );
 }
 
 /**
@@ -1231,8 +1304,14 @@ export default function Map({
   // status endpoint rather than by probing for a 404 on a tile that might be
   // legitimately empty over water.
   const bakedTilesRef = useRef(false);
+  const colourDomainsRef = useRef<Record<string, ColourDomain>>({});
+  // Mirrored into state purely so the legend can label its own ends; the map
+  // itself reads the ref.
+  const [colourDomains, setColourDomains] = useState<Record<string, ColourDomain>>({});
 
   const legendStyle = TAG_STYLES[renderTag];
+  const legendDomain =
+    colourDomains[TAG_TO_SCORE_FIELD[renderTag]] ?? FULL_RANGE_DOMAIN;
   const activeRadiusM = localRenderTarget?.radiusM ?? 200;
 
   useEffect(() => {
@@ -1256,7 +1335,10 @@ export default function Map({
     });
 
     map.on('load', async () => {
-      bakedTilesRef.current = await fetchBuildingTilesAvailable();
+      const status = await fetchBuildingTileStatus();
+      bakedTilesRef.current = status.available;
+      colourDomainsRef.current = status.domains;
+      setColourDomains(status.domains);
 
       const config = localRenderTarget
         ? await fetchLocalRenderConfig(renderTag, localRenderTarget)
@@ -1272,7 +1354,7 @@ export default function Map({
         setGlobalVisualizationMode(map, true);
         setBuildingRenderer(map, bakedTilesRef.current, true);
         if (bakedTilesRef.current) {
-          setBuildingScoreTag(map, config.tag);
+          setBuildingScoreTag(map, config.tag, colourDomainsRef.current);
         } else {
           renderVisibleBuildings(map, config, null, hexOverlayRef.current);
         }
@@ -1447,7 +1529,7 @@ export default function Map({
           if (bakedTilesRef.current) {
             // Tag change only: the geometry and every category already sit in
             // the tiles the map is holding, so this is a paint write.
-            setBuildingScoreTag(map, config.tag);
+            setBuildingScoreTag(map, config.tag, colourDomainsRef.current);
           } else {
             renderVisibleBuildings(map, config, null, hexOverlayRef.current);
           }
@@ -1571,13 +1653,18 @@ export default function Map({
         <div className="bg-background/95 backdrop-blur-md border border-border rounded-xl shadow-lg px-4 py-2.5">
           <div className="ud-label text-center mb-1.5">{legendStyle.label} Score</div>
           <div className="flex items-center gap-2">
-            <span className="font-mono text-[11px] text-muted-foreground leading-none w-4 text-right tabular-nums">0</span>
-            {/* The legend now shows the ramp the map is actually drawing.
-                It previously showed a fixed red-yellow-green gradient while
-                the map coloured each category in its own hue, so the key did
-                not describe the picture next to it. */}
+            {/* The ends are the ramp's real endpoints, not 0 and 100.
+                The scores do not span the full range -- overall sits between
+                34 and 68 for 96% of buildings -- so the ramp is stretched over
+                the 2nd-98th percentile to make the variation visible. Printing
+                0 and 100 here would claim a span the colours do not cover and
+                would make the middle of the city look like a mid score when it
+                is really the middle of a much narrower band. */}
+            <span className="font-mono text-[11px] text-muted-foreground leading-none w-6 text-right tabular-nums">
+              {legendDomain.low}
+            </span>
             <div
-              className="h-2.5 w-36 rounded-sm"
+              className="h-2.5 w-32 rounded-sm"
               style={{
                 // Three stops, matching the paint expression. Interpolating
                 // straight from the low red to the high green would pass
@@ -1588,8 +1675,15 @@ export default function Map({
                   `${UD_MID} 50%, ${legendStyle.high} 100%)`,
               }}
             />
-            <span className="font-mono text-[11px] text-muted-foreground leading-none w-6 tabular-nums">100</span>
+            <span className="font-mono text-[11px] text-muted-foreground leading-none w-6 tabular-nums">
+              {legendDomain.high}
+            </span>
           </div>
+          {legendDomain !== FULL_RANGE_DOMAIN && (
+            <div className="mt-1 text-center font-mono text-[9px] text-muted-foreground/70">
+              2nd–98th pct
+            </div>
+          )}
         </div>
       </div>
     </div>

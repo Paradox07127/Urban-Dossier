@@ -254,6 +254,39 @@ def main() -> int:
         """
     ).fetchone()
 
+    # Colour domain per field, measured rather than assumed.
+    #
+    # These scores are not spread over 0-100. ``overall`` is a weighted average
+    # of sub-scores, so it regresses hard to the middle: 96% of buildings land
+    # between 34 and 68 on the validated snapshot. Painting that with a linear
+    # 0-100 ramp spends two thirds of the colour range on values that do not
+    # occur and renders the entire city as the ramp's midpoint -- which is
+    # exactly what it did.
+    #
+    # Publishing the real 2nd/50th/98th percentiles lets the map stretch the
+    # ramp over the data that exists and lets the legend say what its ends
+    # mean, instead of claiming a range the data never reaches. Recomputed on
+    # every run, so it tracks the data instead of ageing into a wrong constant.
+    domains: dict[str, dict[str, float]] = {}
+    for field in ("safety", "transit", "amenities", "building", "overall"):
+        row = con.execute(
+            f"""
+            SELECT quantile_cont({field}, 0.02),
+                   quantile_cont({field}, 0.50),
+                   quantile_cont({field}, 0.98)
+            FROM read_parquet('{out_path.as_posix()}')
+            WHERE {field} IS NOT NULL
+            """
+        ).fetchone()
+        if row and row[0] is not None:
+            low, mid, high = (round(float(v)) for v in row)
+            # A degenerate domain would make the interpolation divide by zero.
+            if high - low < 4:
+                low, high = max(0, mid - 2), min(100, mid + 2)
+            if not low < mid < high:
+                mid = (low + high) / 2
+            domains[field] = {"low": low, "mid": mid, "high": high}
+
     manifest = {
         "buildings": int(stats[0]),
         "with_overall_score": int(stats[1]),
@@ -261,6 +294,13 @@ def main() -> int:
         "overall_min": stats[3],
         "overall_max": stats[4],
         "overall_mean": stats[5],
+        "colour_domains": domains,
+        "colour_domain_note": (
+            "2nd/50th/98th percentile of each field. The map stretches its "
+            "ramp over this rather than over 0-100, because the scores do not "
+            "span 0-100 and a linear full-range ramp paints everything the "
+            "midpoint colour."
+        ),
         "occupied_r9_cells": len(cells),
         "radius_m": args.radius_m,
         "building_radius_m": BUILDING_RADIUS_M,
