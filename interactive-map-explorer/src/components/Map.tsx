@@ -7,6 +7,14 @@ type RenderTag = 'general' | 'safety' | 'transit' | 'amenities';
 type Coordinate = [number, number];
 type RadiusMeters = 200 | 500 | 1000;
 
+// Design tokens duplicated from index.css (--ud-low/--ud-mid/--ud-high/--ud-ink).
+// MapLibre paint expressions run on the GPU and cannot read CSS custom
+// properties, so the values have to be literals here. Change them together.
+const UD_LOW = '#8C1D18';
+const UD_MID = '#96928A';
+const UD_HIGH = '#2E8B62';
+const UD_INK = '#0E1218';
+
 interface LocalRenderTarget {
   center: [number, number];
   radiusM: RadiusMeters;
@@ -171,12 +179,17 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       paint: {
         'fill-color': [
           'interpolate', ['linear'], ['get', 'display_score'],
-          0, '#d73027',
-          25, '#fc8d59',
-          50, '#fee08b',
-          75, '#91cf60',
-          100, '#1a9850',
+          0, UD_LOW,
+          50, UD_MID,
+          100, UD_HIGH,
         ],
+        // Adjacent H3 cells share an edge exactly. MapLibre's default fill
+        // antialiasing draws a feathered outline on each of them, and the two
+        // half-transparent edges do not sum back to an opaque one -- the seam
+        // shows as a hairline of basemap between neighbours. The grid is
+        // contiguous (measured: 846 of 1171 cells have all six neighbours
+        // present, 11 genuine holes), so any visible gap is this artefact.
+        'fill-antialias': false,
         // Crossfade: hex overlay fades out as buildings fade in
         'fill-opacity': ['interpolate', ['linear'], ['zoom'], 12, 0.55, 15, 0.08],
       },
@@ -186,9 +199,14 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       type: 'line',
       source: 'hexOverlay',
       paint: {
-        'line-color': '#ffffff',
-        'line-width': 1.5,
-        'line-opacity': ['interpolate', ['linear'], ['zoom'], 12, 0.7, 15, 0.0],
+        // Ink, not white. A white stroke on a light basemap reads as a gap
+        // between cells rather than a border between them, which made a
+        // contiguous grid look perforated. H3 cells are an analysis grain, not
+        // a place, so their edges should barely register; NTA zones use the
+        // same layer and are real boundaries worth a faint line.
+        'line-color': UD_INK,
+        'line-width': 0.5,
+        'line-opacity': ['interpolate', ['linear'], ['zoom'], 12, 0.1, 15, 0.0],
       },
     },
     {
@@ -966,13 +984,16 @@ function getNearestPoint(center: Coordinate, points: RenderPoint[], maxDistKm = 
   return best;
 }
 
-// Same 5-stop red→green gradient used by hex overlay and legend
+// The score ramp, and the only chroma the interface spends. It must be the
+// same three stops the legend in App.tsx draws and the same ones declared as
+// --ud-low/--ud-mid/--ud-high in index.css: a map whose colours disagree with
+// its own legend is not readable at all. Kept as literals rather than read
+// from CSS because MapLibre style expressions are evaluated on the GPU and
+// never see the cascade.
 const SCORE_GRADIENT = [
-  { at: 0,   r: 215, g: 48,  b: 39  }, // #d73027
-  { at: 25,  r: 252, g: 141, b: 89  }, // #fc8d59
-  { at: 50,  r: 254, g: 224, b: 139 }, // #fee08b
-  { at: 75,  r: 145, g: 207, b: 96  }, // #91cf60
-  { at: 100, r: 26,  g: 152, b: 80  }, // #1a9850
+  { at: 0,   r: 140, g: 29,  b: 24  }, // #8C1D18  --ud-low
+  { at: 50,  r: 150, g: 146, b: 138 }, // #96928A  --ud-mid
+  { at: 100, r: 46,  g: 139, b: 98  }, // #2E8B62  --ud-high
 ];
 
 // Pre-computed color LUT for scores 0-100 (avoids per-building gradient math)
