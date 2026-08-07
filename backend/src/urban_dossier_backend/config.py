@@ -43,6 +43,10 @@ PRECOMPUTED_DIR = CACHE_DIR / "precomputed" if CACHE_DIR else None
 REPORT_CACHE_DIR = CACHE_DIR / "reports" if CACHE_DIR else None
 OVERVIEW_DIR = CACHE_DIR / "overview" if CACHE_DIR else None
 DEMO_DIR = DATA_ROOT / "demo" if DATA_ROOT else None
+# Official boundary downloads. nta_2020.geojson doubles as the coastline: the
+# NTA layer partitions NYC's dry land and contains no water polygons, so its
+# union is where the city stops and the harbour begins.
+BOUNDARIES_DIR = DATA_ROOT / "boundaries" if DATA_ROOT else None
 READY_DATA_DIR = Path(os.getenv("URBAN_DOSSIER_READY_ROOT", str(REPO_ROOT / "data" / "ready")))
 RAW_DATA_ROOT = Path(os.getenv("URBAN_DOSSIER_RAW_DATA_ROOT", str(Path.home() / "nyc_open_data")))
 

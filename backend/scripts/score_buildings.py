@@ -67,10 +67,40 @@ BUILDING_RADIUS_M = 250
 H3_R9_EDGE_M = 174  # what the backend divides by; kept identical on purpose
 
 
+NTA_PATH = Path("/mnt/data/Urban-Dossier/data/boundaries/nta_2020.geojson")
+# Enough to keep the Hudson and East River piers, not enough to reach the far
+# bank of the Kill van Kull. Verified against known points on both sides.
+CITY_BUFFER_M = 100
+
+
 def _cells_for(cell_r9: str, radius_m: int) -> list[str]:
     """Mirror of DirectQueryDataProvider._h3_cells_for_radius, cell-in/cell-out."""
     k = max(1, radius_m // H3_R9_EDGE_M)
     return list(h3.grid_disk(cell_r9, k))
+
+
+def _ids_inside_nyc(con, index_path: Path) -> list[int] | None:
+    """bldg_ids inside the city, or None if the boundary layer is unavailable."""
+    if not NTA_PATH.exists():
+        return None
+    try:
+        import geopandas as gpd
+        from shapely import points
+    except ImportError:
+        return None
+
+    nta = gpd.read_file(NTA_PATH)
+    mask = (
+        nta.geometry.union_all()
+        .simplify(0.0001, preserve_topology=True)
+        .buffer(CITY_BUFFER_M / 111320)
+    )
+    rows = con.execute(
+        f"SELECT bldg_id, lon, lat FROM read_parquet('{index_path.as_posix()}')"
+    ).fetchall()
+    series = gpd.GeoSeries(points([[r[1], r[2]] for r in rows]), crs="EPSG:4326")
+    inside = series.within(mask).to_numpy()
+    return [rows[i][0] for i in range(len(rows)) if inside[i]]
 
 
 def main() -> int:
@@ -222,6 +252,29 @@ def main() -> int:
         n_bbl = con.execute("SELECT count(*) FROM bbl_violations").fetchone()[0]
         print(f"per-BBL violation rows: {n_bbl:,}")
 
+    # Buildings outside the city must not carry a score.
+    #
+    # The OSM extract is cut to a bounding box, so it includes Bayonne, Newark
+    # and western Nassau County. Those have no NYC Open Data behind them, but an
+    # r9 cell on the far bank of the Kill van Kull still picks up a score
+    # through its k-ring and hands it to every building in it. 36,017 buildings
+    # were scored this way -- a number about New Jersey derived entirely from
+    # Staten Island.
+    #
+    # The mask is the NTA land union buffered by 100 m. Unbuffered it would cut
+    # the Hudson and East River piers, which are genuinely NYC buildings sitting
+    # past a shoreline drawn at the bulkhead; at 100 m the piers survive and the
+    # far bank does not.
+    keep_ids = _ids_inside_nyc(con, index_path)
+    if keep_ids is not None:
+        con.execute("CREATE TABLE in_city (bldg_id BIGINT)")
+        con.executemany("INSERT INTO in_city VALUES (?)", [(i,) for i in keep_ids])
+        city_filter = "JOIN in_city USING (bldg_id)"
+        print(f"in-city buildings: {len(keep_ids):,}")
+    else:
+        city_filter = ""
+        print("note: land mask unavailable, keeping all buildings")
+
     out_path = args.buildings_dir / "building_scores.parquet"
     con.execute(
         f"""
@@ -238,6 +291,7 @@ def main() -> int:
                 c.building,
                 c.overall
             FROM read_parquet('{index_path.as_posix()}') b
+            {city_filter}
             LEFT JOIN cell_scores c USING (h3_r9)
         ) TO '{out_path.as_posix()}' (FORMAT PARQUET, COMPRESSION ZSTD)
         """

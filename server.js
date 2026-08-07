@@ -640,25 +640,33 @@ app.get('/api/overview/geojson', async (req, res) => {
 
         const raw = scoreForTag(cell, tag);
         if (!Number.isFinite(raw)) return null;
-        // Prefer the true cell boundary the backend now supplies. hexApprox is
-        // a fallback for an older backend only: its hardcoded radius drew each
-        // cell at roughly half size, so a grid that tiles the city without gaps
+        // Prefer the geometry the backend supplies. It is the true cell
+        // boundary clipped to the coastline, so a cell straddling the shore
+        // stops at the water instead of colouring the river, and cells that
+        // are entirely water never arrive at all. hexApprox is a fallback for
+        // an older backend only: its hardcoded radius drew each cell at
+        // roughly half size, so a grid that tiles the city without gaps
         // rendered as isolated dots over a mostly uncoloured map.
-        const ring = Array.isArray(cell.boundary) && cell.boundary.length >= 4
-          ? cell.boundary
-          : hexApprox(lat, lng, 0.0025);
+        // The backend states the geometry type because clipping a cell that
+        // contains an island yields a MultiPolygon, and it always sends
+        // well-formed coordinates for that type, so this is a pass-through
+        // rather than a reconstruction.
+        const geometry = Array.isArray(cell.boundary) && cell.boundary.length > 0
+          ? {
+            type: cell.boundary_type === 'MultiPolygon' ? 'MultiPolygon' : 'Polygon',
+            coordinates: cell.boundary,
+          }
+          : { type: 'Polygon', coordinates: [hexApprox(lat, lng, 0.0025)] };
         return {
           type: 'Feature',
           properties: {
             h3: h3Id,
             score: raw,
             display_score: Math.max(0, Math.min(100, Math.round(raw))),
+            land_fraction: typeof cell.land_fraction === 'number' ? cell.land_fraction : null,
             tag,
           },
-          geometry: {
-            type: 'Polygon',
-            coordinates: [ring],
-          },
+          geometry,
         };
       })
       .filter(Boolean);

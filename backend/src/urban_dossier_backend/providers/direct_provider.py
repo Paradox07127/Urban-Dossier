@@ -1,14 +1,36 @@
 from __future__ import annotations
 
+import logging
 from datetime import date
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
 
 from ..categories import CATEGORY_CONFIG
-from ..config import CACHE_DIR, OVERVIEW_DEFAULT_WEIGHTS, PROCESSED_DIR, RAW_DATA_ROOT, READY_DATA_DIR
+from ..config import (
+    BOUNDARIES_DIR,
+    CACHE_DIR,
+    OVERVIEW_DEFAULT_WEIGHTS,
+    PROCESSED_DIR,
+    RAW_DATA_ROOT,
+    READY_DATA_DIR,
+)
 from ..utils import bbox, compact_records, fast_distance_sq_m, haversine_m, is_within_days, parse_date, quote, to_float, to_int
 from .base import DataProvider
 from .gpu_queries import gpu_emergency_metrics, gpu_fetch_radius_rows, gpu_nearest_overview_cell, is_available as gpu_available, is_fallback
+
+logger = logging.getLogger(__name__)
+
+
+def _round_coords(value: Any, ndigits: int = 6) -> Any:
+    """Round a nested GeoJSON coordinate structure in place-ish.
+
+    Six decimals is about 0.1 m, well under a pixel at any zoom, and keeps the
+    clipped shoreline from tripling the payload with float noise.
+    """
+    if isinstance(value, (int, float)):
+        return round(float(value), ndigits)
+    return [_round_coords(item, ndigits) for item in value]
 
 
 SAFETY_311_TYPES = {"RODENT", "SANITATION CONDITION", "UNSANITARY CONDITION"}
@@ -216,7 +238,9 @@ class DirectQueryDataProvider(DataProvider):
 
     @staticmethod
     def _attach_cell_boundaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Give every overview cell its true H3 boundary as a GeoJSON ring.
+        """Give every overview cell its true H3 boundary, clipped to dry land.
+
+        Two problems are solved here.
 
         The map used to receive only a centre point and had the Node layer
         synthesise a hexagon from it with a hardcoded 0.0025-degree radius. An
@@ -226,27 +250,135 @@ class DirectQueryDataProvider(DataProvider):
         them. It also put geometry construction in the proxy, which is supposed
         to forward what this service computes rather than derive anything.
 
-        A cell's boundary is an exact function of its index, so it belongs here
-        with the rest of the truth. Emitted as [lng, lat] in GeoJSON winding.
+        The second is that the grid does not know where the city ends. Cells
+        run up to 4.7 km offshore, and a cell over open water still gets a
+        score: 170 amenities cells sit off land and 134 of them fall below 40,
+        so the East River and Jamaica Bay were painted the same alarming red as
+        an actually underserved block. That number is not a finding. There are
+        no bodegas in the harbour because nobody lives there, not because the
+        harbour is underserved, and a reader cannot tell those apart from the
+        colour. Clipping to the shoreline removes the claim rather than
+        restyling it.
+
+        Emitted as GeoJSON [lng, lat] coordinates with an explicit type, since
+        clipping an island-bearing cell yields a MultiPolygon.
         """
         try:
             import h3
         except ImportError:  # pragma: no cover - h3 is a hard dependency in practice
             return rows
 
+        land = DirectQueryDataProvider._land_mask()
+
+        kept: list[dict[str, Any]] = []
         for row in rows:
             cell = row.get("h3") or row.get("cell_id")
             if not cell:
+                kept.append(row)
                 continue
             try:
                 ring = [[round(lng, 6), round(lat, 6)] for lat, lng in h3.cell_to_boundary(cell)]
             except Exception:
                 # An unparseable index is a data problem, not a reason to fail
                 # the whole overview; the client falls back for this one cell.
+                kept.append(row)
                 continue
             ring.append(ring[0])  # GeoJSON polygons must close
-            row["boundary"] = ring
-        return rows
+
+            if land is None:
+                row["boundary"] = [ring]
+                row["boundary_type"] = "Polygon"
+                kept.append(row)
+                continue
+
+            clipped = DirectQueryDataProvider._clip_ring_to_land(ring, land)
+            if clipped is None:
+                # Essentially all water. Dropped rather than dimmed: keeping it
+                # with a muted colour would still be asserting a score for a
+                # patch of river.
+                continue
+            coords, geom_type, land_fraction = clipped
+            row["boundary"] = coords
+            row["boundary_type"] = geom_type
+            row["land_fraction"] = round(land_fraction, 3)
+            kept.append(row)
+        return kept
+
+    # Below this share of the cell on land, the cell is treated as water. Not
+    # zero: floating-point slivers along the shoreline would otherwise keep
+    # cells that are visually entirely river.
+    _MIN_LAND_FRACTION = 0.03
+
+    @staticmethod
+    @lru_cache(maxsize=1)
+    def _land_mask():
+        """NYC land as one simplified geometry, or None if unavailable.
+
+        The NTA layer is the city's own land partition -- all 262 polygons are
+        dry land, including the park, cemetery, airport and Rikers types, and
+        none of them are water -- so their union is the coastline.
+
+        Simplified to ~11 m. The published shoreline carries 80,551 vertices,
+        and clipping against it makes the overview payload nine times larger
+        for detail finer than a pixel at any zoom the overlay is visible at;
+        at 11 m the payload is roughly double the unclipped hexagons and the
+        two are indistinguishable on screen.
+
+        Returns None when the boundary file or geo stack is missing, in which
+        case callers keep the unclipped hexagons -- a map with water cells is
+        worse than one without, but far better than no overview at all.
+        """
+        path = Path(BOUNDARIES_DIR) / "nta_2020.geojson" if BOUNDARIES_DIR else None
+        if path is None or not path.exists():
+            logger.warning("Land mask unavailable: %s not found; overview cells will not be clipped", path)
+            return None
+        try:
+            import geopandas as gpd
+
+            nta = gpd.read_file(path)
+            return nta.geometry.union_all().simplify(0.0001, preserve_topology=True)
+        except Exception as exc:
+            logger.warning("Land mask could not be built (%s); overview cells will not be clipped", exc)
+            return None
+
+    @staticmethod
+    def _clip_ring_to_land(ring: list[list[float]], land) -> tuple[Any, str, float] | None:
+        """Intersect one cell with the coastline.
+
+        Returns (coordinates, geometry type, land fraction), or None when the
+        cell is water. ``coordinates`` is always well-formed GeoJSON for the
+        returned type -- a ring list for Polygon, a polygon list for
+        MultiPolygon -- so a consumer can hand the pair straight to shape()
+        without knowing whether anything was cut. Returning a bare ring for the
+        untouched case would make the same declared type mean two different
+        shapes, which is how the caller ends up guessing.
+        """
+        try:
+            from shapely.geometry import Polygon, mapping
+        except ImportError:  # pragma: no cover
+            return [ring], "Polygon", 1.0
+
+        try:
+            hexagon = Polygon(ring)
+            if not hexagon.is_valid:
+                hexagon = hexagon.buffer(0)
+            piece = hexagon.intersection(land)
+            if piece.is_empty:
+                return None
+            fraction = piece.area / hexagon.area if hexagon.area else 0.0
+            if fraction < DirectQueryDataProvider._MIN_LAND_FRACTION:
+                return None
+            # Fully inland cells are the common case and keep the original
+            # hexagon: the intersection can add collinear vertices along a
+            # nearby simplified edge, and there is no reason to pay for them
+            # when nothing was cut.
+            if fraction > 0.999:
+                return [ring], "Polygon", 1.0
+            geo = mapping(piece)
+            coords = _round_coords(geo["coordinates"])
+            return coords, geo["type"], fraction
+        except Exception:
+            return [ring], "Polygon", 1.0
 
     def _normalize_borough(self, value: Any) -> str | None:
         if value is None or str(value).strip() == "":

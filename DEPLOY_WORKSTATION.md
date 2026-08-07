@@ -173,6 +173,19 @@ tileset is being served and the client falls back to its previous client-side
 colouring when it is not, so a host without tippecanoe still gets a working
 map.
 
+Both the overview cells and the building pass are clipped to
+`data/boundaries/nta_2020.geojson`, which is the city's own land partition and
+contains no water polygons, so its union is the coastline. Without it the H3
+grid runs up to 4.7 km offshore and scores open water -- 170 amenities cells
+sat off land, 134 of them below 40, painting the harbour the same red as an
+underserved block -- and the bbox-cut OSM extract hands New Jersey and Nassau
+County buildings a score borrowed from the nearest NYC cell through its k-ring.
+Cells under 3% land are dropped outright; buildings are kept within the land
+union buffered by 100 m, which retains the Hudson and East River piers (real
+NYC buildings sitting past a shoreline drawn at the bulkhead) while excluding
+the far bank. If the boundary file is missing both passes log a warning and
+skip clipping rather than fail.
+
 The validated workstation build produced 2,109,327 walking nodes and 2,432,374
 edges from the 146 MB extract in about 41 s, stored as 53 MB of Parquet. The
 graph is deliberately **not** loaded into the FastAPI process: each isochrone
