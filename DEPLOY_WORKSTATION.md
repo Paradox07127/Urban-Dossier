@@ -150,10 +150,24 @@ Build the per-building choropleth. Three passes, run in order; the last needs
 # 3. Bake the scores into a vector tileset.
 .venv/bin/python backend/scripts/build_building_tiles.py
 
-# Node serves it from the repo root; the tileset itself lives in state.
+# 4. The plateau the 3D view stands the city on.
+.venv/bin/python backend/scripts/build_plateau_dem.py
+
+# Node serves both from the repo root; the tilesets live in state.
 ln -sf /mnt/data/urban-dossier-state/maps/output/building-scores.mbtiles \
   building-scores.mbtiles
+ln -sf /mnt/data/urban-dossier-state/maps/output/nyc-plateau-dem.mbtiles \
+  nyc-plateau-dem.mbtiles
 ```
+
+The plateau is Terrain-RGB, not geometry: the five boroughs are encoded at a
+constant 260 m and everything past the shoreline at 0, so MapLibre's terrain
+raises the city and the step at the coast becomes the model's cut edge. It has
+to be elevation rather than an extruded slab because terrain is the only thing
+that carries the *basemap* up with it -- fill-extrusion is the only layer type
+that can be given a height, and symbols cannot be lifted at all, so a slab
+built from geometry means a city model with no street names on it. 150 tiles,
+0.24 MB, about a second to build.
 
 The validated workstation build extracted 1,506,922 footprints in 400 s,
 scored them in ~170 s and produced an 85.8 MB tileset in 14 s.

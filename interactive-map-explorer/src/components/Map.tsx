@@ -268,6 +268,23 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
     // The slab the sandbox stands on. Filled from /api/land-outline, which is
     // the same coastline the overview cells are clipped against, so the base
     // and the choropleth end at one line rather than two that nearly agree.
+    // The model's shape, as elevation rather than geometry.
+    //
+    // Terrain-RGB in which the five boroughs sit at a constant height and
+    // everything past the shoreline sits at zero. MapLibre drapes the entire
+    // basemap over terrain -- streets, parks, water and, crucially, labels --
+    // and places extrusions on it, so the raised surface carries the map while
+    // the step at the coast becomes the model's cut edge. A slab built out of
+    // fill-extrusion could do neither: nothing but another extrusion can be
+    // put on top of it, and symbols cannot leave the zero plane at all.
+    plateauDem: {
+      type: 'raster-dem',
+      tiles: [`${window.location.origin}/plateau-dem/{z}/{x}/{y}.png`],
+      tileSize: 256,
+      encoding: 'mapbox',
+      minzoom: 8,
+      maxzoom: 13,
+    },
     landOutline: {
       type: 'geojson',
       data: EMPTY_FEATURE_COLLECTION,
@@ -1508,6 +1525,17 @@ function setSandboxMode(map: MapLibreMap, on: boolean, tag: RenderTag,
     if (isBasemapFurniture(layer.id)) {
       map.setLayoutProperty(layer.id, 'visibility', 'visible');
     }
+  }
+
+  // The plateau. Terrain lifts the boroughs and everything draped on them --
+  // streets, parks, labels -- leaving the coastline as a step, which is the
+  // model's cut edge. Off on the flat map, where a raised city would only make
+  // the choropleth harder to read.
+  try {
+    map.setTerrain(on ? { source: 'plateauDem', exaggeration: 1 } : null);
+  } catch {
+    // A tileset that was not built. The model still works, just without the
+    // plinth, which is better than refusing to open it.
   }
 
   if (on) {
