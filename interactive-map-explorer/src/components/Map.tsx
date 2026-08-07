@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import maplibregl, { GeoJSONSource, Map as MapLibreMap } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
+import { Box } from 'lucide-react';
 import { Location } from '../types';
 
 type RenderTag = 'general' | 'safety' | 'transit' | 'amenities';
@@ -38,6 +39,68 @@ const UD_NO_DATA = '#C6CACE';
 /** 2nd/50th/98th percentile per field, as measured by the scoring pass. */
 type ColourDomain = { low: number; mid: number; high: number };
 const FULL_RANGE_DOMAIN: ColourDomain = { low: 0, mid: 50, high: 100 };
+
+/* ---------------------------------------------------------------------------
+   Sandbox view
+   ---------------------------------------------------------------------------
+   The city as a physical model: a slab of land with the buildings standing on
+   it, turnable by dragging, and nothing else on screen.
+
+   The slab is built by extruding the land polygon upward rather than cutting
+   the ground downward, because fill-extrusion-base cannot go below zero. The
+   buildings then start at the slab's top face. Visually identical to a carved
+   block, and it stays inside what the renderer actually supports.
+--------------------------------------------------------------------------- */
+const SLAB_TOP_M = 700;
+const SLAB_SIDE = '#C9C3B8';
+const SLAB_TOP = '#E4DFD5';
+const VOID_COLOUR = '#DCE3E8';
+
+/* Vertical exaggeration.
+ *
+ * NYC is 40 km across. At the zoom where the whole city fits, one pixel is
+ * about 27 m, so a 100 m tower is under four pixels and the skyline is
+ * invisible -- a true-scale model of a city this wide reads as a flat sheet.
+ * Heights are stretched at city scale and relax to true scale by z15, where a
+ * building occupies enough screen for its real proportions to be readable.
+ *
+ * This distorts, so the view labels the current factor rather than leaving the
+ * reader to assume the towers are to scale.
+ */
+const EXAGGERATION_STOPS: [number, number][] = [[10, 6], [13, 3], [15, 1]];
+
+function exaggerationAtZoom(zoom: number): number {
+  const stops = EXAGGERATION_STOPS;
+  if (zoom <= stops[0][0]) return stops[0][1];
+  if (zoom >= stops[stops.length - 1][0]) return 1;
+  for (let i = 0; i < stops.length - 1; i++) {
+    const [z0, v0] = stops[i];
+    const [z1, v1] = stops[i + 1];
+    if (zoom >= z0 && zoom <= z1) {
+      return v0 + ((v1 - v0) * (zoom - z0)) / (z1 - z0);
+    }
+  }
+  return 1;
+}
+
+/** Building prism, standing on the slab.
+ *
+ * The zoom interpolation has to be the outermost expression and take ['zoom']
+ * directly -- MapLibre allows zoom only as the input of a top-level step or
+ * interpolate, and rejects the entire style otherwise, leaving a blank map
+ * rather than a degraded layer. So the exaggeration cannot multiply a feature
+ * value from inside; instead each zoom stop carries its own fully-formed
+ * height expression.
+ */
+function extrusionHeight(): maplibregl.ExpressionSpecification {
+  const atStop = (factor: number): maplibregl.ExpressionSpecification => [
+    '+', SLAB_TOP_M, ['*', ['coalesce', ['get', 'height'], 8], factor],
+  ];
+  return [
+    'interpolate', ['linear'], ['zoom'],
+    ...EXAGGERATION_STOPS.flatMap(([zoom, factor]) => [zoom, atStop(factor)]),
+  ] as maplibregl.ExpressionSpecification;
+}
 
 /** Which tile property backs each map tag. */
 const TAG_TO_SCORE_FIELD: Record<RenderTag, string> = {
@@ -167,8 +230,15 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
     buildingScores: {
       type: 'vector',
       tiles: [`${window.location.origin}/building-tiles/{z}/{x}/{y}.pbf`],
-      minzoom: 13,
+      minzoom: 10,
       maxzoom: 16,
+    },
+    // The slab the sandbox stands on. Filled from /api/land-outline, which is
+    // the same coastline the overview cells are clipped against, so the base
+    // and the choropleth end at one line rather than two that nearly agree.
+    landOutline: {
+      type: 'geojson',
+      data: EMPTY_FEATURE_COLLECTION,
     },
     renderedBuildings: {
       type: 'geojson',
@@ -331,6 +401,75 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
         // antialiasing adds shows up as a seam there for the same reason it did
         // between hexagons.
         'fill-antialias': false,
+      },
+    },
+    /* ----------------------------------------------------------------- 3D --
+       All hidden until sandbox mode is switched on. They sit here rather than
+       being added at runtime so the style is validated once at load: MapLibre
+       rejects an entire style for one malformed expression, and finding that
+       out on a mode toggle is worse than finding it out on boot.
+    -------------------------------------------------------------------- */
+    {
+      id: 'land-slab',
+      type: 'fill-extrusion',
+      source: 'landOutline',
+      layout: { visibility: 'none' },
+      paint: {
+        'fill-extrusion-color': [
+          // Only the top face carries the city; the sides are the cut edge of
+          // the block and are shaded darker so the slab reads as solid.
+          'interpolate', ['linear'], ['zoom'], 0, SLAB_SIDE, 22, SLAB_SIDE,
+        ],
+        'fill-extrusion-height': SLAB_TOP_M,
+        'fill-extrusion-base': 0,
+        'fill-extrusion-opacity': 1,
+        'fill-extrusion-vertical-gradient': true,
+      },
+    },
+    {
+      // A flat cap on the slab, so the ground the buildings stand on is a
+      // lighter surface than the block's cut sides.
+      id: 'land-slab-top',
+      type: 'fill-extrusion',
+      source: 'landOutline',
+      layout: { visibility: 'none' },
+      paint: {
+        'fill-extrusion-color': SLAB_TOP,
+        'fill-extrusion-height': SLAB_TOP_M + 1,
+        'fill-extrusion-base': SLAB_TOP_M,
+        'fill-extrusion-opacity': 1,
+      },
+    },
+    {
+      // City scale: the massing layer, only buildings over 25 m.
+      id: 'sandbox-massing',
+      type: 'fill-extrusion',
+      source: 'buildingScores',
+      'source-layer': 'building_massing',
+      layout: { visibility: 'none' },
+      maxzoom: 13,
+      paint: {
+        'fill-extrusion-color': buildingScoreColor('overall'),
+        'fill-extrusion-height': extrusionHeight(),
+        'fill-extrusion-base': SLAB_TOP_M,
+        'fill-extrusion-opacity': 1,
+        'fill-extrusion-vertical-gradient': true,
+      },
+    },
+    {
+      // Street scale: every building.
+      id: 'sandbox-buildings',
+      type: 'fill-extrusion',
+      source: 'buildingScores',
+      'source-layer': 'building_scores',
+      layout: { visibility: 'none' },
+      minzoom: 13,
+      paint: {
+        'fill-extrusion-color': buildingScoreColor('overall'),
+        'fill-extrusion-height': extrusionHeight(),
+        'fill-extrusion-base': SLAB_TOP_M,
+        'fill-extrusion-opacity': 1,
+        'fill-extrusion-vertical-gradient': true,
       },
     },
     {
@@ -654,6 +793,18 @@ async function fetchBuildingTileStatus(): Promise<{
     return { available: data?.available === true, domains };
   } catch {
     return { available: false, domains: {} };
+  }
+}
+
+/** The city's landmass, for the sandbox slab. Null when unavailable. */
+async function fetchLandOutline(): Promise<GeoJSON.Feature | null> {
+  try {
+    const resp = await fetch('/api/land-outline');
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return data?.type === 'Feature' && data.geometry ? data : null;
+  } catch {
+    return null;
   }
 }
 
@@ -1016,6 +1167,75 @@ function setBuildingRenderer(map: MapLibreMap, baked: boolean, isGlobal: boolean
   }
 }
 
+/* Layers that make up the flat map. In sandbox mode the city is a physical
+ * object on an empty ground, so every one of these goes away -- leaving them
+ * would put a road network and a coloured choropleth on the table next to the
+ * model. Water is included: the slab's edge already is the shoreline, and a
+ * blue sheet at ground level would sit 700 m below the land it borders. */
+const FLAT_MAP_LAYERS = [
+  'water', 'waterway', 'landcover', 'landuse', 'park-fill',
+  'hex-overlay-fill', 'hex-overlay-line',
+  'building-scores-fill', 'building', 'building-3d',
+  'isochrone-fill', 'isochrone-line',
+];
+
+const SANDBOX_LAYERS = [
+  'land-slab', 'land-slab-top', 'sandbox-massing', 'sandbox-buildings',
+];
+
+/**
+ * Switch between the flat map and the sandbox.
+ *
+ * Camera limits are the renderer's own: pitch is clamped to 0-85 degrees by
+ * MapLibre, so the model physically cannot be turned upside down, and bearing
+ * is free through 360. Nothing here has to enforce that.
+ */
+function setSandboxMode(map: MapLibreMap, on: boolean, tag: RenderTag,
+                        domains: Record<string, ColourDomain>) {
+  for (const id of FLAT_MAP_LAYERS) {
+    if (map.getLayer(id)) {
+      map.setLayoutProperty(id, 'visibility', on ? 'none' : 'visible');
+    }
+  }
+  for (const id of SANDBOX_LAYERS) {
+    if (map.getLayer(id)) {
+      map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
+    }
+  }
+  if (map.getLayer('background')) {
+    map.setPaintProperty(
+      'background', 'background-color', on ? VOID_COLOUR : '#f0ede9',
+    );
+  }
+  // Road and label layers come from the basemap and are matched by prefix
+  // rather than listed, since the style grows them over time.
+  for (const layer of map.getStyle().layers ?? []) {
+    if (/^(road|bridge|tunnel|place|poi|boundary|label)/.test(layer.id)) {
+      map.setLayoutProperty(layer.id, 'visibility', on ? 'none' : 'visible');
+    }
+  }
+
+  if (on) {
+    setSandboxTag(map, tag, domains);
+    map.easeTo({ pitch: 62, bearing: -18, duration: 900 });
+    map.dragRotate.enable();
+    map.touchZoomRotate.enableRotation();
+  } else {
+    map.easeTo({ pitch: 0, bearing: 0, duration: 700 });
+  }
+}
+
+function setSandboxTag(map: MapLibreMap, tag: RenderTag,
+                       domains: Record<string, ColourDomain>) {
+  const field = TAG_TO_SCORE_FIELD[tag] ?? 'overall';
+  const domain = domains[field] ?? FULL_RANGE_DOMAIN;
+  for (const id of ['sandbox-massing', 'sandbox-buildings']) {
+    if (map.getLayer(id)) {
+      map.setPaintProperty(id, 'fill-extrusion-color', buildingScoreColor(field, domain));
+    }
+  }
+}
+
 function updateHotspotOverlay(map: MapLibreMap, hotspots: HotspotData[]) {
   const source = map.getSource('hotspotOverlay') as GeoJSONSource | undefined;
   if (!source) return;
@@ -1308,6 +1528,10 @@ export default function Map({
   // Mirrored into state purely so the legend can label its own ends; the map
   // itself reads the ref.
   const [colourDomains, setColourDomains] = useState<Record<string, ColourDomain>>({});
+  const [sandbox, setSandbox] = useState(false);
+  const [sandboxReady, setSandboxReady] = useState(false);
+  const [exaggeration, setExaggeration] = useState(6);
+  const sandboxRef = useRef(false);
 
   const legendStyle = TAG_STYLES[renderTag];
   const legendDomain =
@@ -1317,6 +1541,16 @@ export default function Map({
   useEffect(() => {
     localRenderTargetRef.current = localRenderTarget;
   }, [localRenderTarget]);
+
+  // Sandbox toggle. Kept in an effect rather than in the click handler so the
+  // map and React agree even if the mode is set from elsewhere later.
+  useEffect(() => {
+    sandboxRef.current = sandbox;
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) return;
+    setSandboxMode(map, sandbox, renderTag, colourDomainsRef.current);
+    if (sandbox) setExaggeration(exaggerationAtZoom(map.getZoom()));
+  }, [sandbox, renderTag]);
 
   useEffect(() => {
     if (!mapContainer.current || mapRef.current) return;
@@ -1339,6 +1573,17 @@ export default function Map({
       bakedTilesRef.current = status.available;
       colourDomainsRef.current = status.domains;
       setColourDomains(status.domains);
+
+      // The sandbox needs both the baked prisms and the coastline to stand
+      // them on; without either it is not offered rather than shown broken.
+      if (status.available) {
+        const outline = await fetchLandOutline();
+        if (outline) {
+          const src = map.getSource('landOutline') as GeoJSONSource | undefined;
+          src?.setData(outline);
+          setSandboxReady(true);
+        }
+      }
 
       const config = localRenderTarget
         ? await fetchLocalRenderConfig(renderTag, localRenderTarget)
@@ -1449,6 +1694,12 @@ export default function Map({
     // Re-render buildings after map movement (flyTo, pan, zoom)
     map.on('moveend', () => {
       if (!map.isStyleLoaded()) return;
+      if (sandboxRef.current) {
+        // Report the exaggeration actually in force, since it changes with
+        // zoom and the reader would otherwise assume the towers are to scale.
+        setExaggeration(exaggerationAtZoom(map.getZoom()));
+        return;
+      }
       const config = activeConfigRef.current;
       if (!needsJsRender(config)) return;
       if (config.mode === 'local') {
@@ -1649,6 +1900,34 @@ export default function Map({
         ref={mapContainer}
         className="w-full h-full [&_.maplibregl-ctrl-group_button]:h-12 [&_.maplibregl-ctrl-group_button]:w-12 [&_.maplibregl-ctrl-group]:rounded-xl [&_.maplibregl-ctrl-group]:shadow-lg [&_.maplibregl-ctrl-group]:overflow-hidden"
       />
+      {sandboxReady && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setSandbox((v) => !v)}
+            aria-pressed={sandbox}
+            className={`flex items-center gap-2 rounded-xl border px-3.5 py-2 text-[13px] font-medium shadow-lg backdrop-blur-md transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${
+              sandbox
+                ? 'bg-foreground border-foreground text-background'
+                : 'bg-background/95 border-border text-foreground hover:bg-muted'
+            }`}
+          >
+            <Box className="h-4 w-4" />
+            {sandbox ? 'Sandbox' : 'Flat map'}
+          </button>
+          {sandbox && (
+            <div className="rounded-xl border border-border bg-background/95 px-3 py-2 shadow-lg backdrop-blur-md">
+              {/* The heights on screen are not to scale at city zoom, and a
+                  reader has no way to know that from the picture. */}
+              <span className="ud-label">Height</span>
+              <span className="ml-2 font-mono text-[11px] tabular-nums text-foreground">
+                {exaggeration <= 1.05 ? 'true scale' : `${exaggeration.toFixed(1)}× exaggerated`}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="pointer-events-none absolute top-4 right-4 z-20">
         <div className="bg-background/95 backdrop-blur-md border border-border rounded-xl shadow-lg px-4 py-2.5">
           <div className="ud-label text-center mb-1.5">{legendStyle.label} Score</div>

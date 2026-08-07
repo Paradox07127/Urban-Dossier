@@ -156,8 +156,31 @@ ln -sf /mnt/data/urban-dossier-state/maps/output/building-scores.mbtiles \
 ```
 
 The validated workstation build extracted 1,506,922 footprints in 400 s,
-scored them in 3.4 s and produced a 104.6 MB tileset in 15 s covering
-1,119,258 buildings at z13-16.
+scored them in ~170 s and produced an 85.8 MB tileset in 14 s.
+
+That tileset carries two layers, joined with `tile-join`:
+
+| layer | zoom | contents | size |
+|---|---|---|---|
+| `building_massing` | 10-12 | 10,765 buildings over 25 m | 0.19-0.30 MB/zoom |
+| `building_scores` | 13-16 | all 1,086,257 buildings | 14.7-26.1 MB/zoom |
+
+The split exists for the 3D view, which needs the skyline while the whole city
+is on screen -- 1.09M prisms in the four tiles that cover NYC at z10 is not
+something to hand a browser. It is cheap because NYC's heights are skewed: a
+median of 7.9 m but 3,006 buildings over 50 m, and a 7.9 m rowhouse is
+sub-pixel at z10 anyway.
+
+Two tippecanoe runs rather than per-feature `tippecanoe` minzoom blocks:
+tippecanoe 2.49 accepts those blocks and then emits nearly empty tiles. A
+50k-feature sample went from 6.12 MB to 0.36 MB with them, and one midtown z16
+tile from 2,860 to 188 bytes, with no warning on stderr. Check
+`tiles_by_zoom` in `building_tiles.manifest.json` after any change here -- the
+failure is silent and the feature count in the log stays correct.
+
+Heights come from OSM: 1,066,125 measured, 923 derived from `building:levels`
+at 3.5 m per storey, 19,209 defaulted to 8 m. Each feature carries
+`height_known` so the view can distinguish a measured tower from a guessed one.
 
 Scoring is fast because the score is a function of the H3 r9 cell, not of the
 building: `_h3_cells_for_radius` derives its k-ring from `latlng_to_cell(...,

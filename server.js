@@ -1116,6 +1116,14 @@ function readColourDomains() {
   }
 }
 
+app.get('/api/land-outline', async (req, res) => {
+  try {
+    res.json(await backendRequest('/api/land-outline', { method: 'GET' }));
+  } catch (error) {
+    sendProxyError(res, 502, 'Land outline failed', { details: error.payload ?? null });
+  }
+});
+
 app.get('/api/building-tiles/status', (req, res) => {
   res.json({
     available: buildingDb != null,

@@ -83,6 +83,35 @@ def health() -> dict:
     return get_health_payload()
 
 
+@app.get("/api/land-outline")
+def land_outline() -> dict:
+    """The city's landmass as one polygon, for the 3D view's base slab.
+
+    Reuses the same coastline the overview cells are clipped against, so the
+    slab the buildings stand on and the edge the choropleth stops at are the
+    same line rather than two shapes that nearly agree.
+    """
+    from shapely.geometry import mapping
+
+    from .providers.direct_provider import DirectQueryDataProvider
+
+    land = DirectQueryDataProvider._land_mask()
+    if land is None:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Land boundary unavailable", "available": False},
+        )
+    # Coarser than the 11 m used for clipping: the slab is seen edge-on from a
+    # distance, where a metre of shoreline detail costs payload and shows
+    # nothing.
+    simplified = land.simplify(0.0004, preserve_topology=True)
+    return {
+        "type": "Feature",
+        "properties": {"name": "New York City"},
+        "geometry": mapping(simplified),
+    }
+
+
 @app.get("/api/categories")
 def categories() -> dict:
     return get_categories_payload()
