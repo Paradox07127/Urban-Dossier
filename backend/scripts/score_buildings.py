@@ -332,14 +332,39 @@ def main() -> int:
             WHERE {field} IS NOT NULL
             """
         ).fetchone()
-        if row and row[0] is not None:
-            low, mid, high = (round(float(v)) for v in row)
-            # A degenerate domain would make the interpolation divide by zero.
-            if high - low < 4:
-                low, high = max(0, mid - 2), min(100, mid + 2)
-            if not low < mid < high:
-                mid = (low + high) / 2
-            domains[field] = {"low": low, "mid": mid, "high": high}
+        if row and row[0] is None:
+            continue
+        low, mid, high = (round(float(v)) for v in row)
+        # A degenerate domain would make the interpolation divide by zero.
+        if high - low < 4:
+            low, high = max(0, mid - 2), min(100, mid + 2)
+        if not low < mid < high:
+            mid = (low + high) / 2
+
+        # The shape of the distribution, not just its ends. The map's legend
+        # draws this instead of a plain gradient bar, because the ends alone
+        # hide the thing that actually matters about these scores: they are
+        # bunched. A reader looking at a 0-100 ramp assumes the city is spread
+        # across it; showing the histogram says plainly that most of it is not.
+        # Twenty five-point buckets across 0-100. Written as integer division
+        # rather than width_bucket, which this DuckDB build does not have.
+        buckets = con.execute(
+            f"""
+            SELECT least(19, greatest(0, ({field} / 5)::INTEGER)) AS b, count(*) AS n
+            FROM read_parquet('{out_path.as_posix()}')
+            WHERE {field} IS NOT NULL
+            GROUP BY 1 ORDER BY 1
+            """
+        ).fetchall()
+        counts = [0] * 20
+        for bucket, n in buckets:
+            counts[int(bucket)] += int(n)
+        domains[field] = {
+            "low": low,
+            "mid": mid,
+            "high": high,
+            "histogram": counts,
+        }
 
     manifest = {
         "buildings": int(stats[0]),

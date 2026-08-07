@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 
 import MapComponent from './components/Map';
+import InstrumentRail, { type ColourDomain } from './components/InstrumentRail';
 import AgentToggle from './components/AgentToggle';
 import AgentPanel from './components/AgentPanel';
 import type {
@@ -245,6 +246,13 @@ export default function App() {
   /* Isochrone the agent computed for the current point, drawn on the map. */
   const [isochrone, setIsochrone] = useState<any | null>(null);
 
+  // View state, owned here so the instrument rail can drive it and the map can
+  // report back what it measured.
+  const [sandbox, setSandbox] = useState(false);
+  const [sandboxAvailable, setSandboxAvailable] = useState(false);
+  const [colourDomains, setColourDomains] = useState<Record<string, ColourDomain>>({});
+  const [exaggeration, setExaggeration] = useState(6);
+
   const reportRef = useRef<HTMLDivElement>(null);
 
   const renderTag = (activePriority ? activePriority.toLowerCase() : 'general') as 'general' | 'safety' | 'transit' | 'amenities';
@@ -353,10 +361,13 @@ export default function App() {
     setSelectedTarget({ title: loc.title, position: loc.position, category: loc.category });
   };
 
-  const handleSearch = async () => {
-    if (!searchQuery.trim()) return;
+  // Takes the query as an argument rather than reading state, so a caller that
+  // has just typed it does not have to wait a render for setState to land.
+  const handleSearch = async (queryOverride?: string) => {
+    const raw = (queryOverride ?? searchQuery).trim();
+    if (!raw) return;
     setError(null);
-    const q = searchQuery.trim();
+    const q = raw;
     const coordMatch = q.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
     let label = q;
     let pos: [number, number] | null = null;
@@ -554,158 +565,67 @@ export default function App() {
           markers={display ? [{ id: 'sel', title: display.title, description: display.description, position: display.position, category: display.category, scores: display.scores, aiSummary: '', evidence: [] }] : []}
           hotspots={(hotspots as any[]) ?? []}
           isochrone={isochrone}
+          sandbox={sandbox}
+          onSandboxAvailable={setSandboxAvailable}
+          onColourDomains={setColourDomains}
+          onExaggerationChange={setExaggeration}
           onMarkerClick={handleMarkerClick}
           onMapClick={handleMapClick}
         />
       </div>
 
-      {/* Bottom-left controls */}
-      <div className="absolute bottom-6 left-6 z-30 flex flex-col items-start gap-4 max-w-[calc(100vw-3rem)]">
-        {/* Isochrone readout. Something appeared on the map, so it gets a
-            label and a way to remove it. */}
-        <AnimatePresence>
-          {isochrone?.properties && (
-            <motion.div
-              initial={{ opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 6 }}
-              className="flex items-center gap-3 rounded-md border border-border bg-background/95 px-3 py-2 shadow-sm backdrop-blur-md"
-            >
-              <span className="ud-label">Walkable area</span>
-              <span className="font-mono text-xs tabular-nums text-foreground">
-                {(isochrone.properties.area_m2 / 1e6).toFixed(2)} km²
-              </span>
-              <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
-                {isochrone.properties.minutes} min · {Number(isochrone.properties.reachable_nodes ?? 0).toLocaleString()} nodes
-              </span>
-              <button
-                type="button"
-                onClick={() => setIsochrone(null)}
-                className="rounded-sm p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-                aria-label="Remove walkable area from map"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            </motion.div>
-          )}
-        </AnimatePresence>
+      {/* The instrument rail: everything that changes how the city is being
+          looked at, in one column. Search, projection, lens, and the legend
+          that decodes the lens -- previously spread across three corners with
+          no relationship visible between them. */}
+      <InstrumentRail
+        tag={renderTag}
+        onTagChange={(t) => {
+          setActivePriority(t === 'general' ? null : t.charAt(0).toUpperCase() + t.slice(1));
+          if (t !== 'general' && !selectedTarget) {
+            setCenter(NYC_OVERVIEW);
+            setZoom(NYC_OVERVIEW_ZOOM);
+          }
+        }}
+        sandbox={sandbox}
+        sandboxAvailable={sandboxAvailable}
+        onSandboxChange={setSandbox}
+        exaggeration={exaggeration}
+        domains={colourDomains}
+        onSearch={(q) => { setSearchQuery(q); handleSearch(q); }}
+        onResetView={handleGlobalView}
+        searchError={error}
+      />
 
-        {/* Search bar */}
-        <AnimatePresence>
-          {isSearchOpen && (
-            <motion.div
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 8 }}
-              className="bg-background/95 backdrop-blur-md border border-border px-4 py-3 rounded-2xl shadow-lg w-[min(680px,calc(100vw-3rem))]"
+      {/* Results that appeared on the map get a readout next to it. Not a
+          control -- it reports something the agent computed and offers the one
+          action that applies, which is to take it away again. */}
+      <AnimatePresence>
+        {isochrone?.properties && (
+          <motion.div
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 6 }}
+            className="absolute bottom-4 left-4 z-30 flex items-center gap-3 rounded-xl border border-border bg-background/95 px-3 py-2 shadow-lg backdrop-blur-md"
+          >
+            <span className="ud-label">Walkable area</span>
+            <span className="font-mono text-xs tabular-nums text-foreground">
+              {(isochrone.properties.area_m2 / 1e6).toFixed(2)} km²
+            </span>
+            <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
+              {isochrone.properties.minutes} min · {Number(isochrone.properties.reachable_nodes ?? 0).toLocaleString()} nodes
+            </span>
+            <button
+              type="button"
+              onClick={() => setIsochrone(null)}
+              className="rounded-sm p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+              aria-label="Remove walkable area from map"
             >
-              <div className="flex items-center gap-3">
-                <div className="relative flex-1">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
-                  <input
-                    placeholder="Search address, landmark, or lat,lng..."
-                    className="w-full pl-10 pr-3 h-12 rounded-xl text-base bg-muted/50 border-0 outline-none focus:ring-2 focus:ring-primary/30"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    onKeyDown={handleSearchKeyDown}
-                    autoFocus
-                  />
-                </div>
-                <Button type="button" onClick={handleSearch} size="sm" className="h-12 rounded-xl px-6 text-sm font-semibold">
-                  Go
-                </Button>
-              </div>
-              {error && (
-                <p className="text-sm text-destructive mt-2 px-1">{error}</p>
-              )}
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        <div className="flex items-center gap-3">
-          {/* Search + Globe buttons */}
-          <div className="flex gap-2">
-            <motion.button
-              whileTap={{ scale: 0.92 }}
-              onClick={() => setIsSearchOpen(!isSearchOpen)}
-              className={`w-12 h-12 rounded-full flex items-center justify-center shadow-lg transition-colors ${
-                isSearchOpen
-                  ? 'bg-destructive text-destructive-foreground'
-                  : 'bg-primary text-primary-foreground'
-              }`}
-              title="Search"
-            >
-              {isSearchOpen ? <X className="w-5 h-5" /> : <Search className="w-5 h-5" />}
-            </motion.button>
-            <motion.button
-              whileTap={{ scale: 0.92 }}
-              onClick={handleGlobalView}
-              className="w-12 h-12 rounded-full flex items-center justify-center shadow-lg bg-background/95 border border-border text-foreground hover:bg-muted"
-              title="Global view"
-            >
-              <Globe className="w-5 h-5" />
-            </motion.button>
-          </div>
-
-          {/* Priority reorder */}
-          <div className="bg-background/95 backdrop-blur-md border border-border px-3 py-2 rounded-xl shadow-lg flex items-center gap-1.5">
-            <Reorder.Group
-              axis="x"
-              values={priorities}
-              onReorder={setPriorities}
-              className="flex items-center gap-1.5"
-            >
-              {priorities.map((item) => {
-                const Icon = PRIORITY_ICONS[item];
-                const isActive = activePriority === item;
-                return (
-                  <Reorder.Item key={item} value={item}>
-                    <button
-                      onClick={() => {
-                        const next = isActive ? null : item;
-                        setActivePriority(next);
-                        if (next && !selectedTarget) {
-                          setCenter(NYC_OVERVIEW);
-                          setZoom(NYC_OVERVIEW_ZOOM);
-                        }
-                      }}
-                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-sm transition-all cursor-pointer ${
-                        isActive
-                          ? 'bg-foreground text-background border-foreground'
-                          : 'bg-muted/50 border-transparent text-foreground hover:bg-muted'
-                      }`}
-                    >
-                      <Icon className={`w-4 h-4 ${isActive ? 'text-background' : 'text-primary'}`} />
-                      <span className="font-medium">{item}</span>
-                    </button>
-                  </Reorder.Item>
-                );
-              })}
-            </Reorder.Group>
-          </div>
-
-          {/* Radius selector */}
-          <div className="bg-background/95 backdrop-blur-md border border-border px-3 py-2 rounded-xl shadow-lg flex items-center gap-1.5">
-            {RADIUS_OPTIONS.map((r) => {
-              const active = selectedRadiusM === r;
-              return (
-                <button
-                  key={r}
-                  type="button"
-                  onClick={() => setSelectedRadiusM(r)}
-                  className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-all ${
-                    active
-                      ? 'bg-foreground text-background border-foreground'
-                      : 'bg-muted/50 border-transparent text-foreground hover:bg-muted'
-                  }`}
-                >
-                  {r}m
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      </div>
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Detail Panel */}
       <AnimatePresence>
@@ -836,6 +756,33 @@ export default function App() {
                   </div>
                 )}
 
+                {/* The radius is a parameter of this reading, not of the map, so
+                    it sits with the number it produces. Changing it visibly
+                    changes the score directly beneath it. */}
+                <div className="mb-3 flex items-center justify-between">
+                  <span className="ud-label">Measured within</span>
+                  <div
+                    className="flex gap-0.5 rounded-md border border-border bg-muted/40 p-0.5"
+                    role="group"
+                    aria-label="Analysis radius"
+                  >
+                    {RADIUS_OPTIONS.map((r) => (
+                      <button
+                        key={r}
+                        type="button"
+                        onClick={() => setSelectedRadiusM(r)}
+                        aria-pressed={selectedRadiusM === r}
+                        className={`rounded-[4px] px-2.5 py-1 font-mono text-[11px] tabular-nums transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${
+                          selectedRadiusM === r
+                            ? 'bg-foreground text-background'
+                            : 'text-muted-foreground hover:text-foreground'
+                        }`}
+                      >
+                        {r} m
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 {/* Score cards — 2x2 grid */}
                 <div className="grid grid-cols-2 gap-3">
                   {/* Overall score - spans full width */}
@@ -846,7 +793,7 @@ export default function App() {
                     <div>
                       <div className="text-sm font-semibold text-foreground">Overall score</div>
                       <div className="text-xs text-muted-foreground">
-                        <span className="font-mono tabular-nums">{selectedRadiusM} m</span> radius
+                        of this address and its surroundings
                       </div>
                     </div>
                     <span

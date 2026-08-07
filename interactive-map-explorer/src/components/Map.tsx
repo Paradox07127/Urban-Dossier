@@ -37,7 +37,13 @@ const UD_HIGH = '#2F8C63';
 const UD_NO_DATA = '#C6CACE';
 
 /** 2nd/50th/98th percentile per field, as measured by the scoring pass. */
-type ColourDomain = { low: number; mid: number; high: number };
+type ColourDomain = {
+  low: number;
+  mid: number;
+  high: number;
+  /** Twenty five-point buckets across 0-100, for the legend. */
+  histogram?: number[];
+};
 const FULL_RANGE_DOMAIN: ColourDomain = { low: 0, mid: 50, high: 100 };
 
 /* ---------------------------------------------------------------------------
@@ -166,6 +172,14 @@ interface MapProps {
   hotspots?: HotspotData[];
   /** GeoJSON Feature returned by POST /api/isochrone, or null to clear. */
   isochrone?: GeoJSON.Feature | null;
+  /** Sandbox on/off. Owned by App so the rail can drive it. */
+  sandbox?: boolean;
+  /** Fires once the baked tiles and coastline are both present. */
+  onSandboxAvailable?: (available: boolean) => void;
+  /** Measured colour domains, hoisted so the rail can draw the legend. */
+  onColourDomains?: (domains: Record<string, ColourDomain>) => void;
+  /** Vertical exaggeration in force at the current zoom. */
+  onExaggerationChange?: (factor: number) => void;
   onMarkerClick: (location: Location) => void;
   onMapClick: (lat: number, lng: number) => void;
 }
@@ -799,13 +813,20 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
        the surrounding street network is useful for orientation -- you should
        still be able to tell that the blank across the Hudson is Jersey City --
        but it must not read as part of the analysis. */
+    // Held to city scale on purpose, and not only for looks. MapLibre re-tiles
+    // a GeoJSON source per zoom, and this one is a world-sized rectangle whose
+    // holes are the boroughs; past about z13 the holes stop surviving that
+    // process and the sheet covers the city it is supposed to cut out. It also
+    // has no work to do down there -- the question "where does the data stop?"
+    // is one you ask while looking at the whole region, not from inside a block.
     {
       id: 'city-mask',
       type: 'fill',
       source: 'cityMask',
+      maxzoom: 13,
       paint: {
         'fill-color': '#F1EEE9',
-        'fill-opacity': 0.82,
+        'fill-opacity': ['interpolate', ['linear'], ['zoom'], 11.5, 0.82, 13, 0],
         'fill-antialias': false,
       },
     },
@@ -813,10 +834,11 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       id: 'city-mask-edge',
       type: 'line',
       source: 'cityMask',
+      maxzoom: 13,
       paint: {
         'line-color': UD_INK,
         'line-width': 0.8,
-        'line-opacity': 0.18,
+        'line-opacity': ['interpolate', ['linear'], ['zoom'], 11.5, 0.18, 13, 0],
       },
     },
   ],
@@ -868,7 +890,15 @@ async function fetchBuildingTileStatus(): Promise<{
           v && typeof v.low === 'number' && typeof v.mid === 'number' &&
           typeof v.high === 'number' && v.low < v.mid && v.mid < v.high
         ) {
-          domains[field] = { low: v.low, mid: v.mid, high: v.high };
+          domains[field] = {
+            low: v.low,
+            mid: v.mid,
+            high: v.high,
+            // Carried through for the legend. Rebuilding the object field by
+            // field silently dropped this, and the only symptom was the legend
+            // quietly falling back to a plain 0-100 gradient bar.
+            histogram: Array.isArray(v.histogram) ? v.histogram : undefined,
+          };
         }
       }
     }
@@ -1669,6 +1699,10 @@ export default function Map({
   markers = [],
   hotspots = [],
   isochrone = null,
+  sandbox = false,
+  onSandboxAvailable,
+  onColourDomains,
+  onExaggerationChange,
   onMarkerClick,
   onMapClick,
 }: MapProps) {
@@ -1686,15 +1720,13 @@ export default function Map({
   const colourDomainsRef = useRef<Record<string, ColourDomain>>({});
   // Mirrored into state purely so the legend can label its own ends; the map
   // itself reads the ref.
-  const [colourDomains, setColourDomains] = useState<Record<string, ColourDomain>>({});
-  const [sandbox, setSandbox] = useState(false);
-  const [sandboxReady, setSandboxReady] = useState(false);
-  const [exaggeration, setExaggeration] = useState(6);
   const sandboxRef = useRef(false);
+  // Callbacks are held in refs so the map's own listeners can reach the latest
+  // one without the effect that creates the map depending on them, which would
+  // tear the map down and rebuild it on every parent render.
+  const onExaggerationRef = useRef(onExaggerationChange);
+  onExaggerationRef.current = onExaggerationChange;
 
-  const legendStyle = TAG_STYLES[renderTag];
-  const legendDomain =
-    colourDomains[TAG_TO_SCORE_FIELD[renderTag]] ?? FULL_RANGE_DOMAIN;
   const activeRadiusM = localRenderTarget?.radiusM ?? 200;
 
   useEffect(() => {
@@ -1710,7 +1742,7 @@ export default function Map({
     setSandboxMode(map, sandbox, renderTag, colourDomainsRef.current);
     setDomMarkersVisible([markersRef, postMarkersRef], !sandbox);
     updateSandboxPin(map, sandbox ? localRenderTargetRef.current : null);
-    if (sandbox) setExaggeration(exaggerationAtZoom(map.getZoom()));
+    if (sandbox) onExaggerationRef.current?.(exaggerationAtZoom(map.getZoom()));
   }, [sandbox, renderTag]);
 
   // Keep the in-scene pin on the current selection, and keep newly created DOM
@@ -1734,7 +1766,11 @@ export default function Map({
       maxZoom: 20,
     });
 
-    map.addControl(new maplibregl.NavigationControl(), 'top-left');
+    // Bottom-right: the instrument rail owns the top-left, and zoom/compass are
+    // navigation rather than analysis, so they sit apart from the controls that
+    // change what is being measured. The compass matters in the sandbox, where
+    // it is the way back to north after turning the model.
+    map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'bottom-right');
     map.on('click', (event) => {
       onMapClick(event.lngLat.lat, event.lngLat.lng);
     });
@@ -1743,7 +1779,7 @@ export default function Map({
       const status = await fetchBuildingTileStatus();
       bakedTilesRef.current = status.available;
       colourDomainsRef.current = status.domains;
-      setColourDomains(status.domains);
+      onColourDomains?.(status.domains);
 
       // The sandbox needs both the baked prisms and the coastline to stand
       // them on; without either it is not offered rather than shown broken.
@@ -1758,7 +1794,7 @@ export default function Map({
         }
         // The sandbox also needs the baked prisms; without them it would be an
         // empty plate, so it is not offered rather than shown broken.
-        if (status.available) setSandboxReady(true);
+        if (status.available) onSandboxAvailable?.(true);
       }
 
       const config = localRenderTarget
@@ -1873,7 +1909,7 @@ export default function Map({
       if (sandboxRef.current) {
         // Report the exaggeration actually in force, since it changes with
         // zoom and the reader would otherwise assume the towers are to scale.
-        setExaggeration(exaggerationAtZoom(map.getZoom()));
+        onExaggerationRef.current?.(exaggerationAtZoom(map.getZoom()));
         return;
       }
       const config = activeConfigRef.current;
@@ -2076,71 +2112,9 @@ export default function Map({
         ref={mapContainer}
         className="w-full h-full [&_.maplibregl-ctrl-group_button]:h-12 [&_.maplibregl-ctrl-group_button]:w-12 [&_.maplibregl-ctrl-group]:rounded-xl [&_.maplibregl-ctrl-group]:shadow-lg [&_.maplibregl-ctrl-group]:overflow-hidden"
       />
-      {sandboxReady && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setSandbox((v) => !v)}
-            aria-pressed={sandbox}
-            className={`flex items-center gap-2 rounded-xl border px-3.5 py-2 text-[13px] font-medium shadow-lg backdrop-blur-md transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${
-              sandbox
-                ? 'bg-foreground border-foreground text-background'
-                : 'bg-background/95 border-border text-foreground hover:bg-muted'
-            }`}
-          >
-            <Box className="h-4 w-4" />
-            {sandbox ? 'Sandbox' : 'Flat map'}
-          </button>
-          {sandbox && (
-            <div className="rounded-xl border border-border bg-background/95 px-3 py-2 shadow-lg backdrop-blur-md">
-              {/* The heights on screen are not to scale at city zoom, and a
-                  reader has no way to know that from the picture. */}
-              <span className="ud-label">Height</span>
-              <span className="ml-2 font-mono text-[11px] tabular-nums text-foreground">
-                {exaggeration <= 1.05 ? 'true scale' : `${exaggeration.toFixed(1)}× exaggerated`}
-              </span>
-            </div>
-          )}
-        </div>
-      )}
-
-      <div className="pointer-events-none absolute top-4 right-4 z-20">
-        <div className="bg-background/95 backdrop-blur-md border border-border rounded-xl shadow-lg px-4 py-2.5">
-          <div className="ud-label text-center mb-1.5">{legendStyle.label} Score</div>
-          <div className="flex items-center gap-2">
-            {/* The ends are the ramp's real endpoints, not 0 and 100.
-                The scores do not span the full range -- overall sits between
-                34 and 68 for 96% of buildings -- so the ramp is stretched over
-                the 2nd-98th percentile to make the variation visible. Printing
-                0 and 100 here would claim a span the colours do not cover and
-                would make the middle of the city look like a mid score when it
-                is really the middle of a much narrower band. */}
-            <span className="font-mono text-[11px] text-muted-foreground leading-none w-6 text-right tabular-nums">
-              {legendDomain.low}
-            </span>
-            <div
-              className="h-2.5 w-32 rounded-sm"
-              style={{
-                // Three stops, matching the paint expression. Interpolating
-                // straight from the low red to the high green would pass
-                // through a muddy brown the map never draws, so the legend
-                // would be describing a ramp that does not exist.
-                background:
-                  `linear-gradient(90deg, ${legendStyle.low} 0%, ` +
-                  `${UD_MID} 50%, ${legendStyle.high} 100%)`,
-              }}
-            />
-            <span className="font-mono text-[11px] text-muted-foreground leading-none w-6 tabular-nums">
-              {legendDomain.high}
-            </span>
-          </div>
-          {legendDomain !== FULL_RANGE_DOMAIN && (
-            <div className="mt-1 text-center font-mono text-[9px] text-muted-foreground/70">
-              2nd–98th pct
-            </div>
-          )}
-        </div>
-      </div>
+      {/* No controls float on the map. Everything that changes the view lives
+          in the instrument rail, and everything about the selected point lives
+          in the reading panel; the map itself carries only the city. */}
     </div>
   );
 }
