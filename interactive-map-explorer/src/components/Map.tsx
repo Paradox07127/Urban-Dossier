@@ -57,12 +57,21 @@ const FULL_RANGE_DOMAIN: ColourDomain = { low: 0, mid: 50, high: 100 };
    buildings then start at the slab's top face. Visually identical to a carved
    block, and it stays inside what the renderer actually supports.
 --------------------------------------------------------------------------- */
-// A plate, not a plinth. Every metre of it is also a metre by which the
-// surface the buildings stand on sits above the plane a map click lands on, so
-// thinness is a correctness property here and not only a look.
-const SLAB_TOP_M = 75;
-const SLAB_SIDE = '#C9C3B8';
-const SLAB_TOP = '#E4DFD5';
+/* The model's ground is sea level.
+ *
+ * It used to be the top of a raised slab, which gave the city a visible cut
+ * edge and cost more than it was worth. fill-extrusion is the only layer type
+ * MapLibre can put at an elevation -- confirmed against the renderer, which
+ * rejects a negative base outright -- so a raised ground meant the streets,
+ * parks and water underneath it were unreachable, and symbols doubly so: no
+ * street name or place name can ever be lifted off the zero plane. A model of
+ * a city with no street names is missing the thing people navigate by.
+ *
+ * With the ground at zero the whole basemap lands exactly where the buildings
+ * stand, and the click correction disappears too -- a click already unprojects
+ * onto the plane everything is on.
+ */
+const SLAB_TOP_M = 0;
 const VOID_COLOUR = '#DCE3E8';
 
 /* The dropped pin: a thin shaft with a ring around its foot.
@@ -462,34 +471,19 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
        out on a mode toggle is worse than finding it out on boot.
     -------------------------------------------------------------------- */
     {
-      id: 'land-slab',
-      type: 'fill-extrusion',
+      // The city's outline, drawn flat.
+      //
+      // What is left of the slab. It no longer lifts anything -- the ground is
+      // sea level so the basemap can reach it -- but the boundary still has to
+      // read, because outside it there is no data and the model shows nothing.
+      id: 'land-outline-edge',
+      type: 'line',
       source: 'landOutline',
-      layout: { visibility: 'none' },
+      layout: { visibility: 'none', 'line-join': 'round' },
       paint: {
-        'fill-extrusion-color': [
-          // Only the top face carries the city; the sides are the cut edge of
-          // the block and are shaded darker so the slab reads as solid.
-          'interpolate', ['linear'], ['zoom'], 0, SLAB_SIDE, 22, SLAB_SIDE,
-        ],
-        'fill-extrusion-height': SLAB_TOP_M,
-        'fill-extrusion-base': 0,
-        'fill-extrusion-opacity': 1,
-        'fill-extrusion-vertical-gradient': true,
-      },
-    },
-    {
-      // A flat cap on the slab, so the ground the buildings stand on is a
-      // lighter surface than the block's cut sides.
-      id: 'land-slab-top',
-      type: 'fill-extrusion',
-      source: 'landOutline',
-      layout: { visibility: 'none' },
-      paint: {
-        'fill-extrusion-color': SLAB_TOP,
-        'fill-extrusion-height': SLAB_TOP_M + 1,
-        'fill-extrusion-base': SLAB_TOP_M,
-        'fill-extrusion-opacity': 1,
+        'line-color': UD_INK,
+        'line-width': ['interpolate', ['linear'], ['zoom'], 10, 1, 15, 2.5],
+        'line-opacity': 0.32,
       },
     },
     {
@@ -1368,27 +1362,23 @@ function setBuildingRenderer(
   }
 }
 
-/* Layers that make up the flat map. In sandbox mode the city is a physical
- * object on an empty ground, so every one of these goes away -- leaving them
- * would put a road network and a coloured choropleth on the table next to the
- * model. Water is included: the slab's edge already is the shoreline, and a
- * blue sheet at ground level would sit 700 m below the land it borders. */
+/* Layers the sandbox turns off.
+ *
+ * Only the ones that would draw the same thing twice. The streets, parks,
+ * water and labels stay: the model's ground is sea level, so they lie exactly
+ * where the buildings stand, and a city model without its street grid is
+ * missing what people navigate by.
+ *
+ * The choropleth goes because the buildings now carry that colour in three
+ * dimensions, and the flat building layers go because the extruded ones
+ * replace them. */
 const FLAT_MAP_LAYERS = [
-  'water', 'waterway', 'landcover', 'landuse', 'park-fill',
   'hex-overlay-fill', 'hex-overlay-line',
   'building-scores-fill', 'building', 'building-3d',
-  'isochrone-fill', 'isochrone-line',
-  // Ground-level overlays. Left on, these lie on the slab's underside and cut
-  // through the model at the waterline.
-  'render-radius-fill', 'render-radius-line', 'render-radius-line-glow',
-  'hotspot-fill', 'hotspot-line',
-  // Nothing left to veil once the basemap is gone; the slab's edge is the
-  // boundary.
-  'city-mask', 'city-mask-edge',
 ];
 
 const SANDBOX_LAYERS = [
-  'land-slab', 'land-slab-top', 'sandbox-massing', 'sandbox-buildings',
+  'land-outline-edge', 'sandbox-massing', 'sandbox-buildings',
   'sandbox-radius', 'sandbox-radius-rim', 'sandbox-pin',
 ];
 
@@ -1421,24 +1411,16 @@ function setDomMarkersVisible(
 /**
  * Where in the city did a click on the model actually land?
  *
- * ``event.lngLat`` is the screen point unprojected onto the plane at elevation
- * zero. In the sandbox nothing is at elevation zero: the ground is the slab's
- * top face, and every building stands on that. With the camera pitched, a
- * point on the surface appears higher up the screen than the same horizontal
- * position on the plane below it, so clicking a building selected somewhere
- * short of it -- the further from the horizon and the greater the pitch, the
- * bigger the miss. That is the interaction error; it is not a rounding
- * problem, it is a different plane.
+ * ``event.lngLat`` unprojects the cursor onto the plane at elevation zero,
+ * which is now the ground the buildings stand on -- so a click on open street
+ * is already correct and needs nothing.
  *
- * Two ways out, in order of confidence:
- *
- *  1. Ask the renderer what is under the cursor. If a building was hit, the
- *     answer is that building, which is both exact and the thing the reader
- *     meant to point at.
- *  2. Otherwise the click is on bare ground, so re-unproject a screen point
- *     pushed down by the slab's apparent height. An object h metres up appears
- *     h*cos(pitch) metres' worth of pixels higher, so looking that far below
- *     the cursor finds the horizontal position whose surface sits under it.
+ * A click on a *building* is not. What is under the cursor is a roof, possibly
+ * hundreds of metres up, and the ray carries on past it to meet the ground
+ * somewhere further away; the taller the building and the greater the pitch,
+ * the bigger the gap. Asking the renderer what was hit answers with the
+ * building itself, which is both exact and the thing the reader meant to point
+ * at.
  */
 function resolveSandboxClick(
   map: MapLibreMap,
@@ -1451,16 +1433,7 @@ function resolveSandboxClick(
     const centre = hit && featureCentre(hit.geometry as GeoJSON.Geometry);
     if (centre) return { lng: centre[0], lat: centre[1] };
   }
-
-  const metresPerPixel =
-    (156543.03392 * Math.cos((map.getCenter().lat * Math.PI) / 180)) /
-    Math.pow(2, map.getZoom());
-  if (!Number.isFinite(metresPerPixel) || metresPerPixel <= 0) {
-    return { lat: fallback.lat, lng: fallback.lng };
-  }
-  const dy = (SLAB_TOP_M / metresPerPixel) * Math.cos((map.getPitch() * Math.PI) / 180);
-  const corrected = map.unproject([point.x, point.y + dy]);
-  return { lat: corrected.lat, lng: corrected.lng };
+  return { lat: fallback.lat, lng: fallback.lng };
 }
 
 /** Centroid of a polygonal feature's outer ring, in [lng, lat]. */
@@ -1527,43 +1500,23 @@ function setSandboxMode(map: MapLibreMap, on: boolean, tag: RenderTag,
       'background', 'background-color', on ? VOID_COLOUR : '#f0ede9',
     );
   }
-  // Basemap furniture is matched by pattern rather than listed, since the
-  // style grows more of it over time.
+  // Roads, labels and place names stay on in the sandbox. They were hidden
+  // when the ground was a raised slab, because they would have drawn on the
+  // plane underneath it; at sea level they land exactly where the buildings
+  // stand, and they are how anyone reads a city model.
   for (const layer of map.getStyle().layers ?? []) {
     if (isBasemapFurniture(layer.id)) {
-      map.setLayoutProperty(layer.id, 'visibility', on ? 'none' : 'visible');
+      map.setLayoutProperty(layer.id, 'visibility', 'visible');
     }
   }
 
   if (on) {
-    enforceSurfaceOnly(map);
     setSandboxTag(map, tag, domains);
     map.easeTo({ pitch: 62, bearing: -18, duration: 900 });
     map.dragRotate.enable();
     map.touchZoomRotate.enableRotation();
   } else {
     map.easeTo({ pitch: 0, bearing: 0, duration: 700 });
-  }
-}
-
-/**
- * In the sandbox, the model's top face is the only ground there is.
- *
- * fill-extrusion is the one layer type MapLibre can place at an elevation.
- * Everything else -- fill, line, circle, symbol -- is drawn on the plane at
- * zero, which in this view is the *underside* of the slab. That is how the
- * analysis disc ended up on the surface with its own outline on the bottom of
- * the block: two layers describing one circle, on two different planes.
- *
- * Rather than remember this each time a layer is added, anything that cannot
- * be elevated is switched off here. A missing overlay is a visible bug someone
- * will fix; an overlay quietly floating under the city is one that survives.
- */
-function enforceSurfaceOnly(map: MapLibreMap) {
-  for (const layer of map.getStyle().layers ?? []) {
-    if (layer.type === 'fill-extrusion' || layer.type === 'background') continue;
-    if ((map.getLayoutProperty(layer.id, 'visibility') ?? 'visible') === 'none') continue;
-    map.setLayoutProperty(layer.id, 'visibility', 'none');
   }
 }
 
