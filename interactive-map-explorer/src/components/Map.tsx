@@ -255,6 +255,12 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       type: 'geojson',
       data: EMPTY_FEATURE_COLLECTION,
     },
+    // The analysis radius as an annulus, so its edge can be extruded onto the
+    // model surface instead of stroked onto the ground plane below it.
+    sandboxRing: {
+      type: 'geojson',
+      data: EMPTY_FEATURE_COLLECTION,
+    },
     // A sheet covering the world with New York City punched out of it, so the
     // flat map stops where the data does. Everything outside the five boroughs
     // -- New Jersey, Nassau, Westchester -- has no NYC Open Data behind it, and
@@ -518,17 +524,22 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       //
       // A wash alone has no definite edge once buildings sit on top of it, and
       // the reader needs to see exactly where the measurement stops -- that
-      // boundary is the difference between "within 200 m" and "nearby". Drawn
-      // as a line rather than a taller extrusion so it stays one pixel wide
-      // from any angle instead of becoming a wall when the camera drops.
+      // boundary is the difference between "within 200 m" and "nearby".
+      //
+      // An extruded annulus rather than a line: line layers have no elevation
+      // in MapLibre, so a stroke drew on the ground plane and ended up on the
+      // slab's underside while the disc it was supposed to outline sat on top.
+      // In the sandbox the model's surface is the only ground there is, and
+      // fill-extrusion is the only layer type that can be put there.
       id: 'sandbox-radius-rim',
-      type: 'line',
-      source: 'renderRadius',
-      layout: { visibility: 'none', 'line-join': 'round' },
+      type: 'fill-extrusion',
+      source: 'sandboxRing',
+      layout: { visibility: 'none' },
       paint: {
-        'line-color': UD_INK,
-        'line-width': 1.4,
-        'line-opacity': 0.55,
+        'fill-extrusion-color': UD_INK,
+        'fill-extrusion-base': SLAB_TOP_M + 2,
+        'fill-extrusion-height': SLAB_TOP_M + 3,
+        'fill-extrusion-opacity': 0.5,
       },
     },
     {
@@ -1447,22 +1458,27 @@ function featureCentre(geometry: GeoJSON.Geometry): Coordinate | null {
 
 /** Put a pin into the model at the selected point. */
 function updateSandboxPin(map: MapLibreMap, target: LocalRenderTarget | null | undefined) {
-  const source = map.getSource('sandboxPins') as GeoJSONSource | undefined;
-  if (!source) return;
+  const pins = map.getSource('sandboxPins') as GeoJSONSource | undefined;
+  const ring = map.getSource('sandboxRing') as GeoJSONSource | undefined;
+  if (!pins || !ring) return;
   if (!target) {
-    source.setData(EMPTY_FEATURE_COLLECTION);
+    pins.setData(EMPTY_FEATURE_COLLECTION);
+    ring.setData(EMPTY_FEATURE_COLLECTION);
     return;
   }
-  source.setData({
+  const centre: Coordinate = [target.center[1], target.center[0]];
+  const asFeature = (geometry: GeoJSON.Polygon): GeoJSON.FeatureCollection => ({
     type: 'FeatureCollection',
-    features: [{
-      type: 'Feature',
-      properties: {},
-      geometry: createCirclePolygon(
-        [target.center[1], target.center[0]], PIN_RADIUS_KM, 18,
-      ),
-    }],
+    features: [{ type: 'Feature', properties: {}, geometry }],
   });
+
+  pins.setData(asFeature(createCirclePolygon(centre, PIN_RADIUS_KM, 18)));
+  // The rim tracks the radius, so both are rebuilt together and cannot drift
+  // apart when the radius changes.
+  const radiusKm = target.radiusM / 1000;
+  ring.setData(asFeature(
+    createRingPolygon(centre, radiusKm, Math.max(radiusKm * 0.012, 0.0035)),
+  ));
 }
 
 function setSandboxMode(map: MapLibreMap, on: boolean, tag: RenderTag,
@@ -1498,12 +1514,34 @@ function setSandboxMode(map: MapLibreMap, on: boolean, tag: RenderTag,
   }
 
   if (on) {
+    enforceSurfaceOnly(map);
     setSandboxTag(map, tag, domains);
     map.easeTo({ pitch: 62, bearing: -18, duration: 900 });
     map.dragRotate.enable();
     map.touchZoomRotate.enableRotation();
   } else {
     map.easeTo({ pitch: 0, bearing: 0, duration: 700 });
+  }
+}
+
+/**
+ * In the sandbox, the model's top face is the only ground there is.
+ *
+ * fill-extrusion is the one layer type MapLibre can place at an elevation.
+ * Everything else -- fill, line, circle, symbol -- is drawn on the plane at
+ * zero, which in this view is the *underside* of the slab. That is how the
+ * analysis disc ended up on the surface with its own outline on the bottom of
+ * the block: two layers describing one circle, on two different planes.
+ *
+ * Rather than remember this each time a layer is added, anything that cannot
+ * be elevated is switched off here. A missing overlay is a visible bug someone
+ * will fix; an overlay quietly floating under the city is one that survives.
+ */
+function enforceSurfaceOnly(map: MapLibreMap) {
+  for (const layer of map.getStyle().layers ?? []) {
+    if (layer.type === 'fill-extrusion' || layer.type === 'background') continue;
+    if ((map.getLayoutProperty(layer.id, 'visibility') ?? 'visible') === 'none') continue;
+    map.setLayoutProperty(layer.id, 'visibility', 'none');
   }
 }
 
@@ -1764,6 +1802,35 @@ function createCirclePolygon(center: Coordinate, radiusKm: number, segments = 64
     type: 'Polygon',
     coordinates: [coordinates],
   };
+}
+
+/**
+ * A ring, as a polygon with a hole, so it can be extruded onto the model.
+ *
+ * A line layer would be simpler and is wrong here: MapLibre draws lines on the
+ * ground plane with no elevation, so a stroke around the analysis disc landed
+ * on the underside of the slab while the disc itself sat on top of it. Only
+ * fill-extrusion has a base, so anything that must lie on the model's surface
+ * has to be an area, and a stroke made of area is an annulus.
+ *
+ * The width is in metres, so it is a line painted on the model rather than a
+ * screen-space stroke -- it stays put on the surface when the camera turns.
+ */
+function createRingPolygon(
+  center: Coordinate, radiusKm: number, widthKm: number, segments = 64,
+): GeoJSON.Polygon {
+  const outer: Coordinate[] = [];
+  const inner: Coordinate[] = [];
+  const innerRadius = Math.max(radiusKm - widthKm, radiusKm * 0.5);
+  for (let index = 0; index <= segments; index += 1) {
+    const angle = (index / segments) * Math.PI * 2;
+    outer.push(destinationPoint(center, radiusKm, angle));
+    inner.push(destinationPoint(center, innerRadius, angle));
+  }
+  // The hole is wound the other way round so it reads as a hole under either
+  // fill rule rather than as a second disc on top of the first.
+  inner.reverse();
+  return { type: 'Polygon', coordinates: [outer, inner] };
 }
 
 function destinationPoint(center: Coordinate, distanceKmValue: number, bearingRad: number): Coordinate {
