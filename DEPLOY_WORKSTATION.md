@@ -120,8 +120,8 @@ bash scripts/maps/download_nta_2020.sh
   --overview-root /mnt/data/Urban-Dossier/data/cache/overview
 ```
 
-Build the two agent-tool artifacts. Both are reproducible local files, ignored
-by Git, and must be generated on each deployment host:
+Build the agent-tool artifacts. All are reproducible local files, ignored by
+Git, and must be generated on each deployment host:
 
 ```bash
 # Pedestrian routing graph for POST /api/isochrone.
@@ -136,6 +136,42 @@ by Git, and must be generated on each deployment host:
   --ready-root /mnt/data/Urban-Dossier/data/ready \
   --out /mnt/data/Urban-Dossier/data/cache/simulation/elasticity.json
 ```
+
+Build the per-building choropleth. Three passes, run in order; the last needs
+`tippecanoe` on PATH (`apt-get install tippecanoe`):
+
+```bash
+# 1. Footprints from the OSM extract already on disk for the walking graph.
+.venv/bin/python backend/scripts/extract_building_footprints.py
+
+# 2. Score them with the backend's own algorithm.
+.venv/bin/python backend/scripts/score_buildings.py
+
+# 3. Bake the scores into a vector tileset.
+.venv/bin/python backend/scripts/build_building_tiles.py
+
+# Node serves it from the repo root; the tileset itself lives in state.
+ln -sf /mnt/data/urban-dossier-state/maps/output/building-scores.mbtiles \
+  building-scores.mbtiles
+```
+
+The validated workstation build extracted 1,506,922 footprints in 400 s,
+scored them in 3.4 s and produced a 104.6 MB tileset in 15 s covering
+1,119,258 buildings at z13-16.
+
+Scoring is fast because the score is a function of the H3 r9 cell, not of the
+building: `_h3_cells_for_radius` derives its k-ring from `latlng_to_cell(...,
+9)`, so the backend returns the same numbers for every point inside a cell.
+The pass therefore evaluates 15,141 cells rather than 1.5M buildings, and
+`backend/tests/test_building_scores_match_backend.py` asserts the baked value
+equals what `DirectQueryDataProvider` reports for the same coordinate. That
+equality is the point: the colour on the map and the number in the detail panel
+have to be the same claim.
+
+The whole step is optional. `/api/building-tiles/status` reports whether the
+tileset is being served and the client falls back to its previous client-side
+colouring when it is not, so a host without tippecanoe still gets a working
+map.
 
 The validated workstation build produced 2,109,327 walking nodes and 2,432,374
 edges from the 146 MB extract in about 41 s, stored as 53 MB of Parquet. The

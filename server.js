@@ -53,6 +53,25 @@ function createDatabase(dbPath) {
 
 const db = createDatabase(MBTILES_PATH);
 
+// Per-building scores, baked into their own tileset by
+// backend/scripts/build_building_tiles.py. Optional on purpose: the pipeline
+// needs a 3 GB OSM extract and tippecanoe, and a checkout without them should
+// still serve a working map rather than a broken one. When this is absent the
+// endpoint below reports so, and the client keeps its previous behaviour.
+const BUILDING_TILES_PATH =
+  process.env.URBAN_DOSSIER_BUILDING_TILES ||
+  path.join(__dirname, 'building-scores.mbtiles');
+
+let buildingDb = null;
+try {
+  if (fs.existsSync(BUILDING_TILES_PATH)) {
+    buildingDb = createDatabase(BUILDING_TILES_PATH);
+  }
+} catch (error) {
+  console.warn(`  Building score tiles unavailable: ${error.message}`);
+  buildingDb = null;
+}
+
 const TAG_STYLES = {
   general: {
     low: '#d73027',
@@ -621,6 +640,13 @@ app.get('/api/overview/geojson', async (req, res) => {
 
         const raw = scoreForTag(cell, tag);
         if (!Number.isFinite(raw)) return null;
+        // Prefer the true cell boundary the backend now supplies. hexApprox is
+        // a fallback for an older backend only: its hardcoded radius drew each
+        // cell at roughly half size, so a grid that tiles the city without gaps
+        // rendered as isolated dots over a mostly uncoloured map.
+        const ring = Array.isArray(cell.boundary) && cell.boundary.length >= 4
+          ? cell.boundary
+          : hexApprox(lat, lng, 0.0025);
         return {
           type: 'Feature',
           properties: {
@@ -631,7 +657,7 @@ app.get('/api/overview/geojson', async (req, res) => {
           },
           geometry: {
             type: 'Polygon',
-            coordinates: [hexApprox(lat, lng, 0.0025)],
+            coordinates: [ring],
           },
         };
       })
@@ -1025,6 +1051,45 @@ app.get('/tiles/:z/:x/:y.pbf', (req, res) => {
     'Cache-Control': 'public, max-age=86400',
   });
   res.send(row.tile_data);
+});
+
+// Per-building score tiles: /building-tiles/{z}/{x}/{y}.pbf
+//
+// Served from a second mbtiles so the OpenMapTiles basemap stays a pristine
+// artefact that can be regenerated without carrying our scores along.
+app.get('/building-tiles/:z/:x/:y.pbf', (req, res) => {
+  if (!buildingDb) {
+    return res.status(404).send('Building score tiles not built');
+  }
+  const zInt = parseInt(req.params.z, 10);
+  const xInt = parseInt(req.params.x, 10);
+  const yInt = parseInt(req.params.y, 10);
+  if (!Number.isInteger(zInt) || !Number.isInteger(xInt) || !Number.isInteger(yInt)) {
+    return res.status(400).send('Invalid tile coordinate');
+  }
+  const yFlipped = (1 << zInt) - 1 - yInt;
+
+  const row = buildingDb.prepare(`
+    SELECT tile_data FROM tiles
+    WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?
+  `).get(zInt, xInt, yFlipped);
+
+  if (!row) {
+    return res.status(404).send('Tile not found');
+  }
+
+  res.set({
+    'Content-Type': 'application/x-protobuf',
+    'Content-Encoding': 'gzip',
+    'Cache-Control': 'public, max-age=86400',
+  });
+  res.send(row.tile_data);
+});
+
+// Lets the client decide between the baked tileset and its JS fallback without
+// probing for a 404 on a tile that may legitimately be empty.
+app.get('/api/building-tiles/status', (req, res) => {
+  res.json({ available: buildingDb != null });
 });
 
 // Font glyph endpoint for MapLibre

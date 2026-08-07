@@ -14,6 +14,41 @@ const UD_LOW = '#8C1D18';
 const UD_MID = '#96928A';
 const UD_HIGH = '#2E8B62';
 const UD_INK = '#0E1218';
+// Buildings the pipeline could not score. Deliberately a neutral stone rather
+// than a mid-ramp grey: "we have no reading here" must not be mistakeable for
+// "this scored 50". Roughly a quarter of footprints fall in r9 cells with no
+// dataset coverage, so this is a real and visible state, not an edge case.
+const UD_NO_DATA = '#CDCAC4';
+
+/** Which tile property backs each map tag. */
+const TAG_TO_SCORE_FIELD: Record<RenderTag, string> = {
+  general: 'overall',
+  safety: 'safety',
+  transit: 'transit',
+  amenities: 'amenities',
+};
+
+/**
+ * Paint expression colouring a building by one of its baked score fields.
+ *
+ * Evaluated per feature on the GPU, so the whole choropleth costs one uniform
+ * upload rather than a pass over every building in JavaScript.
+ */
+function buildingScoreColor(field: string): maplibregl.ExpressionSpecification {
+  return [
+    'case',
+    ['==', ['get', field], null],
+    UD_NO_DATA,
+    [
+      'interpolate',
+      ['linear'],
+      ['to-number', ['get', field]],
+      0, UD_LOW,
+      50, UD_MID,
+      100, UD_HIGH,
+    ],
+  ];
+}
 
 interface LocalRenderTarget {
   center: [number, number];
@@ -72,11 +107,16 @@ const DEFAULT_BUILDING_STYLE = {
   outline: '#bab6ae',
 };
 
+// The legend has to describe the ramp the map actually draws. These used to be
+// a different hue per tag -- magenta for safety, blue for transit -- which said
+// that a low safety score and a low transit score were different *kinds* of
+// thing rather than the same 0-100 reading of different data. They are the same
+// scale, so they get the same ramp, and the tag is named in the label instead.
 const TAG_STYLES: Record<RenderTag, RenderPalette> = {
-  general: { low: '#c51f1a', high: '#f3b78f', accent: '#7f120e', label: 'General' },
-  safety: { low: '#b31274', high: '#f2a7cf', accent: '#73034c', label: 'Safety' },
-  transit: { low: '#0f74b8', high: '#96d0f3', accent: '#084e82', label: 'Transit' },
-  amenities: { low: '#19843c', high: '#9cd79d', accent: '#0d5b26', label: 'Amenities' },
+  general: { low: UD_LOW, high: UD_HIGH, accent: UD_INK, label: 'General' },
+  safety: { low: UD_LOW, high: UD_HIGH, accent: UD_INK, label: 'Safety' },
+  transit: { low: UD_LOW, high: UD_HIGH, accent: UD_INK, label: 'Transit' },
+  amenities: { low: UD_LOW, high: UD_HIGH, accent: UD_INK, label: 'Amenities' },
 };
 
 const EMPTY_FEATURE_COLLECTION: GeoJSON.FeatureCollection = {
@@ -95,6 +135,18 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       attribution:
         '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a> ' +
         '&copy; <a href="https://openmaptiles.org/">OpenMapTiles</a>',
+    },
+    // Per-building scores baked in at build time by
+    // backend/scripts/build_building_tiles.py. Every feature carries the four
+    // category scores plus the overall, so switching the active tag is a paint
+    // expression change rather than a refetch and a rebuild of a GeoJSON
+    // source. Served from a second tileset that may legitimately be absent;
+    // the layers below simply draw nothing when it is.
+    buildingScores: {
+      type: 'vector',
+      tiles: [`${window.location.origin}/building-tiles/{z}/{x}/{y}.pbf`],
+      minzoom: 13,
+      maxzoom: 16,
     },
     renderedBuildings: {
       type: 'geojson',
@@ -207,6 +259,33 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
         'line-color': UD_INK,
         'line-width': 0.5,
         'line-opacity': ['interpolate', ['linear'], ['zoom'], 12, 0.1, 15, 0.0],
+      },
+    },
+    // Per-building choropleth, coloured straight from the tileset.
+    //
+    // This replaces the JS path below for the global view. The old approach
+    // pulled every building out of the basemap on each camera move, computed a
+    // centroid, ran a point-in-polygon against the overlay and rebuilt a
+    // GeoJSON source -- all on the main thread, every moveend. Here the score
+    // is already a feature property, so MapLibre resolves the colour on the
+    // GPU and JavaScript does nothing at all.
+    //
+    // 'overall' is a placeholder: setBuildingScoreTag() rewrites the property
+    // this reads when the active tag changes, which is why every category
+    // travels in the tile rather than only the selected one.
+    {
+      id: 'building-scores-fill',
+      type: 'fill',
+      source: 'buildingScores',
+      'source-layer': 'building_scores',
+      minzoom: 13,
+      paint: {
+        'fill-color': buildingScoreColor('overall'),
+        'fill-opacity': ['interpolate', ['linear'], ['zoom'], 13, 0.35, 15, 0.9],
+        // Buildings abut across tile boundaries; the feathered outline that
+        // antialiasing adds shows up as a seam there for the same reason it did
+        // between hexagons.
+        'fill-antialias': false,
       },
     },
     {
@@ -494,6 +573,23 @@ async function fetchGlobalRenderConfig(tag: RenderTag): Promise<RenderConfig> {
     };
   } catch {
     return { mode: 'global', tag, points: [] };
+  }
+}
+
+/**
+ * Is the baked per-building tileset being served?
+ *
+ * Answered false on any error: the JS renderer is the safe fallback, so an
+ * unreachable status endpoint must not leave the map with no buildings at all.
+ */
+async function fetchBuildingTilesAvailable(): Promise<boolean> {
+  try {
+    const resp = await fetch('/api/building-tiles/status');
+    if (!resp.ok) return false;
+    const data = await resp.json();
+    return data?.available === true;
+  } catch {
+    return false;
   }
 }
 
@@ -812,6 +908,41 @@ function setGlobalVisualizationMode(map: MapLibreMap, isGlobal: boolean) {
   }
 }
 
+/**
+ * Point the baked-tile choropleth at a different category.
+ *
+ * Every category rides along in the tile, so switching tags is a paint
+ * property write -- no refetch, no re-tessellation, no JS pass over the
+ * buildings. That is the payoff for baking all five scores instead of only the
+ * active one.
+ */
+function setBuildingScoreTag(map: MapLibreMap, tag: RenderTag) {
+  if (!map.getLayer('building-scores-fill')) return;
+  const field = TAG_TO_SCORE_FIELD[tag] ?? 'overall';
+  map.setPaintProperty('building-scores-fill', 'fill-color', buildingScoreColor(field));
+}
+
+/**
+ * Hand the global choropleth to whichever renderer is actually available.
+ *
+ * With the baked tileset present the JS path is not merely redundant, it is
+ * harmful: it would draw its own differently-derived colours on top. So the
+ * two are mutually exclusive rather than layered.
+ */
+function setBuildingRenderer(map: MapLibreMap, baked: boolean, isGlobal: boolean) {
+  const useBaked = baked && isGlobal;
+  if (map.getLayer('building-scores-fill')) {
+    map.setLayoutProperty(
+      'building-scores-fill',
+      'visibility',
+      useBaked ? 'visible' : 'none',
+    );
+  }
+  if (map.getLayer('building')) {
+    map.setLayoutProperty('building', 'visibility', useBaked ? 'none' : 'visible');
+  }
+}
+
 function updateHotspotOverlay(map: MapLibreMap, hotspots: HotspotData[]) {
   const source = map.getSource('hotspotOverlay') as GeoJSONSource | undefined;
   if (!source) return;
@@ -1096,6 +1227,10 @@ export default function Map({
   const activeConfigRef = useRef<RenderConfig>({ mode: 'global', tag: renderTag, points: [] });
   const localRenderTargetRef = useRef<LocalRenderTarget | null>(localRenderTarget);
   const hexOverlayRef = useRef<GeoJSON.FeatureCollection>(EMPTY_FEATURE_COLLECTION);
+  // Whether the baked per-building tileset is being served. Asked once, via a
+  // status endpoint rather than by probing for a 404 on a tile that might be
+  // legitimately empty over water.
+  const bakedTilesRef = useRef(false);
 
   const legendStyle = TAG_STYLES[renderTag];
   const activeRadiusM = localRenderTarget?.radiusM ?? 200;
@@ -1121,6 +1256,8 @@ export default function Map({
     });
 
     map.on('load', async () => {
+      bakedTilesRef.current = await fetchBuildingTilesAvailable();
+
       const config = localRenderTarget
         ? await fetchLocalRenderConfig(renderTag, localRenderTarget)
         : await fetchGlobalRenderConfig(renderTag);
@@ -1133,10 +1270,16 @@ export default function Map({
         const hexGeoJSON = await fetchHexOverlayGeoJSON(renderTag);
         renderHexOverlay(map, hexGeoJSON, hexOverlayRef);
         setGlobalVisualizationMode(map, true);
-        renderVisibleBuildings(map, config, null, hexOverlayRef.current);
+        setBuildingRenderer(map, bakedTilesRef.current, true);
+        if (bakedTilesRef.current) {
+          setBuildingScoreTag(map, config.tag);
+        } else {
+          renderVisibleBuildings(map, config, null, hexOverlayRef.current);
+        }
       } else {
         renderHexOverlay(map, EMPTY_FEATURE_COLLECTION, hexOverlayRef);
         setGlobalVisualizationMode(map, false);
+        setBuildingRenderer(map, bakedTilesRef.current, false);
         renderVisibleBuildings(map, config, localRenderTargetRef.current);
       }
     });
@@ -1213,10 +1356,19 @@ export default function Map({
         .addTo(map);
     });
 
+    // Both handlers below exist only to feed the JavaScript renderer. With the
+    // baked tileset serving the global view there is nothing to recompute when
+    // the camera moves -- MapLibre re-colours from the tile it already has --
+    // so they return immediately. That is the actual performance win here: not
+    // a faster per-frame pass, but no per-frame pass.
+    const needsJsRender = (config: RenderConfig) =>
+      config.mode === 'local' || !bakedTilesRef.current;
+
     // Re-render buildings after map movement (flyTo, pan, zoom)
     map.on('moveend', () => {
       if (!map.isStyleLoaded()) return;
       const config = activeConfigRef.current;
+      if (!needsJsRender(config)) return;
       if (config.mode === 'local') {
         renderVisibleBuildings(map, config, localRenderTargetRef.current);
       } else {
@@ -1229,6 +1381,7 @@ export default function Map({
     map.on('sourcedata', (e) => {
       if (e.sourceId !== 'openmaptiles' || !e.isSourceLoaded) return;
       const config = activeConfigRef.current;
+      if (!needsJsRender(config)) return;
       // Debounce — tiles load in batches (350ms avoids redundant renders)
       if (sourceDataTimer) clearTimeout(sourceDataTimer);
       sourceDataTimer = setTimeout(() => {
@@ -1290,11 +1443,19 @@ export default function Map({
         if (!cancelled && mapRef.current) {
           renderHexOverlay(map, hexGeoJSON, hexOverlayRef);
           setGlobalVisualizationMode(map, true);
-          renderVisibleBuildings(map, config, null, hexOverlayRef.current);
+          setBuildingRenderer(map, bakedTilesRef.current, true);
+          if (bakedTilesRef.current) {
+            // Tag change only: the geometry and every category already sit in
+            // the tiles the map is holding, so this is a paint write.
+            setBuildingScoreTag(map, config.tag);
+          } else {
+            renderVisibleBuildings(map, config, null, hexOverlayRef.current);
+          }
         }
       } else {
         renderHexOverlay(map, EMPTY_FEATURE_COLLECTION, hexOverlayRef);
         setGlobalVisualizationMode(map, false);
+        setBuildingRenderer(map, bakedTilesRef.current, false);
         renderVisibleBuildings(map, config, localRenderTarget ?? undefined);
       }
     };
@@ -1418,7 +1579,13 @@ export default function Map({
             <div
               className="h-2.5 w-36 rounded-sm"
               style={{
-                background: `linear-gradient(90deg, ${legendStyle.low}, ${legendStyle.high})`,
+                // Three stops, matching the paint expression. Interpolating
+                // straight from the low red to the high green would pass
+                // through a muddy brown the map never draws, so the legend
+                // would be describing a ramp that does not exist.
+                background:
+                  `linear-gradient(90deg, ${legendStyle.low} 0%, ` +
+                  `${UD_MID} 50%, ${legendStyle.high} 100%)`,
               }}
             />
             <span className="font-mono text-[11px] text-muted-foreground leading-none w-6 tabular-nums">100</span>

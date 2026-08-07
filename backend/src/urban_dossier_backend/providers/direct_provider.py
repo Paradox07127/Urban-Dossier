@@ -209,9 +209,44 @@ class DirectQueryDataProvider(DataProvider):
     def _load_overview_rows(self, path: Path, limit: int = 5000) -> list[dict[str, Any]]:
         con = self._connect()
         try:
-            return self._query_rows(con, f"SELECT * FROM read_parquet('{path.as_posix()}') LIMIT {limit}")
+            rows = self._query_rows(con, f"SELECT * FROM read_parquet('{path.as_posix()}') LIMIT {limit}")
         finally:
             con.close()
+        return self._attach_cell_boundaries(rows)
+
+    @staticmethod
+    def _attach_cell_boundaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Give every overview cell its true H3 boundary as a GeoJSON ring.
+
+        The map used to receive only a centre point and had the Node layer
+        synthesise a hexagon from it with a hardcoded 0.0025-degree radius. An
+        r8 cell is about 0.0048 degrees across, so every cell was drawn at 52%
+        of its size and covered 27% of its own area -- the contiguous grid
+        appeared as scattered dots with most of the city uncoloured between
+        them. It also put geometry construction in the proxy, which is supposed
+        to forward what this service computes rather than derive anything.
+
+        A cell's boundary is an exact function of its index, so it belongs here
+        with the rest of the truth. Emitted as [lng, lat] in GeoJSON winding.
+        """
+        try:
+            import h3
+        except ImportError:  # pragma: no cover - h3 is a hard dependency in practice
+            return rows
+
+        for row in rows:
+            cell = row.get("h3") or row.get("cell_id")
+            if not cell:
+                continue
+            try:
+                ring = [[round(lng, 6), round(lat, 6)] for lat, lng in h3.cell_to_boundary(cell)]
+            except Exception:
+                # An unparseable index is a data problem, not a reason to fail
+                # the whole overview; the client falls back for this one cell.
+                continue
+            ring.append(ring[0])  # GeoJSON polygons must close
+            row["boundary"] = ring
+        return rows
 
     def _normalize_borough(self, value: Any) -> str | None:
         if value is None or str(value).strip() == "":
