@@ -635,7 +635,16 @@ export default function App() {
             animate={{ x: 0 }}
             exit={{ x: '100%' }}
             transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-            className={`absolute right-0 top-0 h-full w-full min-h-0 backdrop-blur-xl border-l border-border shadow-xl z-20 flex flex-col transition-all duration-300 ${
+            /* transition-[width], not transition-all.
+               transition-all covers transform, which motion is already
+               animating frame by frame -- the CSS transition then interpolated
+               towards each frame's value and the element lagged behind its own
+               spring. backdrop-blur promotes this to its own compositing
+               layer, so the blurred backing and the text composited at
+               different points in that lag and the panel appeared to arrive
+               twice. The CSS transition is only wanted for the expand toggle,
+               which is a width change. */
+            className={`absolute right-0 top-0 h-full w-full min-h-0 backdrop-blur-xl border-l border-border shadow-xl z-20 flex flex-col transition-[width] duration-300 ${
               panelExpanded ? 'md:w-[55vw]' : 'md:w-[680px]'
             }`}
             style={{ backgroundColor: `rgba(255,255,255,0.95)`, ...panelBgStyle }}
