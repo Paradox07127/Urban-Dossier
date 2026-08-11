@@ -265,26 +265,26 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       minzoom: 10,
       maxzoom: 16,
     },
-    // The slab the sandbox stands on. Filled from /api/land-outline, which is
-    // the same coastline the overview cells are clipped against, so the base
-    // and the choropleth end at one line rather than two that nearly agree.
-    // The model's shape, as elevation rather than geometry.
+    // The coastline the sandbox is cut to. Filled from /api/land-outline,
+    // which is the same boundary the overview cells are clipped against, so
+    // the model's edge and the choropleth end at one line rather than two that
+    // nearly agree.
     //
-    // Terrain-RGB in which the five boroughs sit at a constant height and
-    // everything past the shoreline sits at zero. MapLibre drapes the entire
-    // basemap over terrain -- streets, parks, water and, crucially, labels --
-    // and places extrusions on it, so the raised surface carries the map while
-    // the step at the coast becomes the model's cut edge. A slab built out of
-    // fill-extrusion could do neither: nothing but another extrusion can be
-    // put on top of it, and symbols cannot leave the zero plane at all.
-    plateauDem: {
-      type: 'raster-dem',
-      tiles: [`${window.location.origin}/plateau-dem/{z}/{x}/{y}.png`],
-      tileSize: 256,
-      encoding: 'mapbox',
-      minzoom: 8,
-      maxzoom: 13,
-    },
+    // There was a raster-dem source here that lifted the five boroughs onto a
+    // 260 m plateau so the model would read as an object on a table. It is
+    // gone, and the ground is sea level everywhere.
+    //
+    // Terrain cannot make a clean cut. A DEM is a grid of heights and MapLibre
+    // triangulates between adjacent samples, so a step from 260 m to 0 at the
+    // shoreline is not a wall -- it is a ramp one sample wide, and the basemap
+    // draped over it stretches across that ramp. What that produced at the
+    // coast was a fringe of smeared triangles standing above the water, worst
+    // where the outline is most crenellated, which in this city is everywhere.
+    // Raising the DEM resolution shortens the ramp but never removes it; the
+    // artefact is inherent to representing a vertical face as elevation.
+    //
+    // Once the basemap is printed on the surface, the plinth was only ever
+    // paying for the illusion of thickness, and it was paying with the edge.
     landOutline: {
       type: 'geojson',
       data: EMPTY_FEATURE_COLLECTION,
@@ -490,9 +490,11 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
     {
       // The city's outline, drawn flat.
       //
-      // What is left of the slab. It no longer lifts anything -- the ground is
-      // sea level so the basemap can reach it -- but the boundary still has to
+      // All that is left of the slab. It lifts nothing -- the ground is sea
+      // level so the basemap can reach it -- but the boundary still has to
       // read, because outside it there is no data and the model shows nothing.
+      // A line is also the one way to draw this edge without a seam: it has no
+      // interior to mis-sample and no surface for a texture to stretch across.
       id: 'land-outline-edge',
       type: 'line',
       source: 'landOutline',
@@ -1527,15 +1529,13 @@ function setSandboxMode(map: MapLibreMap, on: boolean, tag: RenderTag,
     }
   }
 
-  // The plateau. Terrain lifts the boroughs and everything draped on them --
-  // streets, parks, labels -- leaving the coastline as a step, which is the
-  // model's cut edge. Off on the flat map, where a raised city would only make
-  // the choropleth harder to read.
+  // No terrain, in either mode. The ground is sea level and the buildings
+  // stand on it directly. Cleared rather than merely not set, so a stale
+  // terrain left by an earlier style cannot survive a mode toggle.
   try {
-    map.setTerrain(on ? { source: 'plateauDem', exaggeration: 1 } : null);
+    map.setTerrain(null);
   } catch {
-    // A tileset that was not built. The model still works, just without the
-    // plinth, which is better than refusing to open it.
+    // Nothing to clear.
   }
 
   if (on) {

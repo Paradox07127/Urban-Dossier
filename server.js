@@ -72,23 +72,13 @@ try {
   buildingDb = null;
 }
 
-// Terrain-RGB that lifts the five boroughs onto a plateau, built by
-// backend/scripts/build_plateau_dem.py. It is what gives the 3D view a cut
-// edge while still carrying the basemap -- terrain drapes streets and labels
-// over the raised surface, which a slab made of geometry cannot do.
-const PLATEAU_DEM_PATH =
-  process.env.URBAN_DOSSIER_PLATEAU_DEM ||
-  path.join(__dirname, 'nyc-plateau-dem.mbtiles');
-
-let plateauDb = null;
-try {
-  if (fs.existsSync(PLATEAU_DEM_PATH)) {
-    plateauDb = createDatabase(PLATEAU_DEM_PATH);
-  }
-} catch (error) {
-  console.warn(`  Plateau DEM unavailable: ${error.message}`);
-  plateauDb = null;
-}
+// A Terrain-RGB tileset used to sit here, lifting the boroughs onto a plateau
+// so the 3D view read as a model on a table. The client no longer asks for it:
+// terrain triangulates between height samples, so the 260 m step at the
+// shoreline came out as a one-sample ramp with the basemap stretched over it
+// rather than as a cut edge. The ground is sea level now and the route is gone
+// with its only consumer. backend/scripts/build_plateau_dem.py still builds
+// the tileset if the plinth is ever wanted back.
 
 const TAG_STYLES = {
   general: {
@@ -1163,31 +1153,6 @@ function readColourDomains() {
   }
 }
 
-// Terrain tiles for the model's plateau: /plateau-dem/{z}/{x}/{y}.png
-app.get('/plateau-dem/:z/:x/:y.png', (req, res) => {
-  if (!plateauDb) return res.status(404).send('Plateau DEM not built');
-  const zInt = parseInt(req.params.z, 10);
-  const xInt = parseInt(req.params.x, 10);
-  const yInt = parseInt(req.params.y, 10);
-  if (!Number.isInteger(zInt) || !Number.isInteger(xInt) || !Number.isInteger(yInt)) {
-    return res.status(400).send('Invalid tile coordinate');
-  }
-  const row = plateauDb.prepare(`
-    SELECT tile_data FROM tiles
-    WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?
-  `).get(zInt, xInt, (1 << zInt) - 1 - yInt);
-
-  // A missing tile is sea level, and MapLibre needs a real image for it: an
-  // absent DEM tile leaves a hole in the mesh rather than a flat patch.
-  if (!row) return res.status(404).send('Tile not found');
-
-  res.set({
-    'Content-Type': 'image/png',
-    'Cache-Control': 'public, max-age=86400',
-  });
-  res.send(row.tile_data);
-});
-
 app.get('/api/land-outline', async (req, res) => {
   try {
     res.json(await backendRequest('/api/land-outline', { method: 'GET' }));
@@ -1200,10 +1165,6 @@ app.get('/api/building-tiles/status', (req, res) => {
   res.json({
     available: buildingDb != null,
     colour_domains: buildingDb != null ? readColourDomains() : null,
-    // The model needs both: prisms to stand up, and the plateau to stand them
-    // on. Reported separately so a host with one and not the other degrades to
-    // the flat map rather than to a city floating over open water.
-    plateau: plateauDb != null,
   });
 });
 
