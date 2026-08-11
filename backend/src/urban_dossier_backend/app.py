@@ -33,6 +33,7 @@ if str(SKILLS_ROOT) not in sys.path:
 SKILL_PATH = SKILLS_ROOT / "urban_dossier_analyst"
 
 logger = logging.getLogger(__name__)
+from .metrics import METRICS_BY_ID, metric_to_dict, registry_to_dict
 from .schemas import DetailPreviewRequest, DetailRequest, OverviewRequest, WatchlistRequest
 from .service import (
     analyze_point,
@@ -120,6 +121,29 @@ def categories() -> dict:
 @app.get("/api/coverage")
 def coverage() -> dict:
     return get_coverage_payload()
+
+
+# The methodology behind every number, addressable by metric id.
+#
+# `/api/categories` answers "what are the groupings and their weights"; this
+# answers "what is this particular score, in what unit, measured at what
+# geography, which way is good, and by which version of the method". Serving it
+# from the registry rather than a document is what keeps a published
+# methodology page from drifting away from the code that scores.
+@app.get("/api/metrics")
+def metrics() -> dict:
+    return registry_to_dict()
+
+
+@app.get("/api/metrics/{metric_id}")
+def metric_detail(metric_id: str) -> dict:
+    definition = METRICS_BY_ID.get(metric_id)
+    if definition is None:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": f"Unknown metric '{metric_id}'", "known": sorted(METRICS_BY_ID)},
+        )
+    return metric_to_dict(definition)
 
 
 @app.post("/api/overview")

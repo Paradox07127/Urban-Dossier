@@ -584,6 +584,28 @@ app.get('/api/coverage', async (req, res) => {
   }
 });
 
+// Metric definitions. Pass-through only -- the registry lives in the backend
+// and this file must not restate a unit or a weight, or the two drift.
+app.get('/api/metrics', async (req, res) => {
+  try {
+    res.json(await backendRequest('/api/metrics'));
+  } catch (error) {
+    sendProxyError(res, 502, 'Python backend metric registry lookup failed', { details: error.payload ?? null });
+  }
+});
+
+app.get('/api/metrics/:metricId', async (req, res) => {
+  const { metricId } = req.params;
+  if (!isSafePathSegment(metricId)) {
+    return res.status(400).json({ detail: 'Invalid metric id' });
+  }
+  try {
+    res.json(await backendRequest(`/api/metrics/${encodeURIComponent(metricId)}`));
+  } catch (error) {
+    sendProxyError(res, 502, 'Python backend metric lookup failed', { details: error.payload ?? null });
+  }
+});
+
 app.post('/api/overview', async (req, res) => {
   try {
     const payload = await backendRequest('/api/overview', {
