@@ -505,92 +505,8 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
         'line-opacity': 0.32,
       },
     },
-    {
-      // City scale: the massing layer, only buildings over 25 m.
-      id: 'sandbox-massing',
-      type: 'fill-extrusion',
-      source: 'buildingScores',
-      'source-layer': 'building_massing',
-      layout: { visibility: 'none' },
-      maxzoom: 13,
-      paint: {
-        'fill-extrusion-color': buildingScoreColor('overall'),
-        'fill-extrusion-height': extrusionHeight(),
-        'fill-extrusion-base': SLAB_TOP_M,
-        'fill-extrusion-opacity': 1,
-        'fill-extrusion-vertical-gradient': true,
-      },
-    },
-    {
-      // Street scale: every building.
-      id: 'sandbox-buildings',
-      type: 'fill-extrusion',
-      source: 'buildingScores',
-      'source-layer': 'building_scores',
-      layout: { visibility: 'none' },
-      minzoom: 13,
-      paint: {
-        'fill-extrusion-color': buildingScoreColor('overall'),
-        'fill-extrusion-height': extrusionHeight(),
-        'fill-extrusion-base': SLAB_TOP_M,
-        'fill-extrusion-opacity': 1,
-        'fill-extrusion-vertical-gradient': true,
-      },
-    },
-    {
-      // The analysis radius, drawn as a shallow disc lying on the model
-      // surface rather than the flat circle used on the map, which would cut
-      // through the slab at ground level.
-      // The analysis radius, as a disc lying on the model surface. Kept faint
-      // so it tints the ground rather than hiding what is standing on it.
-      id: 'sandbox-radius',
-      type: 'fill-extrusion',
-      source: 'renderRadius',
-      layout: { visibility: 'none' },
-      paint: {
-        'fill-extrusion-color': UD_INK,
-        'fill-extrusion-base': SLAB_TOP_M,
-        'fill-extrusion-height': SLAB_TOP_M + 2,
-        'fill-extrusion-opacity': 0.1,
-      },
-    },
-    {
-      // The rim.
-      //
-      // A wash alone has no definite edge once buildings sit on top of it, and
-      // the reader needs to see exactly where the measurement stops -- that
-      // boundary is the difference between "within 200 m" and "nearby".
-      //
-      // An extruded annulus rather than a line: line layers have no elevation
-      // in MapLibre, so a stroke drew on the ground plane and ended up on the
-      // slab's underside while the disc it was supposed to outline sat on top.
-      // In the sandbox the model's surface is the only ground there is, and
-      // fill-extrusion is the only layer type that can be put there.
-      id: 'sandbox-radius-rim',
-      type: 'fill-extrusion',
-      source: 'sandboxRing',
-      layout: { visibility: 'none' },
-      paint: {
-        'fill-extrusion-color': UD_INK,
-        'fill-extrusion-base': SLAB_TOP_M + 2,
-        'fill-extrusion-height': SLAB_TOP_M + 3,
-        'fill-extrusion-opacity': 0.5,
-      },
-    },
-    {
-      id: 'sandbox-pin',
-      type: 'fill-extrusion',
-      source: 'sandboxPins',
-      layout: { visibility: 'none' },
-      paint: {
-        'fill-extrusion-color': UD_INK,
-        'fill-extrusion-base': SLAB_TOP_M,
-        'fill-extrusion-height': SLAB_TOP_M + PIN_HEIGHT_M,
-        // Slightly translucent so a tower behind the shaft still reads, which
-        // matters now that the shaft is tall enough to cross the skyline.
-        'fill-extrusion-opacity': 0.82,
-      },
-    },
+    // The sandbox's own layers used to sit here, ahead of the roads and
+    // labels. See the block after 'place-suburb' for why they had to move.
     {
       id: 'building',
       type: 'fill',
@@ -854,6 +770,106 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
         'text-color': '#777',
         'text-halo-color': '#fff',
         'text-halo-width': 1.5,
+      },
+    },
+    /* ------------------------------------------------------------------
+       The model.
+
+       These five sit here, after every road and label, and the position is
+       the whole point. MapLibre paints layers in list order, and a `line` or
+       `symbol` layer drawn after a `fill-extrusion` paints straight over it --
+       it is not depth-tested against the 3D geometry. With the model defined
+       up beside the choropleth, every street and every street name was drawn
+       on top of the towers, and the towers read as though they were made of
+       glass. They were never translucent: `fill-extrusion-opacity` is 1 here
+       and always was. The city was simply being painted over.
+
+       Anything that should be hidden behind a building has to be listed
+       before the building. So the roads stay where they are and the model
+       moved to the end, which also gives the sandbox real occlusion: streets
+       now show in the gaps between towers, which is what you see looking down
+       at a physical model.
+       ------------------------------------------------------------------ */
+    {
+      // City scale: the massing layer, only buildings over 25 m.
+      id: 'sandbox-massing',
+      type: 'fill-extrusion',
+      source: 'buildingScores',
+      'source-layer': 'building_massing',
+      layout: { visibility: 'none' },
+      maxzoom: 13,
+      paint: {
+        'fill-extrusion-color': buildingScoreColor('overall'),
+        'fill-extrusion-height': extrusionHeight(),
+        'fill-extrusion-base': SLAB_TOP_M,
+        'fill-extrusion-opacity': 1,
+        'fill-extrusion-vertical-gradient': true,
+      },
+    },
+    {
+      // Street scale: every building.
+      id: 'sandbox-buildings',
+      type: 'fill-extrusion',
+      source: 'buildingScores',
+      'source-layer': 'building_scores',
+      layout: { visibility: 'none' },
+      minzoom: 13,
+      paint: {
+        'fill-extrusion-color': buildingScoreColor('overall'),
+        'fill-extrusion-height': extrusionHeight(),
+        'fill-extrusion-base': SLAB_TOP_M,
+        'fill-extrusion-opacity': 1,
+        'fill-extrusion-vertical-gradient': true,
+      },
+    },
+    {
+      // The analysis radius, as a disc lying on the model surface. Kept faint
+      // so it tints the ground rather than hiding what is standing on it.
+      id: 'sandbox-radius',
+      type: 'fill-extrusion',
+      source: 'renderRadius',
+      layout: { visibility: 'none' },
+      paint: {
+        'fill-extrusion-color': UD_INK,
+        'fill-extrusion-base': SLAB_TOP_M,
+        'fill-extrusion-height': SLAB_TOP_M + 2,
+        'fill-extrusion-opacity': 0.1,
+      },
+    },
+    {
+      // The rim.
+      //
+      // A wash alone has no definite edge once buildings sit on top of it, and
+      // the reader needs to see exactly where the measurement stops -- that
+      // boundary is the difference between "within 200 m" and "nearby".
+      //
+      // An extruded annulus rather than a line: line layers have no elevation
+      // in MapLibre, so a stroke drew on the ground plane rather than on the
+      // model's surface. fill-extrusion is the only layer type that can be put
+      // there.
+      id: 'sandbox-radius-rim',
+      type: 'fill-extrusion',
+      source: 'sandboxRing',
+      layout: { visibility: 'none' },
+      paint: {
+        'fill-extrusion-color': UD_INK,
+        'fill-extrusion-base': SLAB_TOP_M + 2,
+        'fill-extrusion-height': SLAB_TOP_M + 3,
+        'fill-extrusion-opacity': 0.5,
+      },
+    },
+    {
+      id: 'sandbox-pin',
+      type: 'fill-extrusion',
+      source: 'sandboxPins',
+      layout: { visibility: 'none' },
+      paint: {
+        'fill-extrusion-color': UD_INK,
+        'fill-extrusion-base': SLAB_TOP_M,
+        'fill-extrusion-height': SLAB_TOP_M + PIN_HEIGHT_M,
+        // Slightly translucent so a tower behind the shaft still reads, which
+        // matters now that the shaft is tall enough to cross the skyline.
+        'fill-extrusion-opacity': 0.82,
       },
     },
     /* Everything beyond the five boroughs, veiled.
@@ -1401,6 +1417,35 @@ const SANDBOX_LAYERS = [
   'sandbox-radius', 'sandbox-radius-rim', 'sandbox-pin',
 ];
 
+/* How much of the basemap the model is allowed to show.
+ *
+ * The flat map's furniture is tuned for a flat map. At z15 it draws every
+ * service road, every footpath and the name of every shop -- fine when you are
+ * reading a map, a haze of text when you are looking at a city. Putting the
+ * model above the labels fixed the worst of it, because anything behind a
+ * building is now hidden, but the streets between towers are exactly where the
+ * density is highest and occlusion does not help there.
+ *
+ * Two dials, bluntest first. Everything not named here is shown unchanged.
+ */
+const SANDBOX_HIDDEN_FURNITURE = new Set([
+  // Dashed footpaths and tracks. No orientation value at model scale, and the
+  // dash pattern reads as noise against building edges.
+  'road-path',
+  // One label per shop from z15. The densest layer in the style by a wide
+  // margin, and the one that makes a zoomed-in model unreadable.
+  'poi-label',
+]);
+
+/* Kept, but as texture rather than as text you are meant to read. Restored to
+ * full strength on the flat map, where they are the content. */
+const SANDBOX_DIMMED: ReadonlyArray<{ id: string; prop: string; value: number }> = [
+  // The street grid still has to read -- it is what makes blocks legible --
+  // but at full white it competes with the buildings standing on it.
+  { id: 'road-minor', prop: 'line-opacity', value: 0.45 },
+  { id: 'road-label', prop: 'text-opacity', value: 0.7 },
+];
+
 /**
  * Switch between the flat map and the sandbox.
  *
@@ -1519,13 +1564,18 @@ function setSandboxMode(map: MapLibreMap, on: boolean, tag: RenderTag,
       'background', 'background-color', on ? VOID_COLOUR : '#f0ede9',
     );
   }
-  // Roads, labels and place names stay on in the sandbox. They were hidden
-  // when the ground was a raised slab, because they would have drawn on the
-  // plane underneath it; at sea level they land exactly where the buildings
-  // stand, and they are how anyone reads a city model.
+  // Roads, labels and place names stay on in the sandbox -- at sea level they
+  // land exactly where the buildings stand, and they are how anyone reads a
+  // city model. But not all of them, and not at full strength: see
+  // SANDBOX_HIDDEN_FURNITURE for what a model drops and why.
   for (const layer of map.getStyle().layers ?? []) {
-    if (isBasemapFurniture(layer.id)) {
-      map.setLayoutProperty(layer.id, 'visibility', 'visible');
+    if (!isBasemapFurniture(layer.id)) continue;
+    const hide = on && SANDBOX_HIDDEN_FURNITURE.has(layer.id);
+    map.setLayoutProperty(layer.id, 'visibility', hide ? 'none' : 'visible');
+  }
+  for (const { id, prop, value } of SANDBOX_DIMMED) {
+    if (map.getLayer(id)) {
+      map.setPaintProperty(id, prop, on ? value : 1);
     }
   }
 
