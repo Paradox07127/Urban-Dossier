@@ -14,7 +14,7 @@ from .providers.base import DataProvider
 from .providers.direct_provider import DirectQueryDataProvider
 from .providers.skill_provider import SkillDataProvider
 from .report import generate_action_brief
-from .secondary_scoring import compute_secondary_scores
+from .secondary_scoring import compute_scores_with_coverage
 from .trend_engine import compute_all_trends
 from .gpu_accel import get_gpu_status
 from .utils import build_priority_weights
@@ -165,7 +165,12 @@ def _build_detail_payload(
     evidence_table = build_evidence(point_payload.get("query_evidence", []), trends, patterns)
     verified_actions = verify_priority_actions(priority_actions, evidence_table)
     why_now = extract_why_now(trends, patterns)
-    scores = compute_secondary_scores(current_state, baselines, point_payload.get("prepared_scores"), user_priority_weights=priority_weights)
+    scores, score_coverage = compute_scores_with_coverage(
+        current_state,
+        baselines,
+        point_payload.get("prepared_scores"),
+        user_priority_weights=priority_weights,
+    )
 
     # Hotspot detection (GPU DBSCAN)
     hotspots = []
@@ -211,6 +216,12 @@ def _build_detail_payload(
         "evidence_table": evidence_table,
         "data_gaps": point_payload.get("data_gaps", []),
         "scores": scores,
+        # How much of each category's intended evidence base was actually
+        # present. Sits beside `scores` rather than inside it so the score
+        # contract is unchanged, and so a consumer that ignores coverage keeps
+        # working -- while one that reads it can stop presenting a one-source
+        # score as though it were a five-source one.
+        "score_coverage": score_coverage,
         "baselines": baselines,
         "enriched_context": point_payload.get("enriched_context", {}),
     }
