@@ -602,6 +602,13 @@ app.get('/api/metrics/:metricId', async (req, res) => {
   try {
     res.json(await backendRequest(`/api/metrics/${encodeURIComponent(metricId)}`));
   } catch (error) {
+    // "No such metric" is an answer, not a proxy failure. Collapsing it into
+    // 502 like the other routes do would leave a caller unable to tell a
+    // misspelled id from a backend that fell over -- and this endpoint exists
+    // precisely so a UI can look up an id it is not sure about.
+    if (error.status >= 400 && error.status < 500) {
+      return res.status(error.status).json(error.payload ?? { detail: 'Metric lookup failed' });
+    }
     sendProxyError(res, 502, 'Python backend metric lookup failed', { details: error.payload ?? null });
   }
 });
