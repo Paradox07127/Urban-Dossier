@@ -97,19 +97,21 @@ Eurostat EU Quality of Life 采取不聚合的仪表盘路线，只能作为维�
 
 ### 1.5 扩展数据集清单
 
-以下 ID 与粒度经 2026-08-03 实测确认：
+以下 ID 与粒度经 2026-08-03 实测确认，2026-08-11 复核并全部本地快照（8/8 落盘于
+`/mnt/data/urban-dossier-state/datasets/raw-expansion/`，逐集 manifest 含 SHA-256 与
+意外记录，汇总见该目录 `INVENTORY.md`）。表中两处按复核结果就地更正并标注。
 
 | 类别 | 数据集 | ID / 入口 | 空间粒度 | 更新 | 备注 |
 | --- | --- | --- | --- | --- | --- |
 | 健康 | CDC PLACES（tract 版） | `ai6z-tcin` @ data.cdc.gov | census tract | 年 | 约 40 项指标，自带 95% CI |
 | 健康 | City Health Dashboard | cityhealthdashboard.com | city + tract | 年 | 37 指标，其中 22 项到 tract |
-| 环境 | NYCCAS 空气污染栅格 | `q68s-8qxv` | 约 300m 栅格 | 年 | **与 H3 r9 适配最好**，优先于汇总版 `c3uy-2p5r` |
-| 环境 | 热脆弱性指数 | `4mhf-duep` | NTA | 静态 | 直接可用，粒度与 NTA 视图一致 |
+| 环境 | NYCCAS 空气污染栅格 | `q68s-8qxv` | 约 300m 栅格 | 年 | **与 H3 r9 适配最好**，优先于汇总版 `c3uy-2p5r`。2026-08-11 实测：非表格资产（blobby），实为年均栅格 zip + 数据字典，接入走栅格采样而非 SODA |
+| 环境 | 热脆弱性指数 | `4mhf-duep` | **ZCTA**（2026-08-11 实测更正，原记 NTA 有误） | 静态 | 需 ZCTA→NTA 转换表后才能进 NTA 视图 |
 | 环境 | 311 噪音类投诉 | `erm2-nwe9` | 点 | 日 | 该 ID 现仅含 2020 起数据，2010–2019 在 `76ig-c548` |
 | 教育 | School Quality Reports | `dnpx-dfnc` | 学校点位 | 年 | |
 | 住房 | HPD 住房维护违规 | `wvxf-dwi5` | 建筑 / BBL | 日 | 已在用，可深化 |
 | 住房 | DOF Rolling Sales | `usep-8jbt` | 地块 | 月 | 房价维度；年度版 `w2pb-icbu` |
-| 社会经济 | ACS 5-year | Census API `acs/acs5` | tract | 年 | 自带 MOE；租金负担、收入 |
+| 社会经济 | ACS 5-year | ~~Census API `acs/acs5`~~ www2.census.gov 汇总文件 | tract | 年 | 自带 MOE；租金负担、收入。2026-08-11 实测：api.census.gov 已全面强制 API key（无 key 302 至 missing_key.html）；官方 table-based 汇总文件无 key 可用，估计值与 MOE 一致 |
 | 参考 | NYU Furman CoreData | furmancenter.org/coredata | sub-borough / CD | 年 | 粒度过粗，仅作交叉验证参照 |
 
 粒度处理规则（采纳 AARP 先例，披露而非硬插值）：
