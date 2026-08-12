@@ -5,29 +5,30 @@
  * Five classed steps, brown pole (worst) to teal pole (best) with a neutral
  * near-paper midpoint. Diverging because a 0-100 score is polarity data.
  * Brown-teal is the third pair this ramp has worn, each retired for a named
- * reason: green-red is the classic colour-vision failure pair, and blue-red
- * reads as an election map in an American city -- a livability score must not
- * look like a precinct result. Brown reads as barren and teal as thriving,
- * with no party wearing either. Classed rather than continuous because 93% of
+ * reason: green-red is the classic colour-vision failure pair, blue-red
+ * reads as an election map in an American city, and BrBG's brown pole read
+ * as dirt to the people actually using the map. Orange keeps warm-means-
+ * worse without the mud; deep violet reads considered, and neither colour
+ * belongs to a party. Classed rather than continuous because 93% of
  * scores bunch between 35 and 65, where a continuous ramp hands adjacent
  * places imperceptible tints. The backend publishes the quantile edges and
  * numerical accessibility report; this module only applies that contract.
  *
- * These exact BrBG-5 hexes were re-run through the dataviz palette checker
+ * These exact PuOr-5 hexes were re-run through the dataviz palette checker
  * rather than inheriting the previous pair's numbers: worst adjacent-pair
- * CVD dE 14.7 (target >= 8), worst normal-vision dE 17.4 (floor 15),
- * lightness monotonic per arm. The near-white midpoint sits low-contrast on
+ * CVD dE 17.4 (target >= 8), worst normal-vision dE 19.5 (floor 15),
+ * lightness monotonic per arm -- the strongest margins of the four pairs. The near-white midpoint sits low-contrast on
  * the paper basemap; the relief rule is carried by the always-visible legend
  * and the click-through panel.
  */
 
-/** Exact d3-scale-chromatic / ColorBrewer schemeBrBG[5] fallback values. */
+/** Exact d3-scale-chromatic / ColorBrewer schemePuOr[5] fallback values. */
 export const CLASS_COLORS = [
-  '#a6611a', // worst fifth
-  '#dfc27d',
-  '#f5f5f5', // typical fifth -- deliberately recedes
-  '#80cdc1',
-  '#018571', // best fifth
+  '#e66101', // worst fifth
+  '#fdb863',
+  '#f7f7f7', // typical fifth -- deliberately recedes
+  '#b2abd2',
+  '#5e3c99', // best fifth
 ] as const;
 
 export type ClassBreaks = number[];

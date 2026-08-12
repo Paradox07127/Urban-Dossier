@@ -1933,6 +1933,31 @@ function updateComparisonDeltaOverlay(
   ]);
 }
 
+
+/**
+ * fitBounds without the side effect. MapLibre's `padding` option is not a
+ * one-shot layout hint: it persists on the camera, and every later zoom --
+ * scroll wheel included, which runs through easeTo -- re-reconciles the view
+ * against it, which the user feels as a glide after the zoom lands. Showing
+ * one isochrone was enough to make every subsequent zoom drift. Inflating
+ * the bbox by a fraction buys the same visual margin and leaves the camera
+ * state untouched.
+ */
+function fitBoundsClean(
+  map: MapLibreMap,
+  bounds: [[number, number], [number, number]],
+  options: { duration?: number; maxZoom?: number; inflate?: number } = {},
+) {
+  const inflate = options.inflate ?? 0.15;
+  const [[west, south], [east, north]] = bounds;
+  const dx = (east - west) * inflate;
+  const dy = (north - south) * inflate;
+  map.fitBounds(
+    [[west - dx, south - dy], [east + dx, north + dy]],
+    { duration: options.duration ?? 700, maxZoom: options.maxZoom },
+  );
+}
+
 function updateRadiusOverlay(
   map: MapLibreMap,
   target: LocalRenderTarget | null | undefined,
@@ -2657,13 +2682,10 @@ export default function Map({
 
       const lons = coords.map((c) => c[0]);
       const lats = coords.map((c) => c[1]);
-      map.fitBounds(
-        [
-          [Math.min(...lons), Math.min(...lats)],
-          [Math.max(...lons), Math.max(...lats)],
-        ],
-        { padding: 72, duration: 700, maxZoom: 16 },
-      );
+      fitBoundsClean(map, [
+        [Math.min(...lons), Math.min(...lats)],
+        [Math.max(...lons), Math.max(...lats)],
+      ], { duration: 700, maxZoom: 16 });
     };
 
     if (map.isStyleLoaded()) apply();
@@ -2685,10 +2707,7 @@ export default function Map({
     const map = mapRef.current;
     if (!map || !comparisonDeltaMap) return;
     const [west, south, east, north] = comparisonDeltaMap.bbox;
-    map.fitBounds(
-      [[west, south], [east, north]],
-      { padding: 90, duration: 700, maxZoom: 15 },
-    );
+    fitBoundsClean(map, [[west, south], [east, north]], { duration: 700, maxZoom: 15, inflate: 0.2 });
   }, [comparisonDeltaMap]);
 
   useEffect(() => {

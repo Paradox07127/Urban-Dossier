@@ -887,7 +887,7 @@ export default function App() {
                       const rawDelta = serverComparison?.deltas?.[cat];
                       const diff = typeof rawDelta === 'number' ? Math.round(rawDelta) : null;
                       const deltaStops = serverComparison?.delta_map?.presentation.stops ?? [];
-                      const negativeColor = deltaStops[0]?.color ?? '#8c5a10';
+                      const negativeColor = deltaStops[0]?.color ?? '#e66101';
                       const positiveColor = deltaStops[deltaStops.length - 1]?.color ?? '#765b8a';
                       return (
                         <div key={cat} className="grid grid-cols-3 gap-2 text-center text-sm tabular-nums">

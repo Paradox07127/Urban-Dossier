@@ -19,7 +19,14 @@ from .utils import to_float
 # Exact d3-scale-chromatic / ColorBrewer schemeBrBG[5] values. Keeping the
 # named upstream artifact here lets Python publish the contract without making
 # a JavaScript palette package part of the backend runtime.
-SCORE_COLORS = ["#a6611a", "#dfc27d", "#f5f5f5", "#80cdc1", "#018571"]
+# schemePuOr[5], worst to best. The fourth pair this ramp has worn, each
+# retired for a named reason: green-red failed colour vision, blue-red read
+# as an election map, and BrBG's brown pole read as dirt to actual users.
+# Orange keeps the warm-means-worse instinct without the mud; deep violet
+# reads considered rather than partisan. Checker-measured on these exact
+# values: worst adjacent CVD dE 17.4, normal-vision 19.5 -- the strongest
+# margins of any candidate so far.
+SCORE_COLORS = ["#e66101", "#fdb863", "#f7f7f7", "#b2abd2", "#5e3c99"]
 BIVARIATE_COLORS = [
     ["#e8e8e8", "#e4acac", "#c85a5a"],
     ["#b0d5df", "#ad9ea5", "#985356"],
