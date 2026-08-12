@@ -136,6 +136,38 @@ def test_nta_artifacts_are_bound_to_current_h3_sources():
         ).hexdigest()
 
 
+@requires_artifacts
+def test_h3_and_nta_artifacts_disclose_count_and_weighted_coverage():
+    import pandas as pd
+
+    for tag in ("overall", "safety", "transit", "amenities"):
+        prefix = "overall" if tag == "overall" else tag
+        required = {
+            f"{prefix}_coverage_n",
+            f"{prefix}_coverage_total",
+            f"{prefix}_coverage_fraction",
+            f"{prefix}_coverage_ratio",
+        }
+        for suffix in ("h3_r8", "nta"):
+            path = OVERVIEW_DIR / f"overview_{tag}_{suffix}.parquet"
+            frame = pd.read_parquet(path)
+            assert required <= set(frame.columns), path
+            n = frame[f"{prefix}_coverage_n"]
+            total = frame[f"{prefix}_coverage_total"]
+            fraction = frame[f"{prefix}_coverage_fraction"]
+            ratio = frame[f"{prefix}_coverage_ratio"]
+            assert (n >= 0).all()
+            assert (n <= total).all()
+            assert ((fraction >= 0) & (fraction <= 1)).all()
+            assert ((ratio >= 0) & (ratio <= 1)).all()
+            assert ((n / total - fraction).abs() <= 0.0001).all()
+
+        # At least one cell must actually disclose incomplete evidence; a
+        # constant 1.0 field would satisfy the schema while hiding the issue.
+        h3_frame = pd.read_parquet(OVERVIEW_DIR / f"overview_{tag}_h3_r8.parquet")
+        assert (h3_frame[f"{prefix}_coverage_ratio"] < 1).any()
+
+
 def test_node_nta_gate_tracks_the_backend_methodology_version():
     server_source = (REPO_ROOT / "server.js").read_text()
     match = re.search(

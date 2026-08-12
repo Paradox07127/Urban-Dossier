@@ -163,6 +163,22 @@ function scoreForTag(cell = {}, tag = 'general') {
   return raw == null ? Number.NaN : Number(raw);
 }
 
+function coverageForTag(row = {}, tag = 'general') {
+  const prefix = tag === 'general' ? 'overall' : tag;
+  const n = Number(row[`${prefix}_coverage_n`]);
+  const total = Number(row[`${prefix}_coverage_total`]);
+  const fraction = Number(row[`${prefix}_coverage_fraction`]);
+  const ratio = Number(row[`${prefix}_coverage_ratio`]);
+  return {
+    coverage_n: Number.isFinite(n) ? n : null,
+    coverage_total: Number.isFinite(total) ? total : null,
+    coverage_fraction: Number.isFinite(fraction)
+      ? Math.max(0, Math.min(1, fraction))
+      : null,
+    coverage_ratio: Number.isFinite(ratio) ? Math.max(0, Math.min(1, ratio)) : null,
+  };
+}
+
 function cellsToRenderPoints(cells = [], tag = 'general') {
   return cells
     .map((cell) => ({
@@ -552,6 +568,7 @@ app.get('/api/overview/geojson', async (req, res) => {
 
         const raw = scoreForTag(cell, tag);
         if (!Number.isFinite(raw)) return null;
+        const coverage = coverageForTag(cell, tag);
         // The geometry is the backend's to state. It is the true cell boundary
         // clipped to the coastline, so a cell straddling the shore stops at
         // the water instead of colouring the river, and cells that are
@@ -583,6 +600,7 @@ app.get('/api/overview/geojson', async (req, res) => {
             score: raw,
             display_score: Math.max(0, Math.min(100, Math.round(raw))),
             land_fraction: typeof cell.land_fraction === 'number' ? cell.land_fraction : null,
+            ...coverage,
             tag,
           },
           geometry,
@@ -686,6 +704,7 @@ app.get('/api/overview/nta-geojson', (req, res) => {
       if (!boundary) return null;
       const raw = scoreForTag(zone, tag);
       if (!Number.isFinite(raw)) return null;
+      const coverage = coverageForTag(zone, tag);
       return {
         type: 'Feature',
         properties: {
@@ -701,6 +720,7 @@ app.get('/api/overview/nta-geojson', (req, res) => {
           safety_score: zone.safety_score ?? null,
           transit_score: zone.transit_score ?? null,
           amenities_score: zone.amenities_score ?? null,
+          ...coverage,
           tag,
         },
         geometry: boundary.geometry,

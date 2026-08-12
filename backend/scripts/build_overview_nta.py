@@ -78,6 +78,12 @@ DEFAULT_OVERVIEW_ROOT = REPO_ROOT / "data" / "cache" / "overview"
 
 TAGS = ("overall", "safety", "transit", "amenities")
 SCORE_COLS = ("overall_score", "safety_score", "transit_score", "amenities_score")
+COVERAGE_PREFIXES = ("overall", "safety", "transit", "amenities")
+COVERAGE_COLS = tuple(
+    f"{prefix}_coverage_{suffix}"
+    for prefix in COVERAGE_PREFIXES
+    for suffix in ("n", "total", "fraction", "ratio")
+)
 
 
 def _sha256(path: Path) -> str:
@@ -213,18 +219,37 @@ def _aggregate_to_nta(h3_df: Any, ntas: list[dict[str, Any]]) -> pd.DataFrame:
     """
     nta_lookup = {nta["nta_code"]: nta for nta in ntas}
 
-    grouped = h3_df.groupby("nta_code").agg(
-        overall_score=("overall_score", "mean"),
-        safety_score=("safety_score", "mean"),
-        transit_score=("transit_score", "mean"),
-        amenities_score=("amenities_score", "mean"),
-        cell_count=("h3", "count"),
-    ).reset_index()
-
-    # Drop back to pandas for metadata join + risk-level mapping. cuDF's
-    # ``Series.map(callable)`` is more limited than pandas's, so we hop off
-    # the GPU here.
-    grouped_pdf: pd.DataFrame = _to_pandas(grouped)
+    # Coverage is a ratio of sums, not a mean of cell ratios: each NTA reports
+    # how many metric-cell observations contributed out of all possible
+    # observations across its included H3 cells.
+    h3_pdf = _to_pandas(h3_df)
+    aggregations: dict[str, tuple[str, str]] = {
+        **{col: (col, "mean") for col in SCORE_COLS},
+        "cell_count": ("h3", "count"),
+    }
+    for prefix in COVERAGE_PREFIXES:
+        aggregations[f"{prefix}_coverage_n"] = (
+            f"{prefix}_coverage_n",
+            "sum",
+        )
+        aggregations[f"{prefix}_coverage_total"] = (
+            f"{prefix}_coverage_total",
+            "sum",
+        )
+        aggregations[f"{prefix}_coverage_ratio"] = (
+            f"{prefix}_coverage_ratio",
+            "mean",
+        )
+    grouped_pdf = h3_pdf.groupby("nta_code").agg(**aggregations).reset_index()
+    for prefix in COVERAGE_PREFIXES:
+        numerator = grouped_pdf[f"{prefix}_coverage_n"]
+        denominator = grouped_pdf[f"{prefix}_coverage_total"]
+        grouped_pdf[f"{prefix}_coverage_fraction"] = (
+            numerator / denominator.where(denominator > 0)
+        ).fillna(0.0).round(4)
+        grouped_pdf[f"{prefix}_coverage_ratio"] = grouped_pdf[
+            f"{prefix}_coverage_ratio"
+        ].fillna(0.0).round(4)
 
     # Round scores
     for col in SCORE_COLS:
@@ -280,7 +305,7 @@ def build_nta_tiles(nta_path: Path, overview_root: Path) -> dict[str, int]:
             "nta_code", "nta_name", "borough", "nta_type",
             "latitude", "longitude",
             "overall_score", "safety_score", "transit_score", "amenities_score",
-            "cell_count", "risk_level",
+            "cell_count", "risk_level", *COVERAGE_COLS,
         ]
         out_path = overview_root / f"overview_{tag}_nta.parquet"
         # ``nta_df`` is always pandas after _aggregate_to_nta; pandas's own

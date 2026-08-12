@@ -463,7 +463,20 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
         // network the scores are supposed to be read against. This tints the
         // basemap instead of replacing it, and clears out entirely once
         // buildings carry the colour.
-        'fill-opacity': ['interpolate', ['linear'], ['zoom'], 11, 0.42, 14.5, 0],
+        // Coverage changes certainty, not the score or colour. Thin evidence
+        // remains visible but more transparent. Missing coverage from an old
+        // fallback payload is deliberately shown at the low-confidence end.
+        'fill-opacity': [
+          '*',
+          ['interpolate', ['linear'], ['zoom'], 11, 0.42, 14.5, 0],
+          [
+            'interpolate',
+            ['linear'],
+            ['coalesce', ['get', 'coverage_ratio'], 0],
+            0, 0.35,
+            1, 1,
+          ],
+        ],
       },
     },
     {
@@ -2142,6 +2155,15 @@ export default function Map({
       const borough = props.borough || '';
       const risk = props.risk_level || '';
       const currentTag = activeConfigRef.current.tag;
+      const coverageRatio = Number(props.coverage_ratio);
+      const coverageN = Number(props.coverage_n);
+      const coverageTotal = Number(props.coverage_total);
+      const coverageLabel = Number.isFinite(coverageRatio)
+        ? `${Math.round(coverageRatio * 100)}% evidence coverage` +
+          (Number.isFinite(coverageN) && Number.isFinite(coverageTotal)
+            ? ` · ${coverageN}/${coverageTotal}`
+            : '')
+        : 'coverage unavailable';
 
       const riskColor = risk === 'low' ? '#16a34a' : risk === 'high' ? '#dc2626' : '#ca8a04';
       const riskLabel = risk === 'low' ? 'Low Risk' : risk === 'high' ? 'High Risk' : 'Moderate';
@@ -2178,6 +2200,7 @@ export default function Map({
         .setHTML(
           `<div style="font:700 14px/1.3 system-ui;color:#1a1a1a;margin-bottom:2px">${name}</div>` +
           `<div style="font:400 11px/1.4 system-ui;color:#666;margin-bottom:6px">${borough} <span style="color:${riskColor};font-weight:600">${riskLabel}</span></div>` +
+          `<div style="font:500 10px/1.4 system-ui;color:#666;margin-bottom:6px">${coverageLabel}</div>` +
           `<div style="display:grid;grid-template-columns:1fr 1fr;gap:3px 12px;font:500 11px/1.5 system-ui">` +
             scoreRows +
           `</div>`

@@ -132,8 +132,18 @@ def _category_tile(category: str, ready_root: Path) -> pd.DataFrame:
         aggregated = aggregated.rename(columns={"score": f"score_{len(frames)}"})
         frames.append(aggregated)
         weights.append(weight)
+    coverage_prefix = f"{category}_coverage"
     if not frames:
-        return pd.DataFrame(columns=["h3_r8", f"{category}_score"])
+        return pd.DataFrame(
+            columns=[
+                "h3_r8",
+                f"{category}_score",
+                f"{coverage_prefix}_n",
+                f"{coverage_prefix}_total",
+                f"{coverage_prefix}_fraction",
+                f"{coverage_prefix}_ratio",
+            ]
+        )
 
     merged = frames[0]
     for other in frames[1:]:
@@ -155,7 +165,27 @@ def _category_tile(category: str, ready_root: Path) -> pd.DataFrame:
             for wsum, wsum_total in zip(weighted_sum, weight_sum)
         ]
     )
-    return merged[["h3_r8", f"{category}_score"]].dropna(subset=[f"{category}_score"])
+    # Availability travels beside the score. The denominator is the registry
+    # definition, not merely the files that happened to exist at build time:
+    # a missing source table must lower coverage rather than disappear from
+    # the denominator. The ratio is weighted because losing a high-weight
+    # metric is more consequential than losing a small one.
+    merged[f"{coverage_prefix}_n"] = mask.sum(axis=1).astype(int)
+    merged[f"{coverage_prefix}_total"] = len(CATEGORY_SOURCES[category])
+    merged[f"{coverage_prefix}_fraction"] = (
+        merged[f"{coverage_prefix}_n"] / merged[f"{coverage_prefix}_total"]
+    ).round(4)
+    merged[f"{coverage_prefix}_ratio"] = masked_weights.sum(axis=1).round(4)
+    return merged[
+        [
+            "h3_r8",
+            f"{category}_score",
+            f"{coverage_prefix}_n",
+            f"{coverage_prefix}_total",
+            f"{coverage_prefix}_fraction",
+            f"{coverage_prefix}_ratio",
+        ]
+    ].dropna(subset=[f"{category}_score"])
 
 
 def _add_centroid(df: pd.DataFrame) -> pd.DataFrame:
@@ -198,6 +228,26 @@ def _merge_all_categories(ready_root: Path) -> pd.DataFrame:
         col = f"{cat}_score"
         if col not in merged.columns:
             merged[col] = None
+        prefix = f"{cat}_coverage"
+        if f"{prefix}_n" not in merged.columns:
+            merged[f"{prefix}_n"] = 0
+        else:
+            merged[f"{prefix}_n"] = merged[f"{prefix}_n"].fillna(0).astype(int)
+        if f"{prefix}_total" not in merged.columns:
+            merged[f"{prefix}_total"] = len(CATEGORY_SOURCES[cat])
+        else:
+            merged[f"{prefix}_total"] = (
+                merged[f"{prefix}_total"]
+                .fillna(len(CATEGORY_SOURCES[cat]))
+                .astype(int)
+            )
+        if f"{prefix}_ratio" not in merged.columns:
+            merged[f"{prefix}_ratio"] = 0.0
+        else:
+            merged[f"{prefix}_ratio"] = merged[f"{prefix}_ratio"].fillna(0.0)
+        merged[f"{prefix}_fraction"] = (
+            merged[f"{prefix}_n"] / merged[f"{prefix}_total"]
+        ).fillna(0.0).round(4)
 
     # Weighted overall: skip categories with no data for that cell.
     overall: list[float | None] = []
@@ -211,6 +261,19 @@ def _merge_all_categories(ready_root: Path) -> pd.DataFrame:
             den += weight
         overall.append(round(num / den) if den > 0 else None)
     merged["overall_score"] = overall
+    merged["overall_coverage_n"] = sum(
+        merged[f"{cat}_coverage_n"] for cat in CATEGORY_SOURCES
+    )
+    merged["overall_coverage_total"] = sum(
+        len(pairs) for pairs in CATEGORY_SOURCES.values()
+    )
+    merged["overall_coverage_fraction"] = (
+        merged["overall_coverage_n"] / merged["overall_coverage_total"]
+    ).round(4)
+    merged["overall_coverage_ratio"] = sum(
+        OVERALL_WEIGHTS[cat] * merged[f"{cat}_coverage_ratio"]
+        for cat in OVERALL_WEIGHTS
+    ).round(4)
     return merged
 
 
@@ -248,14 +311,25 @@ def build_tiles(ready_root: Path, overview_root: Path) -> dict[str, int]:
         counts[tag] = len(df)
         print(f"[build_overview_tiles] wrote {path.name} with {len(df)} cells")
 
+    coverage_cols = [
+        f"{prefix}_{suffix}"
+        for prefix in ("overall_coverage", *[f"{cat}_coverage" for cat in CATEGORY_SOURCES])
+        for suffix in ("n", "total", "fraction", "ratio")
+    ]
+    output_cols = [
+        "h3", "cell_id", "latitude", "longitude",
+        "overall_score", "safety_score", "transit_score", "amenities_score",
+        "risk_level", *coverage_cols,
+    ]
+
     # Overall tile: every cell with any overall_score.
     overall_df = merged.dropna(subset=["overall_score"]).copy()
-    _write("overall", overall_df[["h3", "cell_id", "latitude", "longitude", "overall_score", "safety_score", "transit_score", "amenities_score", "risk_level"]])
+    _write("overall", overall_df[output_cols])
 
     for tag in ("safety", "transit", "amenities"):
         col = f"{tag}_score"
         tag_df = merged.dropna(subset=[col]).copy()
-        _write(tag, tag_df[["h3", "cell_id", "latitude", "longitude", "overall_score", "safety_score", "transit_score", "amenities_score", "risk_level"]])
+        _write(tag, tag_df[output_cols])
 
     return counts
 
