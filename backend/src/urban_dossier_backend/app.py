@@ -208,14 +208,12 @@ def watchlist(request: WatchlistRequest) -> dict:
 # Agent endpoints
 # ---------------------------------------------------------------------------
 from .agent_schemas import (
-    AgentChatRequest,
     AgentPosterRequest,
     AgentRefineRequest,
     AgentReportRequest,
     AgentSessionRequest,
 )
 from .agent_service import (
-    chat_with_context,
     generate_poster,
     generate_report,
     is_agent_available,
@@ -266,13 +264,12 @@ def agent_poster(request: AgentPosterRequest) -> dict:
     return generate_poster(session.analysis_payload, template=request.template)
 
 
-@app.post("/api/agent/chat")
-def agent_chat(request: AgentChatRequest) -> dict:
-    session = store.get(request.session_id)
-    if not session:
-        return JSONResponse(status_code=404, content={"detail": "Session not found"})
-    response = chat_with_context(session, request.message)
-    return {"response": response, "session_id": request.session_id}
+# /api/agent/chat stood here: a second way into the same agent, taking a bare
+# message and returning a bare string, beside /api/agent/ask's structured
+# request with trace and evidence. Maintaining both was the thing PROJECT_PLAN
+# P0-01 set out to stop, and the frontend had already moved off it. Removed
+# rather than deprecated, because an unused endpoint that still works is an
+# endpoint someone will wire up again.
 
 
 @app.post("/api/agent/refine")

@@ -108,102 +108,12 @@ const TAG_STYLES = {
 };
 const ALLOWED_RADIUS_METERS = new Set([200, 500, 1000]);
 
-function createSeededRandom(seed) {
-  let value = seed % 2147483647;
-  if (value <= 0) value += 2147483646;
-  return () => {
-    value = (value * 16807) % 2147483647;
-    return (value - 1) / 2147483646;
-  };
-}
-
-function generateRandomDataset(tag) {
-  const rand = createSeededRandom(
-    tag.split('').reduce((sum, char) => sum + char.charCodeAt(0), 0) + 2026,
-  );
-  const count = 28;
-  const points = [];
-
-  for (let index = 0; index < count; index += 1) {
-    const latitude = 40.50 + rand() * 0.43;
-    const longitude = -74.25 + rand() * 0.57;
-    const wave = Math.sin(index * 0.8 + rand() * 2) * 18;
-    const cluster = rand() * 55;
-    const score = Math.max(0, Math.min(100, Math.round(20 + cluster + wave)));
-
-    points.push({
-      latitude: Number(latitude.toFixed(6)),
-      longitude: Number(longitude.toFixed(6)),
-      score,
-    });
-  }
-
-  return {
-    tag,
-    points,
-    style: TAG_STYLES[tag],
-    updated_at: new Date().toISOString(),
-    dataset_name: `${tag} demo dataset`,
-  };
-}
-
-const globalRenderDatasets = {
-  general: generateRandomDataset('general'),
-  safety: generateRandomDataset('safety'),
-  transit: generateRandomDataset('transit'),
-  amenities: generateRandomDataset('amenities'),
-};
-
-function sanitizeRenderPayload(payload = {}) {
-  const rawTag = typeof payload.tag === 'string' ? payload.tag.toLowerCase() : 'general';
-  const tag = TAG_STYLES[rawTag] ? rawTag : 'general';
-  const rawPoints = Array.isArray(payload.points) ? payload.points : [];
-  const points = rawPoints
-    .map((point) => ({
-      latitude: Number(point.latitude),
-      longitude: Number(point.longitude),
-      score: Number(point.score),
-    }))
-    .filter((point) =>
-      Number.isFinite(point.latitude) &&
-      Number.isFinite(point.longitude) &&
-      Number.isFinite(point.score),
-    )
-    .map((point) => ({
-      latitude: Math.max(-90, Math.min(90, point.latitude)),
-      longitude: Math.max(-180, Math.min(180, point.longitude)),
-      score: Math.max(0, Math.min(100, point.score)),
-    }));
-
-  return {
-    tag,
-    points,
-    style: TAG_STYLES[tag],
-    updated_at: new Date().toISOString(),
-  };
-}
-
-function sanitizeTaggedPoints(rawPoints = []) {
-  return rawPoints
-    .map((point) => ({
-      latitude: Number(point.latitude),
-      longitude: Number(point.longitude),
-      score: Number(point.score),
-      tag: typeof point.tag === 'string' ? point.tag.toLowerCase() : 'general',
-    }))
-    .filter((point) =>
-      Number.isFinite(point.latitude) &&
-      Number.isFinite(point.longitude) &&
-      Number.isFinite(point.score) &&
-      TAG_STYLES[point.tag],
-    )
-    .map((point) => ({
-      latitude: Math.max(-90, Math.min(90, point.latitude)),
-      longitude: Math.max(-180, Math.min(180, point.longitude)),
-      score: Math.max(0, Math.min(100, point.score)),
-      tag: point.tag,
-    }));
-}
+// A seeded random-point generator, four precomputed demo datasets and two
+// payload sanitisers stood here. Nothing reached any of them: the datasets
+// were assigned to a const no code read, and the sanitisers had lost their
+// last caller when the render endpoints started passing backend output
+// through unchanged. Synthetic scores in the file that serves real ones is
+// also a hazard worth not keeping around.
 
 function mapTagToOverviewRequest(tag) {
   if (tag === 'general') {
@@ -448,10 +358,6 @@ function isAllowedOrigin(origin) {
   }
 }
 
-function toRadians(value) {
-  return (value * Math.PI) / 180;
-}
-
 function distanceMeters(a, b) {
   const NYC_COS_LAT = 0.7580107;
   const DEG_TO_M = 111320.0;
@@ -460,58 +366,11 @@ function distanceMeters(a, b) {
   return Math.sqrt(dlat * dlat + dlng * dlng);
 }
 
-function destinationPoint(latitude, longitude, distanceMetersValue, bearingRad) {
-  const earthRadiusMeters = 6371008.8;
-  const lat1 = toRadians(latitude);
-  const lng1 = toRadians(longitude);
-  const angularDistance = distanceMetersValue / earthRadiusMeters;
-
-  const lat2 = Math.asin(
-    Math.sin(lat1) * Math.cos(angularDistance) +
-      Math.cos(lat1) * Math.sin(angularDistance) * Math.cos(bearingRad),
-  );
-
-  const lng2 =
-    lng1 +
-    Math.atan2(
-      Math.sin(bearingRad) * Math.sin(angularDistance) * Math.cos(lat1),
-      Math.cos(angularDistance) - Math.sin(lat1) * Math.sin(lat2),
-    );
-
-  return {
-    latitude: Number(((lat2 * 180) / Math.PI).toFixed(6)),
-    longitude: Number(((lng2 * 180) / Math.PI).toFixed(6)),
-  };
-}
-
-function generateLocalDemoPoints(latitude, longitude, radiusMeters) {
-  const points = [];
-  const tags = Object.keys(TAG_STYLES);
-
-  tags.forEach((tag, tagIndex) => {
-    const rand = createSeededRandom(
-      Math.round((latitude + 90) * 1000) +
-      Math.round((longitude + 180) * 1000) +
-      radiusMeters +
-      tagIndex * 977,
-    );
-
-    for (let index = 0; index < 7; index += 1) {
-      const bearing = rand() * Math.PI * 2;
-      const distance = Math.max(25, rand() * radiusMeters * 0.85);
-      const destination = destinationPoint(latitude, longitude, distance, bearing);
-
-      points.push({
-        latitude: destination.latitude,
-        longitude: destination.longitude,
-        score: Math.max(5, Math.min(95, Math.round(15 + rand() * 75))),
-        tag,
-      });
-    }
-  });
-
-  return points;
-}
+// destinationPoint and generateLocalDemoPoints stood here: a synthetic
+// scatter of points around a location, used when the backend had nothing
+// to say. Nothing called it any more, and inventing scores in the proxy is
+// the exact failure the architecture is built to prevent -- the backend is
+// the source of analysis truth and an empty answer from it is information.
 
 // CORS
 app.use((req, res, next) => {
@@ -615,46 +474,9 @@ app.post('/api/overview', async (req, res) => {
   }
 });
 
-function buildDisplayScoreLookup(values) {
-  const sorted = values
-    .filter((value) => Number.isFinite(value))
-    .sort((a, b) => a - b);
-
-  if (!sorted.length) {
-    return () => 50;
-  }
-
-  const firstIndex = new Map();
-  const lastIndex = new Map();
-  sorted.forEach((value, index) => {
-    if (!firstIndex.has(value)) firstIndex.set(value, index);
-    lastIndex.set(value, index);
-  });
-
-  const denominator = Math.max(sorted.length - 1, 1);
-
-  return (value) => {
-    if (!Number.isFinite(value)) return 50;
-    const first = firstIndex.get(value);
-    const last = lastIndex.get(value);
-    if (first === undefined || last === undefined) return 50;
-    const averageRank = (first + last) / 2;
-    const percentile = averageRank / denominator;
-    return Math.round(5 + percentile * 90);
-  };
-}
-
-function hexApprox(lat, lng, sizeDegs) {
-  const coords = [];
-  for (let i = 0; i <= 6; i += 1) {
-    const angle = (Math.PI / 3) * i + Math.PI / 6;
-    coords.push([
-      Number((lng + sizeDegs * Math.cos(angle) / Math.cos(lat * Math.PI / 180)).toFixed(6)),
-      Number((lat + sizeDegs * Math.sin(angle)).toFixed(6)),
-    ]);
-  }
-  return coords;
-}
+// buildDisplayScoreLookup stood here -- a percentile-ranking helper with no
+// callers, duplicating what buildRankLookup already does for the callers it
+// has.
 
 app.get('/api/overview/geojson', async (req, res) => {
   const requestedTag = typeof req.query.tag === 'string' ? req.query.tag.toLowerCase() : 'general';
@@ -667,6 +489,7 @@ app.get('/api/overview/geojson', async (req, res) => {
     });
 
     const cells = Array.isArray(payload?.cells) ? payload.cells : [];
+    let cellsWithoutGeometry = 0;
 
     const features = cells
       .map((cell) => {
@@ -677,23 +500,30 @@ app.get('/api/overview/geojson', async (req, res) => {
 
         const raw = scoreForTag(cell, tag);
         if (!Number.isFinite(raw)) return null;
-        // Prefer the geometry the backend supplies. It is the true cell
-        // boundary clipped to the coastline, so a cell straddling the shore
-        // stops at the water instead of colouring the river, and cells that
-        // are entirely water never arrive at all. hexApprox is a fallback for
-        // an older backend only: its hardcoded radius drew each cell at
-        // roughly half size, so a grid that tiles the city without gaps
-        // rendered as isolated dots over a mostly uncoloured map.
-        // The backend states the geometry type because clipping a cell that
-        // contains an island yields a MultiPolygon, and it always sends
-        // well-formed coordinates for that type, so this is a pass-through
-        // rather than a reconstruction.
-        const geometry = Array.isArray(cell.boundary) && cell.boundary.length > 0
-          ? {
-            type: cell.boundary_type === 'MultiPolygon' ? 'MultiPolygon' : 'Polygon',
-            coordinates: cell.boundary,
-          }
-          : { type: 'Polygon', coordinates: [hexApprox(lat, lng, 0.0025)] };
+        // The geometry is the backend's to state. It is the true cell boundary
+        // clipped to the coastline, so a cell straddling the shore stops at
+        // the water instead of colouring the river, and cells that are
+        // entirely water never arrive at all. The type comes with it because
+        // clipping a cell containing an island yields a MultiPolygon; this is
+        // a pass-through, not a reconstruction.
+        //
+        // A cell without a boundary is dropped rather than approximated. There
+        // used to be a hexApprox fallback here for older backends, drawing a
+        // hexagon at a hardcoded 0.0025 degrees -- about half the true radius,
+        // a quarter of the area. It turned a grid that tiles the city without
+        // gaps into isolated dots over a mostly uncoloured map, and it did so
+        // silently, because a wrong polygon renders just as happily as a right
+        // one. Keeping it as a safety net meant keeping a path that quietly
+        // reinstates a fixed bug. Missing geometry is now visible as a missing
+        // cell and a warning, which is the failure mode you can act on.
+        if (!Array.isArray(cell.boundary) || cell.boundary.length === 0) {
+          cellsWithoutGeometry += 1;
+          return null;
+        }
+        const geometry = {
+          type: cell.boundary_type === 'MultiPolygon' ? 'MultiPolygon' : 'Polygon',
+          coordinates: cell.boundary,
+        };
         return {
           type: 'Feature',
           properties: {
@@ -708,12 +538,22 @@ app.get('/api/overview/geojson', async (req, res) => {
       })
       .filter(Boolean);
 
+    if (cellsWithoutGeometry > 0) {
+      console.warn(
+        `  ${cellsWithoutGeometry} of ${cells.length} overview cells arrived without a ` +
+        'boundary and were dropped. The backend should be clipping and returning ' +
+        'cell geometry -- check /api/overview.',
+      );
+    }
+
     res.json({
       type: 'FeatureCollection',
       features,
       metadata: {
         tag,
         cell_count: features.length,
+        // Reported so a thin map is distinguishable from a small city.
+        cells_without_geometry: cellsWithoutGeometry,
         scoring_mode: 'absolute',
         overview_ready: Boolean(payload?.coverage?.overview_ready ?? payload?.overview_ready),
       },
@@ -957,14 +797,10 @@ app.post('/api/agent/session', async (req, res) => {
   }
 });
 
-app.post('/api/agent/chat', async (req, res) => {
-  try {
-    const payload = await backendRequest('/api/agent/chat', { method: 'POST', body: req.body });
-    res.json(payload);
-  } catch (error) {
-    sendProxyError(res, 502, 'Agent chat failed', { details: error.payload ?? null });
-  }
-});
+// /api/agent/chat was proxied here beside /ask. Two entry points to the same
+// agent is what PROJECT_PLAN P0-01 set out to end, and the frontend stopped
+// calling this one when AgentChat moved to /ask, so it was a second contract
+// nobody exercised and nothing tested. Gone.
 
 // v2 structured agent loop. Node stays a pure proxy here: the ReAct loop,
 // tool dispatch and evidence assembly all belong to FastAPI. Note this route

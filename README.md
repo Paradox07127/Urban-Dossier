@@ -194,11 +194,12 @@ is intentionally not started by the default LLM-only command. See
 - GPU libraries are adapters. Domain behavior must remain testable without a
   CUDA device.
 
-Both `/api/agent/chat` and `/api/agent/ask` now reach the model through the
-authenticated OpenClaw Gateway inside OpenShell. `/api/agent/ask` previously
+`/api/agent/ask` is the only way into the agent, and it reaches the model
+through the authenticated OpenClaw Gateway inside OpenShell. It previously
 opened a direct connection to vLLM, bypassing that boundary; it no longer
 does. `URBAN_DOSSIER_ASK_TRANSPORT=vllm` restores the direct path for local
-debugging on a host with no sandbox and is not a supported production setting.
+debugging on a host with no sandbox and is not a supported production setting;
+anything other than that exact value keeps the sandbox.
 
 The Gateway accepts client-supplied function tools, so the ReAct loop declares
 the analyst tool schemas and executes them itself in FastAPI. Two Gateway
@@ -207,9 +208,12 @@ form carrying `function_call_output` is rejected), and conversation state is
 server-side keyed by `x-openclaw-session-key`. Tool results therefore go back
 as text, and each turn sends only what is new.
 
-Known architectural follow-up: the two endpoints should still converge on one
-public contract so session, trace, evidence, and artifacts have a single API.
-The frontend chat UI continues to call `/api/agent/chat`.
+`/api/agent/chat` used to sit beside `ask` as a second entry, taking a bare
+message and returning a bare string. It has been removed: the frontend had
+already moved to `ask`, and the function behind it fell back to a direct vLLM
+client on any sandbox failure, which the fail-closed switch on `ask` did not
+govern. Report, poster and refine remain their own endpoints and are the
+outstanding half of the convergence.
 
 ### Analyst tool status
 
