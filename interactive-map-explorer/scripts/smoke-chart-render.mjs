@@ -18,7 +18,11 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   const externalRequests = [];
   const pageErrors = [];
+  const consoleErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
+  page.on('console', (message) => {
+    if (message.type() === 'error') consoleErrors.push(message.text());
+  });
   await page.route('**/*', async (route) => {
     const url = new URL(route.request().url());
     if (url.hostname === '127.0.0.1' || url.hostname === 'localhost') {
@@ -45,23 +49,50 @@ try {
   await page.getByRole('textbox', { name: 'Find a place in New York' }).press('Enter');
   await page.getByText('Compare', { exact: true }).waitFor({ timeout: 30_000 });
   await page.getByText('Score comparison', { exact: true }).waitFor({ timeout: 30_000 });
+  await page.getByLabel('Comparison delta map legend').waitFor({ timeout: 30_000 });
+  await page.waitForFunction(
+    () => window.__udMap?.getSource('comparisonDelta')?._data?.geojson?.features?.length >= 5,
+    null,
+    { timeout: 30_000 },
+  );
   await page.locator('.vega-embed svg').nth(2).waitFor({ timeout: 30_000 });
   console.log('smoke: validating rendered charts');
   const captions = await page.locator('figure figcaption').allTextContents();
   const renderedCharts = await page.locator('.vega-embed svg').count();
+  const deltaMap = await page.evaluate(() => {
+    const map = window.__udMap;
+    const sourceData = map.getSource('comparisonDelta')._data.geojson;
+    return {
+      features: sourceData.features.length,
+      layers: [
+        'comparison-radius-fill',
+        'comparison-radius-line',
+        'comparison-connector',
+        'comparison-endpoints',
+      ].filter((id) => Boolean(map.getLayer(id))),
+      connectorColor: map.getPaintProperty('comparison-connector', 'line-color'),
+    };
+  });
 
   assert(captions.some((text) => text.includes('Score composition')));
   assert(captions.some((text) => text.includes('City score distribution')));
   assert(captions.some((text) => text.includes('Quarterly signals')));
   assert(captions.some((text) => text.includes('Score comparison')));
   assert(renderedCharts >= 4, `expected at least 4 rendered Vega SVGs, got ${renderedCharts}`);
+  assert(deltaMap.features >= 5, `expected comparison GeoJSON features, got ${deltaMap.features}`);
+  assert.equal(deltaMap.layers.length, 4);
+  assert(
+    JSON.stringify(deltaMap.connectorColor).includes('overall_delta'),
+    `connector is not reading the backend overall_delta field: ${JSON.stringify(deltaMap.connectorColor)}`,
+  );
   assert.equal(externalRequests.length, 0, `external requests attempted: ${externalRequests}`);
   assert.deepEqual(pageErrors, []);
+  assert.deepEqual(consoleErrors, []);
 
   await page.screenshot({ path: screenshotPath, fullPage: true });
   console.log(
     JSON.stringify(
-      { renderedCharts, captions, externalRequests: externalRequests.length, screenshotPath },
+      { renderedCharts, captions, deltaMap, externalRequests: externalRequests.length, screenshotPath },
       null,
       2,
     ),

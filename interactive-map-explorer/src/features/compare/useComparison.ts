@@ -1,12 +1,18 @@
 import { useCallback, useEffect, useState } from 'react';
 
-import type { ChartSpec, DetailPreviewResponse, RadiusMeters } from '../../types';
+import type {
+  ChartSpec,
+  ComparisonDeltaMap,
+  DetailPreviewResponse,
+  RadiusMeters,
+} from '../../types';
 
 
 export interface CompareResponse {
   point_a: DetailPreviewResponse;
   point_b: DetailPreviewResponse;
   deltas: Record<string, number | null>;
+  delta_map?: ComparisonDeltaMap;
   chart_specs?: Record<string, ChartSpec>;
 }
 

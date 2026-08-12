@@ -3,7 +3,7 @@ import maplibregl, { GeoJSONSource, Map as MapLibreMap } from 'maplibre-gl';
 import { CLASS_COLORS, classBreaks } from '../lib/scoreClasses';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Box } from 'lucide-react';
-import { Location } from '../types';
+import type { ComparisonDeltaMap, Location } from '../types';
 
 type RenderTag = 'general' | 'safety' | 'transit' | 'amenities';
 type Coordinate = [number, number];
@@ -221,6 +221,8 @@ interface MapProps {
   hotspots?: HotspotData[];
   /** GeoJSON Feature returned by POST /api/isochrone, or null to clear. */
   isochrone?: GeoJSON.Feature | null;
+  /** Backend-computed B-minus-A geometry and diverging presentation contract. */
+  comparisonDeltaMap?: ComparisonDeltaMap | null;
   /** Sandbox on/off. Owned by App so the rail can drive it. */
   sandbox?: boolean;
   /** Fires once the baked tiles and coastline are both present. */
@@ -380,6 +382,10 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       type: 'geojson',
       data: EMPTY_FEATURE_COLLECTION,
     },
+    comparisonDelta: {
+      type: 'geojson',
+      data: EMPTY_FEATURE_COLLECTION,
+    },
   },
   glyphs: `${window.location.origin}/fonts/{fontstack}/{range}.pbf`,
   layers: [
@@ -467,15 +473,23 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
         // remains visible but more transparent. Missing coverage from an old
         // fallback payload is deliberately shown at the low-confidence end.
         'fill-opacity': [
-          '*',
-          ['interpolate', ['linear'], ['zoom'], 11, 0.42, 14.5, 0],
+          'interpolate',
+          ['linear'],
+          ['zoom'],
+          11,
           [
-            'interpolate',
-            ['linear'],
-            ['coalesce', ['get', 'coverage_ratio'], 0],
-            0, 0.35,
-            1, 1,
+            '*',
+            0.42,
+            [
+              'interpolate',
+              ['linear'],
+              ['coalesce', ['get', 'coverage_ratio'], 0],
+              0, 0.35,
+              1, 1,
+            ],
           ],
+          14.5,
+          0,
         ],
       },
     },
@@ -828,6 +842,53 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
         'text-color': '#777',
         'text-halo-color': '#fff',
         'text-halo-width': 1.5,
+      },
+    },
+    // Comparison is a single directional reading: A is the ink baseline, B
+    // and the connector carry the server-published B-minus-A colour. These
+    // layers sit above labels on the flat map and are hidden in the sandbox.
+    {
+      id: 'comparison-radius-fill',
+      type: 'fill',
+      source: 'comparisonDelta',
+      filter: ['==', ['geometry-type'], 'Polygon'],
+      paint: {
+        'fill-color': '#f7f7f7',
+        'fill-opacity': ['case', ['==', ['get', 'role'], 'point_a'], 0.05, 0.24],
+        'fill-antialias': false,
+      },
+    },
+    {
+      id: 'comparison-radius-line',
+      type: 'line',
+      source: 'comparisonDelta',
+      filter: ['==', ['geometry-type'], 'Polygon'],
+      paint: {
+        'line-color': UD_INK,
+        'line-width': ['case', ['==', ['get', 'role'], 'point_a'], 1.5, 3],
+      },
+    },
+    {
+      id: 'comparison-connector',
+      type: 'line',
+      source: 'comparisonDelta',
+      filter: ['==', ['geometry-type'], 'LineString'],
+      paint: {
+        'line-color': '#f7f7f7',
+        'line-width': 4,
+        'line-opacity': 0.9,
+      },
+    },
+    {
+      id: 'comparison-endpoints',
+      type: 'circle',
+      source: 'comparisonDelta',
+      filter: ['==', ['geometry-type'], 'Point'],
+      paint: {
+        'circle-color': UD_INK,
+        'circle-radius': ['case', ['==', ['get', 'role'], 'point_a'], 7, 9],
+        'circle-stroke-color': '#ffffff',
+        'circle-stroke-width': 2,
       },
     },
     /* ------------------------------------------------------------------
@@ -1474,6 +1535,8 @@ function setBuildingRenderer(
 const FLAT_MAP_LAYERS = [
   'hex-overlay-fill', 'hex-overlay-line',
   'building-scores-fill', 'building', 'building-3d',
+  'comparison-radius-fill', 'comparison-radius-line',
+  'comparison-connector', 'comparison-endpoints',
 ];
 
 const SANDBOX_LAYERS = [
@@ -1688,6 +1751,55 @@ function updateHotspotOverlay(map: MapLibreMap, hotspots: HotspotData[]) {
     geometry: createCirclePolygon([hs.center_lon, hs.center_lat], Math.max(hs.radius_m, 40) / 1000),
   }));
   source.setData({ type: 'FeatureCollection', features });
+}
+
+function comparisonDeltaColor(
+  deltaMap: ComparisonDeltaMap,
+  tag: RenderTag,
+): maplibregl.ExpressionSpecification {
+  const field = deltaMap.presentation.category_fields[tag]
+    ?? deltaMap.presentation.category_fields.general;
+  const ramp: unknown[] = [
+    'interpolate',
+    ['linear'],
+    ['get', field],
+  ];
+  for (const stop of deltaMap.presentation.stops) {
+    ramp.push(stop.value, stop.color);
+  }
+  return [
+    'case',
+    ['all', ['has', field], ['!=', ['get', field], null]],
+    ramp,
+    deltaMap.presentation.no_data_color,
+  ] as unknown as maplibregl.ExpressionSpecification;
+}
+
+function updateComparisonDeltaOverlay(
+  map: MapLibreMap,
+  deltaMap: ComparisonDeltaMap | null | undefined,
+  tag: RenderTag,
+) {
+  const source = map.getSource('comparisonDelta') as GeoJSONSource | undefined;
+  if (!source) return;
+  if (!deltaMap) {
+    source.setData(EMPTY_FEATURE_COLLECTION);
+    return;
+  }
+
+  source.setData(deltaMap.geojson);
+  const color = comparisonDeltaColor(deltaMap, tag);
+  const baseline = deltaMap.presentation.point_a_color;
+  map.setPaintProperty('comparison-radius-fill', 'fill-color', [
+    'case', ['==', ['get', 'role'], 'point_a'], baseline, color,
+  ]);
+  map.setPaintProperty('comparison-radius-line', 'line-color', [
+    'case', ['==', ['get', 'role'], 'point_a'], baseline, color,
+  ]);
+  map.setPaintProperty('comparison-connector', 'line-color', color);
+  map.setPaintProperty('comparison-endpoints', 'circle-color', [
+    'case', ['==', ['get', 'role'], 'point_a'], baseline, color,
+  ]);
 }
 
 function updateRadiusOverlay(
@@ -1982,6 +2094,7 @@ export default function Map({
   markers = [],
   hotspots = [],
   isochrone = null,
+  comparisonDeltaMap = null,
   onZoomChange,
   sandbox = false,
   onSandboxAvailable,
@@ -2384,6 +2497,27 @@ export default function Map({
     if (map.isStyleLoaded()) apply();
     else map.once('load', apply);
   }, [isochrone]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    // The source is part of the initial static style, so it exists before a
+    // compare response can arrive. `isStyleLoaded()` also turns false while a
+    // flyTo is loading tiles; waiting for `load` then deadlocks because that
+    // one-shot event already happened at boot. GeoJSON setData and paint
+    // writes are valid during that transient tile load.
+    updateComparisonDeltaOverlay(map, comparisonDeltaMap, renderTag);
+  }, [comparisonDeltaMap, renderTag]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !comparisonDeltaMap) return;
+    const [west, south, east, north] = comparisonDeltaMap.bbox;
+    map.fitBounds(
+      [[west, south], [east, north]],
+      { padding: 90, duration: 700, maxZoom: 15 },
+    );
+  }, [comparisonDeltaMap]);
 
   useEffect(() => {
     markersRef.current.forEach((marker) => marker.remove());

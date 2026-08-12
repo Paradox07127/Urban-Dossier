@@ -7,6 +7,7 @@ logger = logging.getLogger(__name__)
 
 from .categories import CATEGORY_CONFIG, DEFAULT_PRIORITY_ORDER, signal_to_category_map
 from .chart_specs import compare_scores_chart, detail_chart_specs
+from .comparison_maps import comparison_delta_map
 from .config import URBAN_DOSSIER_DATA_MODE, PRIORITY_DECAY
 from .evidence import build_evidence, extract_why_now, verify_priority_actions
 from .pattern_detector import detect_multi_signal_patterns
@@ -448,6 +449,14 @@ def compare_points(
         deltas[category] = round(float(value_b) - float(value_a), 2)
 
     compare_chart = compare_scores_chart(scores_a, scores_b, deltas)
+    delta_map = comparison_delta_map(
+        payload_a.get("target") or point_a,
+        payload_b.get("target") or point_b,
+        radius_m,
+        deltas,
+        scores_a,
+        scores_b,
+    )
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -455,6 +464,7 @@ def compare_points(
         "point_a": payload_a,
         "point_b": payload_b,
         "deltas": deltas,
+        "delta_map": delta_map,
         "chart_specs": {compare_chart.chart_id: compare_chart.model_dump()},
         "radius_m": radius_m,
         "priority_order": order,

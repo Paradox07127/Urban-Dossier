@@ -250,3 +250,24 @@ def test_compare_response_publishes_backend_delta_chart(monkeypatch):
     assert {row["delta_b_minus_a"] for row in values if row["category"] == "overall"} == {
         15.0
     }
+    delta_map = response["delta_map"]
+    assert delta_map["direction"] == "point_b_minus_point_a"
+    assert delta_map["methodology_version"] == METHODOLOGY_VERSION
+    assert delta_map["presentation"]["category_fields"]["general"] == "overall_delta"
+    assert delta_map["presentation"]["domain"] == [-30, 30]
+    assert len(delta_map["geojson"]["features"]) == 5
+    polygons = [
+        feature
+        for feature in delta_map["geojson"]["features"]
+        if feature["geometry"]["type"] == "Polygon"
+    ]
+    assert {feature["properties"]["role"] for feature in polygons} == {
+        "point_a",
+        "point_b",
+    }
+    assert all(feature["properties"]["overall_delta"] == 15.0 for feature in polygons)
+    assert all(
+        feature["geometry"]["coordinates"][0][0]
+        == feature["geometry"]["coordinates"][0][-1]
+        for feature in polygons
+    )

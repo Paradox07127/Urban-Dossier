@@ -570,6 +570,7 @@ export default function App() {
           markers={display ? [{ id: 'sel', title: display.title, description: display.description, position: display.position, category: display.category, scores: display.scores, aiSummary: '', evidence: [] }] : []}
           hotspots={(hotspots as any[]) ?? []}
           isochrone={isochrone}
+          comparisonDeltaMap={serverComparison?.delta_map ?? null}
           sandbox={sandbox}
           onZoomChange={setZoom}
           onSandboxAvailable={setSandboxAvailable}
@@ -759,6 +760,9 @@ export default function App() {
                       // it is banned on the map.
                       const rawDelta = serverComparison?.deltas?.[cat];
                       const diff = typeof rawDelta === 'number' ? Math.round(rawDelta) : null;
+                      const deltaStops = serverComparison?.delta_map?.presentation.stops ?? [];
+                      const negativeColor = deltaStops[0]?.color ?? '#8c5a10';
+                      const positiveColor = deltaStops[deltaStops.length - 1]?.color ?? '#765b8a';
                       return (
                         <div key={cat} className="grid grid-cols-3 gap-2 text-center text-sm tabular-nums">
                           <span className="font-bold" style={scoreTextStyle(pVal)}>{pVal ?? '--'}</span>
@@ -768,7 +772,7 @@ export default function App() {
                             {diff != null && diff !== 0 && (
                               <span
                                 className="text-[10px] ml-1"
-                                style={{ color: diff > 0 ? '#1e7a70' : '#8c5a10' }}
+                                style={{ color: diff > 0 ? positiveColor : negativeColor }}
                               >
                                 {diff > 0 ? '+' : ''}{diff}
                               </span>
@@ -777,6 +781,30 @@ export default function App() {
                         </div>
                       );
                     })}
+                    {serverComparison?.delta_map && (
+                      <div
+                        className="space-y-1.5 border-t border-primary/15 pt-2"
+                        aria-label="Comparison delta map legend"
+                      >
+                        <div className="flex items-center justify-between font-mono text-[10px] text-muted-foreground">
+                          <span>Map · B − A · {renderTag === 'general' ? 'overall' : renderTag}</span>
+                          <span>{serverComparison.delta_map.presentation.palette}</span>
+                        </div>
+                        <div className="flex h-2 overflow-hidden rounded-full border border-black/5">
+                          {serverComparison.delta_map.presentation.stops.map((stop) => (
+                            <span
+                              key={stop.value}
+                              className="flex-1"
+                              style={{ backgroundColor: stop.color }}
+                              title={`${stop.value > 0 ? '+' : ''}${stop.value}`}
+                            />
+                          ))}
+                        </div>
+                        <div className="flex justify-between font-mono text-[9px] text-muted-foreground/80">
+                          <span>B lower</span><span>same</span><span>B higher</span>
+                        </div>
+                      </div>
+                    )}
                     {serverComparison?.chart_specs?.compare_scores && (
                       <VegaChart chart={serverComparison.chart_specs.compare_scores} />
                     )}

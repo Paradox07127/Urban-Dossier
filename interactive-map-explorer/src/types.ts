@@ -137,6 +137,26 @@ export interface ScoreUncertainty {
   note: string;
 }
 
+export interface ComparisonDeltaMap {
+  schema_version: '1.0';
+  code_ref: string;
+  methodology_version: string;
+  direction: 'point_b_minus_point_a';
+  radius_m: number;
+  bbox: [number, number, number, number];
+  geojson: GeoJSON.FeatureCollection;
+  presentation: {
+    palette: string;
+    domain: [number, number];
+    clamp: boolean;
+    stops: Array<{ value: number; color: string }>;
+    zero_color: string;
+    no_data_color: string;
+    point_a_color: string;
+    category_fields: Record<string, string>;
+  };
+}
+
 export interface DetailResponse extends Omit<DetailPreviewResponse, 'mode' | 'preview_ready'> {
   mode: 'detail';
   report_summary: string;
