@@ -411,11 +411,16 @@ def test_prepared_environment_score_is_context_only():
     scores, coverage = compute_scores_with_coverage(
         state(**FULL),
         BASELINES,
-        {**PREPARED_FULL, "environment": {"nyccas_no": 35}},
+        {
+            **PREPARED_FULL,
+            "environment": {"nyccas_no": 35, "heat_vulnerability": 100},
+        },
     )
     assert scores["environment"] == 35
     assert scores["overall"] == GOLDEN["prepared_full"][3]["overall"]
     assert coverage["environment"]["ratio"] == 1.0
+    assert coverage["environment"]["total"] == 1
+    assert "heat_vulnerability" not in coverage["environment"]["present"]
     assert "environment" not in coverage["overall"]["categories_used"]
 
 

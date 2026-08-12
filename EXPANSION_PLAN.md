@@ -123,6 +123,15 @@ Eurostat EU Quality of Life 采取不聚合的仪表盘路线，只能作为维�
 > [`docs/methodology/nyccas-no.md`](docs/methodology/nyccas-no.md)。其余七个
 > 快照仍未完成本节发布门，1.5 状态保持 partial。
 
+> 实施记录（2026-08-12，第二项）：HVI `4mhf-duep` 的 184 个 ZCTA
+> quintile 已完成 CSV + 官方 metadata 双哈希校验、原生 ZIP ready artifact、
+> 3.9.0 manifest、注册表、ZIP 相关性、敏感性、API 和在线/离线卡片。
+> HVI 1–5 仅按 `(5-HVI)*25` 反转显示，不插值；它通过逐指标
+> `metric_scores` 独立呈现，category/overall 权重均为 0，避免与 NYCCAS
+> 任意合成。NTA 地图仍须显式 crosswalk，因此没有越过本节粒度规则。
+> 复现、component vintage 与 ZIP/ZCTA 限制见
+> [`docs/methodology/heat-vulnerability.md`](docs/methodology/heat-vulnerability.md)。
+
 粒度处理规则（采纳 AARP 先例，披露而非硬插值）：
 
 - 点数据（311 / HPD / 学校 / 销售）直接聚合到 H3 r9；

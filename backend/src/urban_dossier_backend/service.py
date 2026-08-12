@@ -174,6 +174,16 @@ def _build_detail_payload(
         point_payload.get("prepared_scores"),
         user_priority_weights=priority_weights,
     )
+    # Individual published indicators remain visible even when they
+    # deliberately carry zero category weight (for example HVI). This avoids
+    # inventing a cross-grain category composite merely to get a context value
+    # through the API. Values have already passed each table's publication gate
+    # in the provider.
+    metric_scores = {
+        metric_id: value
+        for category_scores in (point_payload.get("prepared_scores") or {}).values()
+        for metric_id, value in category_scores.items()
+    }
 
     # Hotspot detection (GPU DBSCAN)
     hotspots = []
@@ -227,6 +237,7 @@ def _build_detail_payload(
         "evidence_table": evidence_table,
         "data_gaps": point_payload.get("data_gaps", []),
         "scores": scores,
+        "metric_scores": metric_scores,
         "chart_specs": chart_specs,
         # How much of each category's intended evidence base was actually
         # present. Sits beside `scores` rather than inside it so the score

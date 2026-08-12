@@ -11,9 +11,9 @@ function payload(overrides = {}) {
     title: 'A <script>alert(1)</script> place',
     target: { latitude: 40.75, longitude: -73.98, radius_m: 500, borough: 'Manhattan' },
     scores: { overall: 72, amenities: 64, environment: 81 },
+    metric_scores: { nyccas_no: 81, heat_vulnerability: 25 },
     score_coverage: {
       amenities: { available: 3, total: 4, ratio: 0.75 },
-      environment: { available: 1, total: 1, ratio: 1 },
     },
     score_uncertainty: {
       artifact_version: 'abc123',
@@ -60,7 +60,9 @@ test('builds a self-contained, stamped, escaped Vega report', () => {
   assert.match(output, /A &lt;script&gt;alert\(1\)&lt;\/script&gt; place/);
   assert.match(output, /<strong>Middle–High<\/strong>/);
   assert.match(output, /95% range 48–63 · point estimate 72/);
-  assert.match(output, /<span>environment<\/span><strong>81<\/strong><small>1\/1 sources<\/small>/);
+  assert.match(output, /<span>modeled NO context<\/span><strong>81<\/strong>/);
+  assert.match(output, /<span>heat vulnerability<\/span><strong>25<\/strong>/);
+  assert.doesNotMatch(output, /<span>environment<\/span>/, 'context must not masquerade as a composite');
   assert.doesNotMatch(output, /<span>building<\/span>/, 'missing scores must not become zero');
 });
 

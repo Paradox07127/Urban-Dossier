@@ -36,8 +36,14 @@ import numpy as np
 from PIL import Image
 from pyproj import Transformer
 
-from preprocess_common import percentile_score
-from urban_dossier_backend.metrics import METHODOLOGY_VERSION
+# Neither scripts/ nor src/ is importable from a bare CLI invocation; put
+# both on the path the way the sibling preprocessing scripts do.
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from preprocess_common import percentile_score  # noqa: E402
+from urban_dossier_backend.metrics import METHODOLOGY_VERSION  # noqa: E402
 
 
 SOURCE_ARCHIVE = "AnnAvg_1_16_300m.zip"

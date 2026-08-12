@@ -4,7 +4,17 @@ from datetime import date, timedelta
 
 import pandas as pd
 
-from backend.scripts.preprocess_common import quarter_label
+import importlib.util as _ilu
+from pathlib import Path as _P
+
+# scripts/ is not a package; load the module the way every other test here
+# does, so the suite collects under the established `cd backend` convention.
+_spec = _ilu.spec_from_file_location(
+    "preprocess_common", _P(__file__).resolve().parents[1] / "scripts" / "preprocess_common.py"
+)
+_pc = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(_pc)
+quarter_label = _pc.quarter_label
 from urban_dossier_backend.pattern_detector import (
     _aligned_pair,
     _assemble_pattern,

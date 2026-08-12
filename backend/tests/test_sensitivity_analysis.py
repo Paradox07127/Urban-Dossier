@@ -70,6 +70,22 @@ def test_cell_with_nothing_present_is_nan_not_zero():
     assert np.isnan(out[0])
 
 
+def test_zip_lookup_repeats_native_zip_without_changing_its_declared_grain(tmp_path):
+    import h3
+
+    cell = h3.latlng_to_cell(40.7484, -73.9857, 9)
+    location = tmp_path / rsa.LOCATION_INDEX_RELPATH
+    location.parent.mkdir(parents=True)
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE locations (latitude DOUBLE, longitude DOUBLE, zip VARCHAR)"
+    )
+    con.execute("INSERT INTO locations VALUES (40.7484514, -73.9857117, '10001')")
+    con.execute(f"COPY locations TO '{location.as_posix()}' (FORMAT PARQUET)")
+    assert rsa.cell_zip_lookup(con, tmp_path, [cell]) == ["10001"]
+    con.close()
+
+
 # --- determinism on a synthetic ready root -----------------------------------
 
 
@@ -160,6 +176,11 @@ def test_real_data_smoke(tmp_path):
     # collision_transport left the registry in v3.8.0, so the only remaining
     # flagged toggle is the sanitation evidence source.
     assert set(h["toggle_effects"]) == {"311_sanitation"}
+    assert {"ems_response", "fire_response", "parks_access", "heat_vulnerability"} <= set(
+        summary["metrics"]
+    )
     assert len(frame) == per_cell.shape[0]
     # The production artifact was not touched.
     assert (tmp_path / "sensitivity_cells.parquet").exists()
+    manifest = json.loads((tmp_path / "sensitivity_cells.manifest.json").read_text())
+    assert rsa.LOCATION_INDEX_INPUT_ID in manifest["input_score_tables"]

@@ -356,24 +356,48 @@
         "ems_response",
         "fire_response"
       ],
-      "rho": 0.269,
-      "n_zips": 171
+      "rho": 0.287,
+      "n_zips": 170
     },
     {
       "pair": [
         "ems_response",
         "parks_access"
       ],
-      "rho": -0.123,
-      "n_zips": 171
+      "rho": -0.116,
+      "n_zips": 170
+    },
+    {
+      "pair": [
+        "ems_response",
+        "heat_vulnerability"
+      ],
+      "rho": 0.149,
+      "n_zips": 170
     },
     {
       "pair": [
         "fire_response",
         "parks_access"
       ],
-      "rho": 0.082,
-      "n_zips": 171
+      "rho": 0.075,
+      "n_zips": 170
+    },
+    {
+      "pair": [
+        "fire_response",
+        "heat_vulnerability"
+      ],
+      "rho": -0.074,
+      "n_zips": 170
+    },
+    {
+      "pair": [
+        "parks_access",
+        "heat_vulnerability"
+      ],
+      "rho": 0.004,
+      "n_zips": 170
     }
   ]
 }

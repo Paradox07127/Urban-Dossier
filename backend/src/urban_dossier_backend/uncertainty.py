@@ -38,8 +38,9 @@ _MANIFEST_PATH = READY_DATA_DIR / "analysis" / "sensitivity_cells.manifest.json"
 _INPUT_PATHS = {
     metric.id: READY_DATA_DIR / metric.score_table
     for metric in METRICS
-    if metric.spatial_grain.value == "h3_r9"
+    if metric.spatial_grain.value in {"h3_r9", "zip"}
 }
+_INPUT_PATHS["__location_index__"] = READY_DATA_DIR / "location" / "location_index.parquet"
 _EXPECTED_SCHEMA_VERSION = "1.0"
 _EXPECTED_COLUMNS = [
     "h3_r9", "nominal", "median", "lo95", "hi95",

@@ -93,6 +93,9 @@ export interface DetailPreviewResponse {
   evidence_table: EvidenceEntry[];
   data_gaps: string[];
   scores: Scores;
+  // Registry metric ids to individually published scores. Context indicators
+  // can live here without being forced into a category or overall composite.
+  metric_scores?: Record<string, number | null>;
   chart_specs?: Record<string, ChartSpec>;
   // How much of each category's intended evidence base produced a value.
   score_coverage?: Record<string, ScoreCoverage>;

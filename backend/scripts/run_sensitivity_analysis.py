@@ -38,10 +38,12 @@ radius-aggregated point analysis -- the assumptions under test enter at
 aggregation, and cell level isolates them from the geometry of grid_disk.
 
 Scope limits, stated rather than hidden:
-* The three ZIP-grain metrics are held out entirely (score and weight), the
-  same way production handles a missing ZIP: renormalization over what is
-  present. Mixing grains would need an allocation rule; item 1.5's plan is
-  disclosure, not downscaling.
+* ZIP-grain metrics remain ZIP-grain. For the cell-level batch only, every H3
+  centroid receives the ZIP of its nearest ready location-index parcel (the
+  same resolver production uses), then the native ZIP value is repeated over
+  those cells. This is an explicit lookup surface, not a claim that EMS, fire,
+  parks or HVI were measured at H3 precision. The location index is hashed as
+  a publication dependency.
 * `restaurant_context`'s inspection-quality adjustment exists only in the
   published percentile scores; the min-max and z branches rebuild from the
   score tables' canonical `raw_count` field. Despite that legacy field name,
@@ -70,7 +72,9 @@ from datetime import date
 from pathlib import Path
 
 import duckdb
+import h3
 import numpy as np
+from scipy.spatial import cKDTree
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "backend" / "src"))
@@ -82,6 +86,7 @@ from urban_dossier_backend.metrics import (  # noqa: E402
     METHODOLOGY_VERSION,
 )
 from urban_dossier_backend.publications import ready_publication_valid  # noqa: E402
+from urban_dossier_backend.utils import bbox  # noqa: E402
 
 WEIGHT_NOISE = 0.25          # COINr get_noisy_weights, NoiseFactor 0.25
 INTERVAL = (2.5, 97.5)       # CDC PLACES convention
@@ -97,10 +102,63 @@ ARTIFACT_COLUMNS = (
     "lo95_prodnorm", "hi95_prodnorm",
     "rank_nominal", "rank_median", "rank_p5", "rank_p95",
 )
+ZIP_RAW_COLUMNS = {
+    "ems_response": "avg_response_seconds",
+    "fire_response": "avg_response_seconds",
+    "parks_access": "total_value",
+    "heat_vulnerability": "raw_count",
+}
+LOCATION_INDEX_RELPATH = "location/location_index.parquet"
+LOCATION_INDEX_INPUT_ID = "__location_index__"
 
 
 def h3_metrics() -> list:
     return [m for m in METRICS if m.spatial_grain.value == "h3_r9"]
+
+
+def analysis_metrics() -> list:
+    return [
+        metric
+        for metric in METRICS
+        if metric.spatial_grain.value in {"h3_r9", "zip"}
+    ]
+
+
+def cell_zip_lookup(
+    con: duckdb.DuckDBPyConnection,
+    ready_root: Path,
+    frame: list[str],
+) -> list[str | None]:
+    """Resolve each H3 centroid to the nearest published parcel's ZIP.
+
+    The point API uses the same Euclidean lat/lon nearest-row rule inside a
+    broad 2.5 km candidate box. A vectorized KD-tree produces that rule for
+    the fixed offline population without 7,000 full-table DuckDB scans.
+    """
+    path = ready_root / LOCATION_INDEX_RELPATH
+    if not path.exists():
+        return [None] * len(frame)
+    rows = con.execute(
+        f"SELECT latitude, longitude, zip FROM read_parquet('{path.as_posix()}') "
+        "WHERE latitude IS NOT NULL AND longitude IS NOT NULL AND zip IS NOT NULL"
+    ).fetchall()
+    if not rows:
+        return [None] * len(frame)
+    coordinates = np.array([(float(lat), float(lon)) for lat, lon, _ in rows])
+    zips = [str(zip_code)[:5] for _, _, zip_code in rows]
+    centroids = np.array([h3.cell_to_latlng(cell) for cell in frame])
+    _, nearest = cKDTree(coordinates).query(centroids, k=1)
+    resolved: list[str | None] = []
+    for (latitude, longitude), row in zip(centroids, nearest):
+        source_latitude, source_longitude = coordinates[int(row)]
+        min_lat, max_lat, min_lon, max_lon = bbox(float(latitude), float(longitude), 2500)
+        resolved.append(
+            zips[int(row)]
+            if min_lat <= source_latitude <= max_lat
+            and min_lon <= source_longitude <= max_lon
+            else None
+        )
+    return resolved
 
 
 def load_matrices(ready_root: Path) -> tuple[list[str], list[str], np.ndarray, dict[str, np.ndarray]]:
@@ -109,7 +167,7 @@ def load_matrices(ready_root: Path) -> tuple[list[str], list[str], np.ndarray, d
     con = duckdb.connect()
     metrics = [
         metric
-        for metric in h3_metrics()
+        for metric in analysis_metrics()
         if ready_publication_valid(
             ready_root,
             metric.score_table,
@@ -119,7 +177,8 @@ def load_matrices(ready_root: Path) -> tuple[list[str], list[str], np.ndarray, d
     positive_weight_metrics = [
         metric
         for metric in metrics
-        if CATEGORIES_BY_ID[metric.category].weight_in_overall > 0
+        if metric.spatial_grain.value == "h3_r9"
+        and CATEGORIES_BY_ID[metric.category].weight_in_overall > 0
     ]
     union = " UNION ".join(
         f"SELECT h3_r9 FROM read_parquet('{(ready_root / m.score_table).as_posix()}')"
@@ -131,7 +190,30 @@ def load_matrices(ready_root: Path) -> tuple[list[str], list[str], np.ndarray, d
     n_cells, n_metrics = len(frame), len(metrics)
     published = np.full((n_cells, n_metrics), np.nan)
     raw_values = np.full((n_cells, n_metrics), np.nan)
+    zip_for_cell = (
+        cell_zip_lookup(con, ready_root, frame)
+        if any(metric.spatial_grain.value == "zip" for metric in metrics)
+        else [None] * n_cells
+    )
     for j, metric in enumerate(metrics):
+        if metric.spatial_grain.value == "zip":
+            raw_column = ZIP_RAW_COLUMNS[metric.id]
+            rows = con.execute(
+                f"SELECT zip, score, {raw_column} FROM "
+                f"read_parquet('{(ready_root / metric.score_table).as_posix()}')"
+            ).fetchall()
+            by_zip = {
+                str(zip_code)[:5]: (score, raw)
+                for zip_code, score, raw in rows
+                if zip_code is not None
+            }
+            for i, zip_code in enumerate(zip_for_cell):
+                values = by_zip.get(zip_code)
+                if values is not None:
+                    score, raw = values
+                    published[i, j] = float(score)
+                    raw_values[i, j] = float(raw)
+            continue
         rows = con.execute(
             f"SELECT h3_r9, score, raw_count FROM read_parquet('{(ready_root / metric.score_table).as_posix()}')"
         ).fetchall()
@@ -375,7 +457,8 @@ def write_publication_manifest(
 ) -> Path:
     """Publish the exact artifact/input snapshot accepted by the API."""
     inputs = {}
-    for metric in h3_metrics():
+    published_zip = False
+    for metric in analysis_metrics():
         source = ready_root / metric.score_table
         if ready_publication_valid(
             ready_root,
@@ -387,6 +470,14 @@ def write_publication_manifest(
                 "sha256": _sha256(source),
                 "size_bytes": source.stat().st_size,
             }
+            published_zip = published_zip or metric.spatial_grain.value == "zip"
+    location_index = ready_root / LOCATION_INDEX_RELPATH
+    if published_zip and location_index.exists():
+        inputs[LOCATION_INDEX_INPUT_ID] = {
+            "path": LOCATION_INDEX_RELPATH,
+            "sha256": _sha256(location_index),
+            "size_bytes": location_index.stat().st_size,
+        }
     manifest = {
         "schema_version": PUBLICATION_SCHEMA_VERSION,
         "methodology_version": METHODOLOGY_VERSION,
@@ -475,9 +566,10 @@ def render_markdown(summary: dict) -> str:
         "",
         "## Stated limits",
         "",
-        "- ZIP-grain metrics (ems, fire, parks) are held out, matching how "
-        "production renormalizes when a ZIP lookup fails; their weight share "
-        "is redistributed identically in every draw.",
+        "- ZIP-grain metrics (EMS, fire, parks and HVI) are repeated over H3 "
+        "cells through the nearest-parcel ZIP lookup used by production. "
+        "Their registry and UI grain remains ZIP; this allocation is only the "
+        "explicit cell-level surface required for a like-for-like composite.",
         "- `restaurant_context`'s inspection-quality adjustment exists only in "
         "the percentile branch; min-max and z rebuild from counts alone.",
         "- Absence from a sparse risk table (`aep`: 586 cells citywide) is "

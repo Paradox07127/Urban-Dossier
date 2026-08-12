@@ -16,6 +16,7 @@ import {
   Pin,
   Search,
   ShieldCheck,
+  Sun,
   Utensils,
   Wind,
   X,
@@ -73,6 +74,13 @@ function environmentTier(score: number | null | undefined): string {
   if (score >= 67) return 'Lower modeled NO';
   if (score <= 33) return 'Higher modeled NO';
   return 'Middle modeled NO';
+}
+
+function heatVulnerabilityTier(score: number | null | undefined): string {
+  if (typeof score !== 'number' || Number.isNaN(score)) return 'Not available';
+  const hvi = Math.max(1, Math.min(5, Math.round(5 - score / 25)));
+  const labels = ['Lowest', 'Lower', 'Middle', 'Higher', 'Highest'];
+  return `${labels[hvi - 1]} heat vulnerability · HVI ${hvi}/5`;
 }
 
 function priorityOrderKey(priorities: string[]): string[] {
@@ -598,6 +606,7 @@ export default function App() {
   };
 
   const scores = preview?.scores ?? display?.scores;
+  const metricScores = preview?.metric_scores;
   const buildingFlags = preview?.detail_items?.building_flags ?? [];
   const evidenceTable = preview?.evidence_table ?? [];
   const priorityActions = preview?.priority_actions ?? [];
@@ -1029,22 +1038,41 @@ export default function App() {
                       </div>
                     );
                   })}
-                  {typeof scores?.environment === 'number' && (
+                  {typeof (metricScores?.nyccas_no ?? scores?.environment) === 'number' && (
                     <div
                       className="col-span-2 rounded-md border px-4 py-3 flex items-center gap-3"
-                      style={scoreGradientStyle(scores.environment)}
+                      style={scoreGradientStyle(metricScores?.nyccas_no ?? scores?.environment)}
                     >
                       <Wind className="h-5 w-5 shrink-0 text-muted-foreground" />
                       <div className="min-w-0 flex-1">
                         <div className="text-sm font-semibold text-foreground">
-                          {environmentTier(scores.environment)}
+                          {environmentTier(metricScores?.nyccas_no ?? scores?.environment)}
                         </div>
                         <div className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
                           NYCCAS 2023–24 annual-average model · context only, 0% of overall
                         </div>
                       </div>
                       <div className="text-right font-mono text-[10px] text-muted-foreground">
-                        relative score {formatScore(scores.environment)}/100
+                        relative score {formatScore(metricScores?.nyccas_no ?? scores?.environment)}/100
+                      </div>
+                    </div>
+                  )}
+                  {typeof metricScores?.heat_vulnerability === 'number' && (
+                    <div
+                      className="col-span-2 rounded-md border px-4 py-3 flex items-center gap-3"
+                      style={scoreGradientStyle(metricScores.heat_vulnerability)}
+                    >
+                      <Sun className="h-5 w-5 shrink-0 text-muted-foreground" />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-semibold text-foreground">
+                          {heatVulnerabilityTier(metricScores.heat_vulnerability)}
+                        </div>
+                        <div className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
+                          NYC DOHMH mortality-risk quintile · ZCTA 2020 · context only, 0% of overall
+                        </div>
+                      </div>
+                      <div className="text-right font-mono text-[10px] text-muted-foreground">
+                        relative score {formatScore(metricScores.heat_vulnerability)}/100
                       </div>
                     </div>
                   )}

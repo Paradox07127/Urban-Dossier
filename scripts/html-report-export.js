@@ -129,11 +129,15 @@ function normalisePayload(payload, methodologyVersion) {
       zip: text(target.zip, 20),
     },
     scores: Object.fromEntries(
-      ['overall', 'amenities', 'transit', 'safety', 'building', 'environment']
+      ['overall', 'amenities', 'transit', 'safety', 'building']
         .map((key) => [key, finiteNumber(scores[key])]),
     ),
+    metric_scores: Object.fromEntries(
+      ['nyccas_no', 'heat_vulnerability']
+        .map((key) => [key, finiteNumber(payload.metric_scores?.[key])]),
+    ),
     score_coverage: Object.fromEntries(
-      ['overall', 'amenities', 'transit', 'safety', 'building', 'environment'].map((key) => {
+      ['overall', 'amenities', 'transit', 'safety', 'building'].map((key) => {
         const item = coverage[key] && typeof coverage[key] === 'object' ? coverage[key] : {};
         return [key, {
           available: finiteNumber(item.available),
@@ -170,7 +174,7 @@ function loadVegaRuntime() {
 }
 
 function scoreCards(report) {
-  return Object.entries(report.scores)
+  const categories = Object.entries(report.scores)
     .filter(([, value]) => value != null)
     .map(([key, value]) => {
       const coverage = report.score_coverage[key];
@@ -184,6 +188,15 @@ function scoreCards(report) {
       return `<div class="score"><span>${html(key)}</span><strong>${html(Math.round(value))}</strong><small>${html(coverageLabel)}</small></div>`;
     })
     .join('');
+  const contextLabels = {
+    nyccas_no: 'modeled NO context',
+    heat_vulnerability: 'heat vulnerability',
+  };
+  const contexts = Object.entries(report.metric_scores)
+    .filter(([, value]) => value != null)
+    .map(([key, value]) => `<div class="score"><span>${html(contextLabels[key] || key)}</span><strong>${html(Math.round(value))}</strong><small>context only · 0% of overall</small></div>`)
+    .join('');
+  return categories + contexts;
 }
 
 function evidenceRows(report) {

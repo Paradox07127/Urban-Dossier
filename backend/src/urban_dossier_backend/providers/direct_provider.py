@@ -168,6 +168,12 @@ READY_DATASET_PATHS = {
     "housing_violations": "building/housing_violations_indexed.parquet",
     "aep_buildings": "building/aep_indexed.parquet",
     "nyccas_no": "environment/nyccas_no_scores_h3.parquet",
+    "heat_vulnerability": "environment/hvi_scores_zip.parquet",
+}
+
+READY_PUBLICATION_MANIFESTS = {
+    "nyccas_no": "environment/nyccas_no.manifest.json",
+    "heat_vulnerability": "environment/hvi.manifest.json",
 }
 
 READY_COLUMN_ALIASES = {
@@ -253,13 +259,14 @@ class DirectQueryDataProvider(DataProvider):
         return None
 
     def _dataset_available(self, name: str) -> bool:
-        if name == "nyccas_no":
+        ready_path = READY_DATASET_PATHS.get(name)
+        publication_manifest = READY_PUBLICATION_MANIFESTS.get(name)
+        if ready_path and publication_manifest:
             return ready_publication_valid(
                 self.ready_dir,
-                "environment/nyccas_no_scores_h3.parquet",
-                "environment/nyccas_no.manifest.json",
+                ready_path,
+                publication_manifest,
             )
-        ready_path = READY_DATASET_PATHS.get(name)
         return (
             bool(ready_path and self._ready_exists(ready_path))
             or self._parquet_path(name).exists()
@@ -844,7 +851,15 @@ class DirectQueryDataProvider(DataProvider):
 
     def _nearest_location(self, con: Any, latitude: float, longitude: float) -> dict[str, Any]:
         min_lat, max_lat, min_lon, max_lon = bbox(latitude, longitude, 2500)
-        location_index_path = self._parquet_path("location_index")
+        # Production is ready-layer first. In a preprocessing-free deployment
+        # PROCESSED_DIR is intentionally absent; looking only there silently
+        # removed ZIP/borough context and disabled every ZIP-grain metric.
+        ready_location_path = self._ready_path(READY_DATASET_PATHS["location_index"])
+        location_index_path = (
+            ready_location_path
+            if ready_location_path.exists()
+            else self._parquet_path("location_index")
+        )
         if location_index_path.exists():
             sql = f"""
                 SELECT *,
@@ -1969,6 +1984,7 @@ class DirectQueryDataProvider(DataProvider):
             "housing_violations",
             "aep_buildings",
             "nyccas_no",
+            "heat_vulnerability",
         ]
         available_datasets = [dataset for dataset in required if self._dataset_available(dataset)]
         missing_datasets = [dataset for dataset in required if dataset not in available_datasets]

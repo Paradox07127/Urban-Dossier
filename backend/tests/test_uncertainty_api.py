@@ -220,3 +220,6 @@ def test_analyze_point_payload_carries_score_uncertainty():
     su = payload["score_uncertainty"]
     assert su is not None
     assert su["score_range"][0] < su["score_range"][1]
+    assert payload["target"]["zip"]
+    assert payload["metric_scores"]["nyccas_no"] is not None
+    assert payload["metric_scores"]["heat_vulnerability"] in {0, 25, 50, 75, 100}

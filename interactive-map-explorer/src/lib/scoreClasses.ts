@@ -12,6 +12,13 @@
  * scores bunch between 35 and 65, where a continuous ramp hands adjacent
  * places imperceptible tints. The backend publishes the quantile edges and
  * numerical accessibility report; this module only applies that contract.
+ *
+ * These exact BrBG-5 hexes were re-run through the dataviz palette checker
+ * rather than inheriting the previous pair's numbers: worst adjacent-pair
+ * CVD dE 14.7 (target >= 8), worst normal-vision dE 17.4 (floor 15),
+ * lightness monotonic per arm. The near-white midpoint sits low-contrast on
+ * the paper basemap; the relief rule is carried by the always-visible legend
+ * and the click-through panel.
  */
 
 /** Exact d3-scale-chromatic / ColorBrewer schemeBrBG[5] fallback values. */

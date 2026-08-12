@@ -95,3 +95,4 @@ def test_runtime_dataset_coverage_is_a_complete_partition():
     assert required
     assert available.isdisjoint(missing)
     assert available | missing == required
+    assert "heat_vulnerability" in required

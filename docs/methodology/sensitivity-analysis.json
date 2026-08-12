@@ -7,10 +7,13 @@
     "collision",
     "rodent",
     "311_sanitation",
+    "ems_response",
+    "fire_response",
     "subway",
     "bus",
     "bike_routes",
     "open_streets",
+    "parks_access",
     "trees",
     "public_toilets",
     "linknyc",
@@ -18,7 +21,8 @@
     "facilities",
     "housing_violations",
     "aep",
-    "nyccas_no"
+    "nyccas_no",
+    "heat_vulnerability"
   ],
   "design": {
     "weight_noise": 0.25,
@@ -40,22 +44,22 @@
     ]
   },
   "headline": {
-    "median_interval_width": 33.26,
-    "p95_interval_width": 57.81,
-    "median_interval_width_production_norm": 9.85,
-    "mean_abs_rank_shift": 597.2,
-    "rank_shift_share_of_city": 0.083,
+    "median_interval_width": 24.55,
+    "p95_interval_width": 39.19,
+    "median_interval_width_production_norm": 7.34,
+    "mean_abs_rank_shift": 549.7,
+    "rank_shift_share_of_city": 0.0764,
     "toggle_effects": {
       "311_sanitation": {
-        "mean_abs_score_delta": 1.27,
-        "p95_abs_score_delta": 2.98
+        "mean_abs_score_delta": 0.71,
+        "p95_abs_score_delta": 1.77
       }
     },
-    "imputation_mean_abs_score_delta": 10.73,
+    "imputation_mean_abs_score_delta": 7.29,
     "normalization_citywide_means": {
-      "percentile": 50.53,
-      "minmax": 42.6,
-      "zscore": 50.13
+      "percentile": 53.02,
+      "minmax": 47.35,
+      "zscore": 50.03
     }
   }
 }

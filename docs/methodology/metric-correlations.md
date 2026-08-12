@@ -21,9 +21,12 @@ The metric registry's declared relationships are measured below:
 
 ## ZIP-grain metrics
 
-- `ems_response` vs `fire_response`: rho = +0.269 (N = 171 ZIPs)
-- `ems_response` vs `parks_access`: rho = -0.123 (N = 171 ZIPs)
-- `fire_response` vs `parks_access`: rho = +0.082 (N = 171 ZIPs)
+- `ems_response` vs `fire_response`: rho = +0.287 (N = 170 ZIPs)
+- `ems_response` vs `parks_access`: rho = -0.116 (N = 170 ZIPs)
+- `ems_response` vs `heat_vulnerability`: rho = +0.149 (N = 170 ZIPs)
+- `fire_response` vs `parks_access`: rho = +0.075 (N = 170 ZIPs)
+- `fire_response` vs `heat_vulnerability`: rho = -0.074 (N = 170 ZIPs)
+- `parks_access` vs `heat_vulnerability`: rho = +0.004 (N = 170 ZIPs)
 
 ## Full matrix (Spearman, raw values with metric-aware absence)
 

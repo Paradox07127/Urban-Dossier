@@ -78,6 +78,7 @@ ZIP_VALUE_COLUMNS = {
     "ems_response": "avg_response_seconds",
     "fire_response": "avg_response_seconds",
     "parks_access": "total_value",
+    "heat_vulnerability": "raw_count",
 }
 
 

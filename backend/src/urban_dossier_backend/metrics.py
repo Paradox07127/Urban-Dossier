@@ -124,6 +124,10 @@ class Normalization(str, Enum):
 
     EMPIRICAL_PERCENTILE = "empirical_percentile"
     COMPOSITE_PERCENTILE = "composite_percentile"
+    # Preserve an official ordered classification while presenting the common
+    # high-is-good display direction. HVI 1..5 maps exactly to 100..0; no
+    # sample-dependent percentile or invented continuity is introduced.
+    ORDINAL_REVERSAL = "ordinal_reversal"
 
 
 @dataclass(frozen=True)
@@ -663,6 +667,38 @@ METRICS: tuple[MetricDefinition, ...] = (
             "short-term or regulatory monitoring. Native pixels are 300 m; "
             "one land centroid remains missing at official raster nodata. "
             "Context-only with zero overall weight in v3.9.0."
+        ),
+    ),
+    MetricDefinition(
+        id="heat_vulnerability",
+        category="environment",
+        label="Heat vulnerability",
+        description=(
+            "Official NYC DOHMH heat-mortality vulnerability quintile, "
+            "looked up at its native 2020 ZCTA geography without downscaling."
+        ),
+        unit="HVI quintile (1 lowest risk, 5 highest risk)",
+        direction=Direction.LOWER_IS_BETTER,
+        spatial_grain=SpatialGrain.ZIP,
+        temporal_grain=TemporalGrain.IRREGULAR,
+        normalization=Normalization.ORDINAL_REVERSAL,
+        # An individual context indicator, not an ingredient in the NYCCAS
+        # category score. This keeps an arbitrary air/heat 50:50 composite out
+        # of the public contract while the category remains zero overall.
+        weight_in_category=0.0,
+        source_dataset="Heat Vulnerability Index Rankings",
+        source_relpath="raw-expansion/hvi/hvi_4mhf-duep.csv",
+        score_table="environment/hvi_scores_zip.parquet",
+        publication_manifest="environment/hvi.manifest.json",
+        absence_means_zero=False,
+        data_vintage=(
+            "published 2024-09-19; components span ACS 2016-2020, "
+            "2017 LiDAR/HVS, 2020 Census and 2020 ECOSTRESS"
+        ),
+        notes=(
+            "Context-only individual indicator with zero category and overall "
+            "weight. It combines social and environmental heat-mortality risk "
+            "factors; it is not temperature or an individual health forecast."
         ),
     ),
 )

@@ -184,7 +184,7 @@ LEGACY_CATEGORY_CONFIG = {
         "label": "Environment",
         "map_driving": False,
         "detail_rankable": False,
-        "signals": ["nyccas_no"],
+        "signals": ["nyccas_no", "heat_vulnerability"],
         "weight_in_overall": 0.0,
         "sub_datasets": {
             "nyccas_no": {
@@ -192,6 +192,12 @@ LEGACY_CATEGORY_CONFIG = {
                 "query_by": "h3",
                 "score_table": "environment/nyccas_no_scores_h3.parquet",
                 "publication_manifest": "environment/nyccas_no.manifest.json",
+            },
+            "heat_vulnerability": {
+                "weight": 0.0,
+                "query_by": "zip",
+                "score_table": "environment/hvi_scores_zip.parquet",
+                "publication_manifest": "environment/hvi.manifest.json",
             },
         },
     },
@@ -263,6 +269,11 @@ def test_environment_is_published_without_silently_reweighting_overall():
     assert metric.publication_manifest == "environment/nyccas_no.manifest.json"
     assert metric.absence_means_zero is False
     assert overall_contribution("nyccas_no") == 0.0
+    hvi = METRICS_BY_ID["heat_vulnerability"]
+    assert hvi.publication_manifest == "environment/hvi.manifest.json"
+    assert hvi.weight_in_category == 0.0
+    assert hvi.absence_means_zero is False
+    assert overall_contribution("heat_vulnerability") == 0.0
 
 
 def test_every_metric_is_documented():
@@ -418,10 +429,11 @@ def test_registry_payload_exposes_metric_specific_absence_semantics():
     policies = {entry["id"]: entry["absence_means_zero"] for entry in payload["metrics"]}
     assert policies["rodent"] is False
     assert policies["nyccas_no"] is False
+    assert policies["heat_vulnerability"] is False
     assert all(
         value is True
         for key, value in policies.items()
-        if key not in {"rodent", "nyccas_no"}
+        if key not in {"rodent", "nyccas_no", "heat_vulnerability"}
     )
 
 
@@ -468,6 +480,7 @@ def test_risk_metrics_point_the_right_way():
         "housing_violations",
         "aep",
         "nyccas_no",
+        "heat_vulnerability",
     }
     for metric in METRICS:
         expected = (
