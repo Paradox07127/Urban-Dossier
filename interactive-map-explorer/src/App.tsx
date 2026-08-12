@@ -530,6 +530,7 @@ export default function App() {
           target: preview.target,
           scores: preview.scores,
           score_coverage: preview.score_coverage,
+          score_uncertainty: preview.score_uncertainty,
           chart_specs: preview.chart_specs,
           evidence_table: preview.evidence_table,
           data_gaps: preview.data_gaps,
@@ -957,16 +958,21 @@ export default function App() {
                     <div>
                       <div className="text-sm font-semibold text-foreground">Overall score</div>
                       <div className="text-xs text-muted-foreground">
-                        of this address and its surroundings
+                        public tier for this address and its surroundings
                       </div>
                     </div>
                     <div className="text-right">
                       <span
-                        className="ud-display text-5xl tabular-nums leading-none"
+                        className="ud-display text-3xl leading-none"
                         style={scoreTextStyle(scores?.overall)}
                       >
-                        {formatScore(scores?.overall)}
+                        {preview?.score_uncertainty?.public_tier?.label ?? 'Not tiered'}
                       </span>
+                      <div className="mt-1 font-mono text-[10px] text-muted-foreground">
+                        {preview?.score_uncertainty?.public_tier
+                          ? `95% range ${preview.score_uncertainty.score_range[0]}–${preview.score_uncertainty.score_range[1]} · point estimate ${formatScore(scores?.overall)}`
+                          : `point estimate ${formatScore(scores?.overall)} · uncertainty unavailable`}
+                      </div>
                     </div>
                   </div>
                   {/* Category scores — one per cell */}

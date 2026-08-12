@@ -114,6 +114,8 @@ export interface ScoreCoverage {
 export interface ScoreUncertainty {
   grain: string;
   methodology_version: string;
+  artifact_version: string;
+  artifact_generated: string;
   draws: number;
   score_median: number | null;
   nominal_score: number | null;
@@ -131,6 +133,16 @@ export interface ScoreUncertainty {
   // Production normalization held fixed; weights, inclusion and the
   // missing-data rule vary. The interval a reader should lead with.
   score_range: [number | null, number | null];
+  public_tier: {
+    schema_version: '1.0';
+    scale: 'fixed_20_point_score_bands';
+    basis: 'production_normalization_95pct_interval';
+    label: string;
+    spans_multiple_tiers: boolean;
+    lower: { id: string; label: string; score_min: number; score_max: number };
+    upper: { id: string; label: string; score_min: number; score_max: number };
+    score_range: [number, number];
+  } | null;
   // Additionally varies the normalization method. Wider, and honest about it.
   score_range_all_methods: [number | null, number | null];
   rank_range_share: [number, number] | null;

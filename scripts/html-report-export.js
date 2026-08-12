@@ -101,6 +101,15 @@ function normalisePayload(payload, methodologyVersion) {
   const coverage = payload.score_coverage && typeof payload.score_coverage === 'object'
     ? payload.score_coverage
     : {};
+  const uncertainty = payload.score_uncertainty && typeof payload.score_uncertainty === 'object'
+    ? payload.score_uncertainty
+    : {};
+  const tier = uncertainty.public_tier && typeof uncertainty.public_tier === 'object'
+    ? uncertainty.public_tier
+    : {};
+  const tierRange = Array.isArray(tier.score_range)
+    ? tier.score_range.map(finiteNumber)
+    : [];
   const evidence = Array.isArray(payload.evidence_table)
     ? payload.evidence_table.slice(0, 100).map((row) => ({
         source: text(row?.source, 200),
@@ -132,6 +141,13 @@ function normalisePayload(payload, methodologyVersion) {
         }];
       }),
     ),
+    public_tier: text(tier.label, 100) && tierRange.length === 2 && tierRange.every((value) => value != null)
+      ? {
+          label: text(tier.label, 100),
+          score_range: tierRange,
+          artifact_version: text(uncertainty.artifact_version, 100),
+        }
+      : null,
     report_markdown: text(payload.report_markdown, MAX_REPORT_CHARS),
     data_gaps: Array.isArray(payload.data_gaps)
       ? payload.data_gaps.slice(0, 100).map((item) => text(item, 500)).filter(Boolean)
@@ -160,6 +176,10 @@ function scoreCards(report) {
       const coverageLabel = coverage?.available != null && coverage?.total != null
         ? `${coverage.available}/${coverage.total} sources`
         : 'coverage unavailable';
+      if (key === 'overall' && report.public_tier) {
+        const [low, high] = report.public_tier.score_range;
+        return `<div class="score"><span>overall tier</span><strong>${html(report.public_tier.label)}</strong><small>95% range ${html(low)}–${html(high)} · point estimate ${html(Math.round(value))}</small></div>`;
+      }
       return `<div class="score"><span>${html(key)}</span><strong>${html(Math.round(value))}</strong><small>${html(coverageLabel)}</small></div>`;
     })
     .join('');

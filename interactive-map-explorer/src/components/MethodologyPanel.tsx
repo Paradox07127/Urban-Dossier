@@ -118,9 +118,10 @@ export default function MethodologyPanel({ onClose }: { onClose: () => void }) {
                 City. Category and overall scores are weighted averages of those
                 percentiles; they are not percentile ranks themselves, so 50 is
                 the scale midpoint rather than a claim that half the city ranks
-                below it. Point cards label the cell-level sensitivity interval
-                separately from the radius-aggregated headline. Weights below are
-                the exact ones the composite uses.
+                below it. The overall headline is a fixed 20-point tier spanning
+                the containing cell's production-method 95% sensitivity interval;
+                the radius-aggregated point estimate is secondary detail. Weights
+                below are the exact ones the composite uses.
               </p>
 
               {registry.categories.map((category) => (

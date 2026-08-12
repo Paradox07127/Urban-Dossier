@@ -7,6 +7,7 @@ analyze-point payload where real data allows.
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -31,6 +32,117 @@ def fresh_cache():
     uncertainty.reset_cache()
     yield
     uncertainty.reset_cache()
+
+
+@pytest.mark.parametrize(
+    ("score_range", "label"),
+    [
+        ([5, 19.9], "Very low"),
+        ([19, 21], "Very low–Low"),
+        ([42, 58], "Middle"),
+        ([55, 82], "Middle–Very high"),
+        ([100, 100], "Very high"),
+    ],
+)
+def test_public_tier_is_server_owned_and_interval_driven(score_range, label):
+    tier = uncertainty.public_tier(score_range)
+    assert tier["label"] == label
+    assert tier["basis"] == "production_normalization_95pct_interval"
+    assert tier["scale"] == "fixed_20_point_score_bands"
+
+
+def _write_publication_fixture(tmp_path: Path, methodology_version: str) -> tuple[Path, Path]:
+    import duckdb
+    import h3
+    import hashlib
+    cells_path = tmp_path / "sensitivity_cells.parquet"
+    cell = h3.latlng_to_cell(40.7282, -73.9942, 9)
+    duckdb.connect().execute(
+        """
+        CREATE TABLE t AS SELECT
+          ?::VARCHAR AS h3_r9, 52.0::DOUBLE AS nominal, 51.0::DOUBLE AS median,
+          20.0::DOUBLE AS lo95, 80.0::DOUBLE AS hi95,
+          44.0::DOUBLE AS lo95_prodnorm, 63.0::DOUBLE AS hi95_prodnorm,
+          1.0::DOUBLE AS rank_nominal, 1.0::DOUBLE AS rank_median,
+          1.0::DOUBLE AS rank_p5, 1.0::DOUBLE AS rank_p95
+        """,
+        [cell],
+    ).execute(f"COPY t TO '{cells_path.as_posix()}' (FORMAT PARQUET)")
+    digest = hashlib.sha256(cells_path.read_bytes()).hexdigest()
+    manifest_path = tmp_path / "sensitivity_cells.manifest.json"
+    manifest_path.write_text(json.dumps({
+        "schema_version": "1.0",
+        "methodology_version": methodology_version,
+        "generated": "2026-08-12",
+        "seed": 7,
+        "draws": 1000,
+        "artifact": {
+            "filename": cells_path.name,
+            "sha256": digest,
+            "size_bytes": cells_path.stat().st_size,
+            "row_count": 1,
+            "columns": list(uncertainty._EXPECTED_COLUMNS),
+        },
+        "input_score_tables": {},
+    }))
+    return cells_path, manifest_path
+
+
+def test_stale_publication_fails_closed_then_file_change_reloads(monkeypatch, tmp_path):
+    cells_path, manifest_path = _write_publication_fixture(tmp_path, "0.0.0")
+    monkeypatch.setattr(uncertainty, "_CELLS_PATH", cells_path)
+    monkeypatch.setattr(uncertainty, "_MANIFEST_PATH", manifest_path)
+    monkeypatch.setattr(uncertainty, "_INPUT_PATHS", {})
+    uncertainty.reset_cache()
+    assert uncertainty.score_uncertainty(40.7282, -73.9942) is None
+
+    body = json.loads(manifest_path.read_text())
+    body["methodology_version"] = METHODOLOGY_VERSION
+    manifest_path.write_text(json.dumps(body))
+    out = uncertainty.score_uncertainty(40.7282, -73.9942)
+    assert out is not None
+    assert out["draws"] == 1000
+    assert out["artifact_version"] == body["artifact"]["sha256"]
+    assert out["public_tier"]["label"] == "Middle–High"
+
+
+def test_artifact_hash_mismatch_fails_closed(monkeypatch, tmp_path):
+    cells_path, manifest_path = _write_publication_fixture(tmp_path, METHODOLOGY_VERSION)
+    body = json.loads(manifest_path.read_text())
+    body["artifact"]["sha256"] = "0" * 64
+    manifest_path.write_text(json.dumps(body))
+    monkeypatch.setattr(uncertainty, "_CELLS_PATH", cells_path)
+    monkeypatch.setattr(uncertainty, "_MANIFEST_PATH", manifest_path)
+    monkeypatch.setattr(uncertainty, "_INPUT_PATHS", {})
+    uncertainty.reset_cache()
+    assert uncertainty.score_uncertainty(40.7282, -73.9942) is None
+
+
+def test_input_snapshot_change_invalidates_a_live_cache(monkeypatch, tmp_path):
+    import hashlib
+
+    cells_path, manifest_path = _write_publication_fixture(tmp_path, METHODOLOGY_VERSION)
+    input_path = tmp_path / "safety" / "metric_scores_h3.parquet"
+    input_path.parent.mkdir()
+    input_path.write_bytes(b"published-a")
+    body = json.loads(manifest_path.read_text())
+    body["input_score_tables"] = {
+        "metric": {
+            "path": "safety/metric_scores_h3.parquet",
+            "sha256": hashlib.sha256(input_path.read_bytes()).hexdigest(),
+            "size_bytes": input_path.stat().st_size,
+        }
+    }
+    manifest_path.write_text(json.dumps(body))
+    monkeypatch.setattr(uncertainty, "READY_DATA_DIR", tmp_path)
+    monkeypatch.setattr(uncertainty, "_CELLS_PATH", cells_path)
+    monkeypatch.setattr(uncertainty, "_MANIFEST_PATH", manifest_path)
+    monkeypatch.setattr(uncertainty, "_INPUT_PATHS", {"metric": input_path})
+    uncertainty.reset_cache()
+    assert uncertainty.score_uncertainty(40.7282, -73.9942) is not None
+
+    input_path.write_bytes(b"published-b")
+    assert uncertainty.score_uncertainty(40.7282, -73.9942) is None
 
 
 @requires_cells

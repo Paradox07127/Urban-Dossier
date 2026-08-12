@@ -12,6 +12,10 @@ function payload(overrides = {}) {
     target: { latitude: 40.75, longitude: -73.98, radius_m: 500, borough: 'Manhattan' },
     scores: { overall: 72, amenities: 64 },
     score_coverage: { amenities: { available: 3, total: 4, ratio: 0.75 } },
+    score_uncertainty: {
+      artifact_version: 'abc123',
+      public_tier: { label: 'Middle–High', score_range: [48, 63] },
+    },
     evidence_table: [{ source: 'NYC Open Data', date: '2026-Q2', summary: 'Observed value' }],
     data_gaps: ['One source unavailable'],
     report_markdown: '## Finding\nThe inline report is escaped.',
@@ -51,6 +55,8 @@ test('builds a self-contained, stamped, escaped Vega report', () => {
   assert.doesNotMatch(output, /<link\s+[^>]*href=/i);
   assert.doesNotMatch(output, /<script>alert\(1\)<\/script>/);
   assert.match(output, /A &lt;script&gt;alert\(1\)&lt;\/script&gt; place/);
+  assert.match(output, /<strong>Middle–High<\/strong>/);
+  assert.match(output, /95% range 48–63 · point estimate 72/);
   assert.doesNotMatch(output, /<span>building<\/span>/, 'missing scores must not become zero');
 });
 

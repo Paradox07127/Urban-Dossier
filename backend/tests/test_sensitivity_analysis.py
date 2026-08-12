@@ -128,6 +128,15 @@ def test_per_cell_artifact_is_written_where_told(tmp_path):
     out = tmp_path / "elsewhere"
     rsa.run(root, draws=20, seed=1, cell_output_dir=out)
     assert (out / "sensitivity_cells.parquet").exists()
+    manifest = json.loads((out / "sensitivity_cells.manifest.json").read_text())
+    artifact = manifest["artifact"]
+    assert manifest["schema_version"] == "1.0"
+    assert manifest["methodology_version"] == rsa.METHODOLOGY_VERSION
+    assert manifest["draws"] == 20
+    assert artifact["row_count"] == 30
+    assert artifact["columns"] == list(rsa.ARTIFACT_COLUMNS)
+    assert artifact["sha256"] == rsa._sha256(out / "sensitivity_cells.parquet")
+    assert set(manifest["input_score_tables"]) == {"collision", "subway"}
     assert not (root / "analysis").exists()
 
 

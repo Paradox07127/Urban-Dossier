@@ -47,6 +47,7 @@ try {
   await search.press('Enter');
 
   await page.getByText('Overall score', { exact: true }).waitFor({ timeout: 30_000 });
+  await page.getByText(/95% range .* · point estimate/).waitFor({ timeout: 30_000 });
   await page.getByText(/server quantiles/).waitFor({ timeout: 30_000 });
   await page.locator('.vega-embed svg').first().waitFor({ timeout: 30_000 });
   console.log('smoke: downloading and opening self-contained report offline');
@@ -120,6 +121,7 @@ try {
   const exportStamp = await offlinePage.locator('[data-testid="generated-at"]').textContent();
   assert(exportedCharts >= 3, `expected at least 3 exported Vega SVGs, got ${exportedCharts}`);
   await offlinePage.getByText('methodology v3.9.0', { exact: true }).waitFor();
+  await offlinePage.getByText('overall tier', { exact: true }).waitFor();
   assert.match(exportStamp || '', /^generated \d{4}-\d{2}-\d{2}T/);
   assert.equal(await offlinePage.locator('.render-error').count(), 0);
   assert.deepEqual(offlineRequests, []);

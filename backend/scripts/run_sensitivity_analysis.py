@@ -62,7 +62,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import sys
 from datetime import date
 from pathlib import Path
@@ -77,6 +79,7 @@ from urban_dossier_backend.metrics import (  # noqa: E402
     CATEGORIES_BY_ID,
     METRICS,
     Direction,
+    METHODOLOGY_VERSION,
 )
 
 WEIGHT_NOISE = 0.25          # COINr get_noisy_weights, NoiseFactor 0.25
@@ -87,6 +90,12 @@ INTERVAL = (2.5, 97.5)       # CDC PLACES convention
 # question its toggle was here to quantify.
 TOGGLE_METRICS = ("311_sanitation",)
 NORMALIZATIONS = ("percentile", "minmax", "zscore")
+PUBLICATION_SCHEMA_VERSION = "1.0"
+ARTIFACT_COLUMNS = (
+    "h3_r9", "nominal", "median", "lo95", "hi95",
+    "lo95_prodnorm", "hi95_prodnorm",
+    "rank_nominal", "rank_median", "rank_p5", "rank_p95",
+)
 
 
 def h3_metrics() -> list:
@@ -277,7 +286,12 @@ def run(
     per_cell = np.column_stack(
         [nominal, median, lo, hi, pct_lo, pct_hi, nominal_rank, rank_median, rank_lo, rank_hi]
     )
-    write_per_cell(frame, per_cell, cell_output_dir or ready_root / "analysis")
+    artifact_path = write_per_cell(
+        frame,
+        per_cell,
+        cell_output_dir or ready_root / "analysis",
+    )
+    write_publication_manifest(artifact_path, ready_root, summary)
     return summary, per_cell, frame
 
 
@@ -295,6 +309,7 @@ def rank_descending(values: np.ndarray) -> np.ndarray:
 def write_per_cell(frame: list[str], per_cell: np.ndarray, out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "sensitivity_cells.parquet"
+    temp_path = out_dir / f".{path.name}.{os.getpid()}.tmp"
     con = duckdb.connect()
     # lo95/hi95 span every perturbed assumption including the normalization
     # method itself; lo95_prodnorm/hi95_prodnorm hold normalization at the
@@ -316,7 +331,61 @@ def write_per_cell(frame: list[str], per_cell: np.ndarray, out_dir: Path) -> Pat
             for i in range(len(frame))
         ],
     )
-    con.execute(f"COPY t TO '{path.as_posix()}' (FORMAT PARQUET, COMPRESSION ZSTD)")
+    try:
+        con.execute(
+            f"COPY t TO '{temp_path.as_posix()}' (FORMAT PARQUET, COMPRESSION ZSTD)"
+        )
+        temp_path.replace(path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+    return path
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_publication_manifest(
+    artifact_path: Path,
+    ready_root: Path,
+    summary: dict,
+) -> Path:
+    """Publish the exact artifact/input snapshot accepted by the API."""
+    inputs = {}
+    for metric in h3_metrics():
+        source = ready_root / metric.score_table
+        if source.exists():
+            inputs[metric.id] = {
+                "path": metric.score_table,
+                "sha256": _sha256(source),
+                "size_bytes": source.stat().st_size,
+            }
+    manifest = {
+        "schema_version": PUBLICATION_SCHEMA_VERSION,
+        "methodology_version": METHODOLOGY_VERSION,
+        "generated": summary["generated"],
+        "seed": summary["seed"],
+        "draws": summary["draws"],
+        "artifact": {
+            "filename": artifact_path.name,
+            "sha256": _sha256(artifact_path),
+            "size_bytes": artifact_path.stat().st_size,
+            "row_count": summary["cells"],
+            "columns": list(ARTIFACT_COLUMNS),
+        },
+        "input_score_tables": inputs,
+    }
+    path = artifact_path.with_name("sensitivity_cells.manifest.json")
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temp_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        temp_path.replace(path)
+    finally:
+        temp_path.unlink(missing_ok=True)
     return path
 
 
@@ -372,6 +441,14 @@ def render_markdown(summary: dict) -> str:
         "building has zero overall weight; making that weight non-zero first "
         "requires exposure adjustment or a shared-construct cap and a fresh "
         "sensitivity run.",
+        "",
+        "Publication is atomic: `sensitivity_cells.parquet` is paired with "
+        "`sensitivity_cells.manifest.json`, which records methodology version, "
+        "draw count, seed, row/schema checks, artifact SHA-256 and every input "
+        "score-table SHA-256. The API fails closed when either file or any "
+        "input snapshot changes. Its public headline maps the production-"
+        "normalization 95% interval across fixed 20-point tiers; the point "
+        "estimate remains secondary detail.",
         "",
         "## Stated limits",
         "",
