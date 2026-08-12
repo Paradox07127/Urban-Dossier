@@ -83,7 +83,36 @@ export interface DetailPreviewResponse {
   evidence_table: EvidenceEntry[];
   data_gaps: string[];
   scores: Scores;
+  // How much of each category's intended evidence base produced a value.
+  score_coverage?: Record<string, ScoreCoverage>;
+  // 95% intervals from the offline sensitivity analysis, at cell grain.
+  // Absent when the artifact has not been generated -- absence is disclosed,
+  // never faked.
+  score_uncertainty?: ScoreUncertainty | null;
   preview_ready: boolean;
+}
+
+export interface ScoreCoverage {
+  available?: number;
+  total?: number;
+  ratio?: number;
+  source?: 'prepared' | 'fallback' | 'none';
+  missing?: string[];
+  effective_ratio?: number;
+}
+
+export interface ScoreUncertainty {
+  grain: string;
+  methodology_version: string;
+  draws: number;
+  score_median: number | null;
+  // Production normalization held fixed; weights, inclusion and the
+  // missing-data rule vary. The interval a reader should lead with.
+  score_range: [number | null, number | null];
+  // Additionally varies the normalization method. Wider, and honest about it.
+  score_range_all_methods: [number | null, number | null];
+  rank_range_share: [number, number] | null;
+  note: string;
 }
 
 export interface DetailResponse extends Omit<DetailPreviewResponse, 'mode' | 'preview_ready'> {

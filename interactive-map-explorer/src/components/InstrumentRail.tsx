@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Box, Layers, Search, Shield, TramFront, UtensilsCrossed, X } from 'lucide-react';
+import { CLASS_COLORS, classBreaks, classColor } from '../lib/scoreClasses';
 
 export type RenderTag = 'general' | 'safety' | 'transit' | 'amenities';
 export type ColourDomain = {
@@ -41,19 +42,8 @@ const TAG_FIELD: Record<RenderTag, string> = {
   amenities: 'amenities',
 };
 
-const UD_LOW = '#B3382C';
-const UD_MID = '#E8DFD0';
-const UD_HIGH = '#2F8C63';
-
-/** Colour at a position along the ramp, matching the map's paint expression. */
-function rampColour(t: number): string {
-  const lerp = (a: number[], b: number[], u: number) =>
-    `rgb(${a.map((v, i) => Math.round(v + (b[i] - v) * u)).join(',')})`;
-  const low = [179, 56, 44];
-  const mid = [232, 223, 208];
-  const high = [47, 140, 99];
-  return t <= 0.5 ? lerp(low, mid, t * 2) : lerp(mid, high, (t - 0.5) * 2);
-}
+// Class colours and breaks come from the same module the map paints with, so
+// a histogram bar is exactly the colour those buildings are on screen.
 
 /**
  * The distribution of the active lens across the city.
@@ -74,12 +64,11 @@ function DistributionStrip({ domain }: { domain: ColourDomain | undefined }) {
   if (!domain || !hist || hist.length === 0) {
     return (
       <div className="px-3 pb-3 pt-2">
-        <div
-          className="h-2 w-full rounded-sm"
-          style={{
-            background: `linear-gradient(90deg, ${UD_LOW}, ${UD_MID} 50%, ${UD_HIGH})`,
-          }}
-        />
+        <div className="flex h-2 w-full gap-[2px]">
+          {CLASS_COLORS.map((colour) => (
+            <div key={colour} className="flex-1 rounded-[1px]" style={{ background: colour }} />
+          ))}
+        </div>
         <div className="mt-1.5 flex justify-between font-mono text-[10px] tabular-nums text-muted-foreground">
           <span>0</span>
           <span>100</span>
@@ -90,7 +79,7 @@ function DistributionStrip({ domain }: { domain: ColourDomain | undefined }) {
 
   const peak = Math.max(...hist, 1);
   const total = hist.reduce((a, b) => a + b, 0);
-  const span = domain.high - domain.low;
+  const breaks = classBreaks(domain);
 
   return (
     <div className="px-3 pb-3 pt-2">
@@ -111,16 +100,13 @@ function DistributionStrip({ domain }: { domain: ColourDomain | undefined }) {
       >
         {hist.map((count, i) => {
           const bucketMid = i * 5 + 2.5;
-          // Position on the ramp uses the same stretched domain the map does,
-          // so a bar's colour is the colour those buildings actually are.
-          const t = Math.max(0, Math.min(1, (bucketMid - domain.low) / (span || 1)));
           return (
             <div
               key={i}
               className="flex-1 rounded-[1px] transition-[height] duration-300"
               style={{
                 height: `${Math.max(count > 0 ? 8 : 2, (count / peak) * 100)}%`,
-                background: count > 0 ? rampColour(t) : 'var(--ud-rule)',
+                background: count > 0 ? classColor(bucketMid, breaks) : 'var(--ud-rule)',
               }}
             />
           );
@@ -130,10 +116,14 @@ function DistributionStrip({ domain }: { domain: ColourDomain | undefined }) {
       {/* The ends are percentiles, not 0 and 100: the ramp is stretched over
           the range the data occupies, and saying otherwise would claim a span
           the colours do not cover. */}
+      {/* The four class edges: each fifth of the city changes colour here. */}
       <div className="mt-1.5 flex items-baseline justify-between font-mono text-[10px] tabular-nums text-muted-foreground">
         <span>{domain.low}</span>
-        <span className="text-[9px] text-muted-foreground/60">2nd–98th pct</span>
+        <span className="text-muted-foreground/70">{breaks.join(' · ')}</span>
         <span>{domain.high}</span>
+      </div>
+      <div className="mt-0.5 text-center font-mono text-[9px] text-muted-foreground/60">
+        quintile classes · 2nd–98th pct ends
       </div>
     </div>
   );

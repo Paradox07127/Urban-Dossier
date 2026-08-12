@@ -33,6 +33,7 @@ import type {
 } from './types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import MethodologyPanel from './components/MethodologyPanel';
 
 // --- Constants ---
 
@@ -225,6 +226,7 @@ export default function App() {
   const [selectedRadiusM, setSelectedRadiusM] = useState<RadiusMeters>(200);
   const [preview, setPreview] = useState<DetailPreviewResponse | null>(null);
   const [finalReport, setFinalReport] = useState<DetailResponse | null>(null);
+  const [methodologyOpen, setMethodologyOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [reportLoading, setReportLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -802,12 +804,47 @@ export default function App() {
                         of this address and its surroundings
                       </div>
                     </div>
-                    <span
-                      className="ud-display text-5xl tabular-nums leading-none"
-                      style={scoreTextStyle(scores?.overall)}
-                    >
-                      {formatScore(scores?.overall)}
-                    </span>
+                    <div className="text-right">
+                      <span
+                        className="ud-display text-5xl tabular-nums leading-none"
+                        style={scoreTextStyle(scores?.overall)}
+                      >
+                        {formatScore(scores?.overall)}
+                      </span>
+                      {/* The 95% interval from the sensitivity analysis. A
+                          single integer overstates what the method knows; the
+                          band under the number is the honest width. Absent
+                          when the offline analysis has not been generated --
+                          absence is shown as nothing, never as fake
+                          confidence. */}
+                      {preview?.score_uncertainty?.score_range?.[0] != null && (
+                        <div className="mt-1.5">
+                          <div className="relative h-1.5 w-28 rounded-full bg-border/60 ml-auto">
+                            <div
+                              className="absolute h-full rounded-full bg-foreground/30"
+                              style={{
+                                left: `${preview.score_uncertainty.score_range[0]}%`,
+                                width: `${Math.max(
+                                  (preview.score_uncertainty.score_range[1] ?? 0) -
+                                    (preview.score_uncertainty.score_range[0] ?? 0),
+                                  1,
+                                )}%`,
+                              }}
+                            />
+                            {scores?.overall != null && (
+                              <div
+                                className="absolute top-1/2 h-3 w-[2px] -translate-y-1/2 rounded bg-foreground"
+                                style={{ left: `${scores.overall}%` }}
+                              />
+                            )}
+                          </div>
+                          <div className="mt-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
+                            95%: {Math.round(preview.score_uncertainty.score_range[0] ?? 0)}
+                            –{Math.round(preview.score_uncertainty.score_range[1] ?? 0)}
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </div>
                   {/* Category scores — one per cell */}
                   {priorities.map((label) => {
@@ -834,11 +871,43 @@ export default function App() {
                           </div>
                           <div className="text-xs text-muted-foreground mt-0.5">
                             {label}
+                            {/* Evidence coverage: a one-source score must not
+                                dress like a five-source one. Shown only when
+                                thin, so full coverage stays quiet. */}
+                            {(() => {
+                              const cov = preview?.score_coverage?.[label.toLowerCase()];
+                              if (!cov || cov.available == null || cov.total == null) return null;
+                              if (cov.available >= cov.total) return null;
+                              return (
+                                <span
+                                  className="ml-1.5 font-mono text-[10px] tabular-nums text-amber-700 dark:text-amber-500"
+                                  title={`Missing: ${(cov.missing ?? []).join(', ')}`}
+                                >
+                                  {cov.available}/{cov.total} sources
+                                </span>
+                              );
+                            })()}
                           </div>
                         </div>
                       </div>
                     );
                   })}
+                </div>
+
+                {/* Method footer: version + the door to item 1.6's page. */}
+                <div className="flex items-center justify-between font-mono text-[10px] text-muted-foreground/70">
+                  <span>
+                    {preview?.score_uncertainty
+                      ? `methodology v${preview.score_uncertainty.methodology_version} · percentile within NYC`
+                      : 'percentile within NYC'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setMethodologyOpen(true)}
+                    className="underline decoration-dotted underline-offset-2 hover:text-foreground"
+                  >
+                    how scores work
+                  </button>
                 </div>
 
                 {/* Neighborhood Insights — surfacing hidden backend data */}
@@ -1196,6 +1265,7 @@ export default function App() {
           </motion.div>
         )}
       </AnimatePresence>
+      {methodologyOpen && <MethodologyPanel onClose={() => setMethodologyOpen(false)} />}
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import maplibregl, { GeoJSONSource, Map as MapLibreMap } from 'maplibre-gl';
+import { CLASS_COLORS, classBreaks } from '../lib/scoreClasses';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Box } from 'lucide-react';
 import { Location } from '../types';
@@ -27,13 +28,27 @@ const UD_INK = '#0E1218';
  * and low places carry the only colour on the map. Both ends stay light enough
  * to tint the basemap rather than bury it.
  */
-const UD_LOW = '#B3382C';
-const UD_MID = '#E8DFD0';
-const UD_HIGH = '#2F8C63';
-// Buildings the pipeline could not score. A cool grey, deliberately off the
-// ramp's warm axis: "no reading here" must not be mistakeable for "scored
-// mid". Roughly a quarter of footprints sit in r9 cells with no dataset
-// coverage, so this is a common state rather than an edge case.
+/* Five classed steps, red pole (worst) to blue pole (best) with a neutral
+ * near-paper midpoint. Diverging because a 0-100 score is polarity data, and
+ * blue-red rather than the old green-red because green-red is the classic
+ * colour-vision failure pair (also banned by EXPANSION_PLAN 2.3 for
+ * difference maps -- there is no reason the main ramp should be worse).
+ *
+ * Classed rather than continuous on purpose: a continuous ramp spends most of
+ * its range where 93% of scores bunch (35-65) and adjacent places differ by
+ * imperceptible tints. Five quantile classes guarantee every step is a
+ * visible step. The steps were validated with the dataviz palette checker,
+ * not eyeballed: worst adjacent-pair CVD dE 14.7 (target >= 8), worst
+ * normal-vision dE 16.5 (floor 15), lightness monotonic per arm. The
+ * midpoint's low surface contrast triggers the relief rule, which the
+ * always-visible legend and the click-through detail panel satisfy.
+ */
+const UD_LOW = CLASS_COLORS[0];
+const UD_HIGH = CLASS_COLORS[CLASS_COLORS.length - 1];
+// Buildings the pipeline could not score. A cool grey, deliberately distinct
+// from the neutral mid class: "no reading here" must not be mistakeable for
+// "scored mid". Roughly a quarter of footprints sit in r9 cells with no
+// dataset coverage, so this is a common state rather than an edge case.
 const UD_NO_DATA = '#C6CACE';
 
 /** 2nd/50th/98th percentile per field, as measured by the scoring pass. */
@@ -146,17 +161,19 @@ function buildingScoreColor(
   field: string,
   domain: ColourDomain = FULL_RANGE_DOMAIN,
 ): maplibregl.ExpressionSpecification {
+  const [b1, b2, b3, b4] = classBreaks(domain);
   return [
     'case',
     ['==', ['get', field], null],
     UD_NO_DATA,
     [
-      'interpolate',
-      ['linear'],
+      'step',
       ['to-number', ['get', field]],
-      domain.low, UD_LOW,
-      domain.mid, UD_MID,
-      domain.high, UD_HIGH,
+      CLASS_COLORS[0],
+      b1, CLASS_COLORS[1],
+      b2, CLASS_COLORS[2],
+      b3, CLASS_COLORS[3],
+      b4, CLASS_COLORS[4],
     ],
   ];
 }
@@ -399,11 +416,16 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       type: 'fill',
       source: 'hexOverlay',
       paint: {
+        // Classed like the buildings, and with fixed equal-width breaks on
+        // purpose: cell scores are already empirical percentiles, so equal
+        // width IS equal population here, and the hexes need no histogram.
         'fill-color': [
-          'interpolate', ['linear'], ['get', 'display_score'],
-          0, UD_LOW,
-          50, UD_MID,
-          100, UD_HIGH,
+          'step', ['get', 'display_score'],
+          CLASS_COLORS[0],
+          20, CLASS_COLORS[1],
+          40, CLASS_COLORS[2],
+          60, CLASS_COLORS[3],
+          80, CLASS_COLORS[4],
         ],
         // Adjacent H3 cells share an edge exactly. MapLibre's default fill
         // antialiasing draws a feathered outline on each of them, and the two
