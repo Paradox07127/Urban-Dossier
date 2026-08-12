@@ -17,6 +17,7 @@ from ..config import (
     RAW_DATA_ROOT,
     READY_DATA_DIR,
 )
+from ..periods import canonical_quarter, current_quarter, quarter_for_date, quarter_index
 from ..utils import bbox, compact_records, fast_distance_sq_m, haversine_m, is_within_days, parse_date, quote, to_float, to_int
 from .base import DataProvider
 from .gpu_queries import gpu_emergency_metrics, gpu_fetch_radius_rows, gpu_nearest_overview_cell, is_available as gpu_available, is_fallback
@@ -667,7 +668,10 @@ class DirectQueryDataProvider(DataProvider):
             return None
         placeholders = ", ".join(["?"] * len(h3_cells))
         sql = f"""
-            SELECT quarter, sum(try_cast(count AS DOUBLE)) AS count
+            SELECT
+                quarter,
+                sum(try_cast(count AS DOUBLE)) AS count,
+                count(DISTINCT h3_r9) AS coverage_n
             FROM read_parquet('{path.as_posix()}')
             WHERE h3_r9 IN ({placeholders})
             GROUP BY quarter
@@ -676,13 +680,32 @@ class DirectQueryDataProvider(DataProvider):
         rows = self._query_rows(con, sql, h3_cells)
         if not rows:
             return None
-        quarterly_values = [int(round(to_float(row.get("count")) or 0)) for row in rows]
+        quarterly_series = []
+        for row in rows:
+            period = canonical_quarter(row.get("quarter"))
+            value = to_float(row.get("count"))
+            coverage_n = to_int(row.get("coverage_n"))
+            if period is None or value is None or coverage_n is None:
+                continue
+            quarterly_series.append(
+                {
+                    "period": period,
+                    "value": int(round(value)),
+                    "coverage": round(coverage_n / len(h3_cells), 4),
+                    "coverage_n": coverage_n,
+                    "coverage_total": len(h3_cells),
+                    "period_complete": period != current_quarter(),
+                }
+            )
+        quarterly_series.sort(key=lambda point: quarter_index(point["period"]))
+        if not quarterly_series:
+            return None
         return {
             "last_30d": None,
             "prev_30d": None,
             "last_90d": None,
             "same_90d_last_year": None,
-            "quarterly_values": quarterly_values,
+            "quarterly_series": quarterly_series,
         }
 
     def _h3_cells_for_radius(self, latitude: float, longitude: float, radius_m: int) -> list[str]:
@@ -1546,18 +1569,27 @@ class DirectQueryDataProvider(DataProvider):
                     total += 1
             return total
 
-        quarterly_values = []
-        for idx in range(4):
-            start = idx * 90
-            end = (idx + 1) * 90
-            quarterly_values.append(count_window(start, end))
-        quarterly_values.reverse()
+        counts_by_period: dict[str, int] = {}
+        for parsed in parsed_dates:
+            if parsed.year < 2000 or parsed > date.today():
+                continue
+            period = quarter_for_date(parsed)
+            counts_by_period[period] = counts_by_period.get(period, 0) + 1
+        quarterly_series = [
+            {
+                "period": period,
+                "value": counts_by_period[period],
+                "coverage": None,
+                "period_complete": period != current_quarter(),
+            }
+            for period in sorted(counts_by_period, key=quarter_index)
+        ]
         return {
             "last_30d": count_window(0, 30),
             "prev_30d": count_window(30, 60),
             "last_90d": count_window(0, 90),
             "same_90d_last_year": count_window(365, 455),
-            "quarterly_values": quarterly_values,
+            "quarterly_series": quarterly_series,
         }
 
     def _overview_artifact_version(self) -> str | None:

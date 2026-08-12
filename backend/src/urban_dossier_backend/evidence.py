@@ -21,7 +21,9 @@ def _build_trend_summary(signal_name: str, trend: dict) -> str:
     elif current_90 is not None and previous_90 is not None:
         parts.append(f"Last 90 days: {current_90} event(s) (same 90 days last year: {previous_90}).")
     if quarterly:
-        quarter_chain = " -> ".join(f"{item['quarter']}: {item['count']}" for item in quarterly[-4:])
+        quarter_chain = " -> ".join(
+            f"{item['period']}: {item['value']}" for item in quarterly[-4:]
+        )
         parts.append(f"Quarterly progression: {quarter_chain}.")
     gap = trend.get("baseline_gap", {}).get("gap_pct")
     label = trend.get("baseline_gap", {}).get("percentile_label")

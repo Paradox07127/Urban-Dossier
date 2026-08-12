@@ -29,10 +29,13 @@ import type {
   EvidenceEntry,
   AgentStatus,
   BivariatePresentation,
+  TimelinePresentation,
   PriorityAction,
   RadiusMeters,
   Scores,
 } from './types';
+
+const EMPTY_HOTSPOTS: any[] = [];
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import MethodologyPanel from './components/MethodologyPanel';
@@ -256,6 +259,23 @@ export default function App() {
   const [bivariate, setBivariate] = useState(false);
   const [bivariatePresentation, setBivariatePresentation] =
     useState<BivariatePresentation | null>(null);
+  const [timeline, setTimeline] = useState(false);
+  const [timelinePresentation, setTimelinePresentation] =
+    useState<TimelinePresentation | null>(null);
+  const [timelinePeriod, setTimelinePeriod] = useState<string | null>(null);
+  const [timelinePlaying, setTimelinePlaying] = useState(false);
+
+  useEffect(() => {
+    if (!timeline || !timelinePlaying || !timelinePresentation?.periods.length) return;
+    const periods = timelinePresentation.periods.map((item) => item.period);
+    const timer = window.setInterval(() => {
+      setTimelinePeriod((current) => {
+        const index = Math.max(0, periods.indexOf(current ?? ''));
+        return periods[(index + 1) % periods.length];
+      });
+    }, 900);
+    return () => window.clearInterval(timer);
+  }, [timeline, timelinePlaying, timelinePresentation]);
 
   const reportRef = useRef<HTMLDivElement>(null);
 
@@ -518,6 +538,8 @@ export default function App() {
     clearComparison();
     setActivePriority(null);
     setBivariate(false);
+    setTimeline(false);
+    setTimelinePlaying(false);
     setCenter(NYC_OVERVIEW);
     setZoom(NYC_OVERVIEW_ZOOM);
     setRefreshKey((k) => k + 1);
@@ -573,15 +595,23 @@ export default function App() {
           }
           refreshKey={refreshKey}
           markers={display ? [{ id: 'sel', title: display.title, description: display.description, position: display.position, category: display.category, scores: display.scores, aiSummary: '', evidence: [] }] : []}
-          hotspots={(hotspots as any[]) ?? []}
+          hotspots={(hotspots as any[]) ?? EMPTY_HOTSPOTS}
           isochrone={isochrone}
           comparisonDeltaMap={serverComparison?.delta_map ?? null}
           bivariate={bivariate}
+          timeline={timeline}
+          timelinePeriod={timelinePeriod}
           sandbox={sandbox}
           onZoomChange={setZoom}
           onSandboxAvailable={setSandboxAvailable}
           onColourDomains={setColourDomains}
           onBivariatePresentation={setBivariatePresentation}
+          onTimelinePresentation={(presentation) => {
+            setTimelinePresentation(presentation);
+            if (presentation && !presentation.periods.some((item) => item.period === timelinePeriod)) {
+              setTimelinePeriod(presentation.default_period);
+            }
+          }}
           onMarkerClick={handleMarkerClick}
           onMapClick={handleMapClick}
         />
@@ -595,6 +625,8 @@ export default function App() {
         tag={renderTag}
         onTagChange={(t) => {
           setBivariate(false);
+          setTimeline(false);
+          setTimelinePlaying(false);
           setActivePriority(t === 'general' ? null : t.charAt(0).toUpperCase() + t.slice(1));
           if (t !== 'general' && !selectedTarget) {
             setCenter(NYC_OVERVIEW);
@@ -611,9 +643,26 @@ export default function App() {
           if (enabled) {
             handleGlobalView();
             setSandbox(false);
+            setTimeline(false);
+            setTimelinePlaying(false);
           }
           setBivariate(enabled);
         }}
+        timeline={timeline}
+        timelinePresentation={timelinePresentation}
+        timelinePeriod={timelinePeriod}
+        timelinePlaying={timelinePlaying}
+        onTimelineChange={(enabled) => {
+          if (enabled) {
+            handleGlobalView();
+            setSandbox(false);
+            setBivariate(false);
+          }
+          setTimeline(enabled);
+          setTimelinePlaying(false);
+        }}
+        onTimelinePeriodChange={setTimelinePeriod}
+        onTimelinePlayingChange={setTimelinePlaying}
         onSearch={(q) => { setSearchQuery(q); handleSearch(q); }}
         onResetView={handleGlobalView}
         searchError={error}

@@ -68,7 +68,8 @@ def is_within_days(value: Any, days: int) -> bool:
     parsed = parse_date(value)
     if not parsed:
         return False
-    return (date.today() - parsed).days <= days
+    age_days = (date.today() - parsed).days
+    return 0 <= age_days <= days
 
 
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:

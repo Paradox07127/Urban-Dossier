@@ -51,18 +51,23 @@ def test_trend_chart_uses_real_period_keys_and_omits_missing_values():
         {
             "collision": {
                 "quarterly_series": [
-                    {"quarter": "2025-Q4", "count": 3},
-                    {"quarter": "2026-Q1", "count": None},
-                    {"quarter": "2026-Q2", "count": 5},
+                    {"period": "2025-Q4", "value": 3, "coverage": 0.8},
+                    {"period": "2026-Q1", "value": None, "coverage": 0.7},
+                    {"period": "2026-Q2", "value": 5, "coverage": 0.9},
                 ]
             },
-            "rodent": {"quarterly_series": [{"quarter": "2026-Q2", "count": 2}]},
+            "rodent": {
+                "quarterly_series": [
+                    {"period": "2026-Q2", "value": 2, "coverage": 0.75}
+                ]
+            },
         }
     )
 
     assert chart is not None
-    assert [row["quarter"] for row in _values(chart)] == ["2025-Q4", "2026-Q2", "2026-Q2"]
-    assert chart.spec["encoding"]["x"]["sort"] == ["2025-Q4", "2026-Q1", "2026-Q2"]
+    assert [row["period"] for row in _values(chart)] == ["2025-Q4", "2026-Q2", "2026-Q2"]
+    assert chart.spec["encoding"]["x"]["sort"] == ["2025-Q4", "2026-Q2"]
+    assert _values(chart)[0]["coverage"] == 0.8
     assert "transform" not in chart.spec
 
 
@@ -214,7 +219,11 @@ def test_preview_response_publishes_chart_specs(monkeypatch):
         service,
         "compute_all_trends",
         lambda *_args: {
-            "collision": {"quarterly_series": [{"quarter": "2026-Q2", "count": 4}]}
+            "collision": {
+                "quarterly_series": [
+                    {"period": "2026-Q2", "value": 4, "coverage": 1.0}
+                ]
+            }
         },
     )
     monkeypatch.setattr(service, "detect_multi_signal_patterns", lambda *_args: [])

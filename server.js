@@ -560,6 +560,21 @@ app.get('/api/presentation/bivariate', async (req, res) => {
   }
 });
 
+app.get('/api/timeline', async (req, res) => {
+  const query = new URLSearchParams();
+  if (typeof req.query.signal === 'string') query.set('signal', req.query.signal);
+  if (typeof req.query.limit_periods === 'string') query.set('limit_periods', req.query.limit_periods);
+  const suffix = query.size ? `?${query}` : '';
+  try {
+    sendJsonMaybeGzip(req, res, await backendRequest(`/api/timeline${suffix}`));
+  } catch (error) {
+    if (error.status >= 400 && error.status < 500) {
+      return res.status(error.status).json(error.payload ?? { detail: 'Invalid timeline request' });
+    }
+    sendProxyError(res, 502, 'Python backend timeline lookup failed', { details: error.payload ?? null });
+  }
+});
+
 app.post('/api/overview', async (req, res) => {
   try {
     const payload = await backendRequest('/api/overview', {

@@ -17,7 +17,7 @@ from urban_dossier_backend.presentation import (
 
 def test_quantile_breaks_are_server_owned_and_do_not_invent_tied_classes():
     assert quantile_breaks(list(range(1, 101)), 5) == [20.8, 40.6, 60.4, 80.2]
-    assert quantile_breaks([50] * 20, 5) == [50.0]
+    assert quantile_breaks([50] * 20, 5) == []
 
 
 def test_published_palettes_pass_adjacent_cvd_gate():

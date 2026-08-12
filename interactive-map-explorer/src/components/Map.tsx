@@ -3,7 +3,12 @@ import maplibregl, { GeoJSONSource, Map as MapLibreMap } from 'maplibre-gl';
 import { CLASS_COLORS, classBreaks, classColors, type ScoreDomain } from '../lib/scoreClasses';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Box } from 'lucide-react';
-import type { BivariatePresentation, ComparisonDeltaMap, Location } from '../types';
+import type {
+  BivariatePresentation,
+  ComparisonDeltaMap,
+  Location,
+  TimelinePresentation,
+} from '../types';
 
 type RenderTag = 'general' | 'safety' | 'transit' | 'amenities';
 type Coordinate = [number, number];
@@ -210,6 +215,8 @@ interface MapProps {
   /** Backend-computed B-minus-A geometry and diverging presentation contract. */
   comparisonDeltaMap?: ComparisonDeltaMap | null;
   bivariate?: boolean;
+  timeline?: boolean;
+  timelinePeriod?: string | null;
   /** Sandbox on/off. Owned by App so the rail can drive it. */
   sandbox?: boolean;
   /** Fires once the baked tiles and coastline are both present. */
@@ -219,6 +226,7 @@ interface MapProps {
   onZoomChange?: (zoom: number) => void;
   onColourDomains?: (domains: Record<string, ColourDomain>) => void;
   onBivariatePresentation?: (presentation: BivariatePresentation | null) => void;
+  onTimelinePresentation?: (presentation: TimelinePresentation | null) => void;
   onMarkerClick: (location: Location) => void;
   onMapClick: (lat: number, lng: number) => void;
 }
@@ -271,6 +279,9 @@ const EMPTY_FEATURE_COLLECTION: GeoJSON.FeatureCollection = {
 
 const MAP_STYLE: maplibregl.StyleSpecification = {
   version: 8,
+  state: {
+    timeline_period: { default: '' },
+  },
   sources: {
     openmaptiles: {
       type: 'vector',
@@ -1075,7 +1086,7 @@ async function fetchBuildingTileStatus(): Promise<{
         const breaks = contract.breaks;
         const colors = contract.colors;
         if (
-          !Array.isArray(breaks) || breaks.length < 1 || breaks.length > 4 ||
+          !Array.isArray(breaks) || breaks.length > 4 ||
           !breaks.every((value, index) =>
             typeof value === 'number' && (index === 0 || value > breaks[index - 1])) ||
           !Array.isArray(colors) || colors.length !== breaks.length + 1 ||
@@ -1129,6 +1140,31 @@ async function fetchBivariateGeoJSON(): Promise<GeoJSON.FeatureCollection> {
     return payload?.type === 'FeatureCollection' ? payload : EMPTY_FEATURE_COLLECTION;
   } catch {
     return EMPTY_FEATURE_COLLECTION;
+  }
+}
+
+type TimelineFeatureCollection = GeoJSON.FeatureCollection & {
+  metadata: TimelinePresentation;
+};
+
+async function fetchTimelineGeoJSON(): Promise<TimelineFeatureCollection | null> {
+  try {
+    const response = await fetch('/api/timeline?signal=collision&limit_periods=20');
+    if (!response.ok) return null;
+    const payload = await response.json();
+    const periods = payload?.metadata?.periods;
+    if (
+      payload?.type !== 'FeatureCollection' || !Array.isArray(payload.features) ||
+      !Array.isArray(periods) || periods.length < 2 ||
+      !periods.every((item: unknown) => {
+        const period = item as { period?: unknown; color_property?: unknown; colors?: unknown };
+        return typeof period.period === 'string' &&
+          typeof period.color_property === 'string' && Array.isArray(period.colors);
+      })
+    ) return null;
+    return payload as TimelineFeatureCollection;
+  } catch {
+    return null;
   }
 }
 
@@ -1550,6 +1586,35 @@ function setBivariateOverview(map: MapLibreMap) {
     map.setPaintProperty('hex-overlay-fill', 'fill-color', [
       'coalesce', ['get', 'bivariate_color'], UD_NO_DATA,
     ]);
+  }
+  for (const layerId of ['building-scores-fill', 'building', 'building-3d']) {
+    if (map.getLayer(layerId)) map.setLayoutProperty(layerId, 'visibility', 'none');
+  }
+}
+
+function setTimelineOverview(
+  map: MapLibreMap,
+  presentation: TimelinePresentation,
+  requestedPeriod: string | null | undefined,
+) {
+  const activePeriod = presentation.periods.some((item) => item.period === requestedPeriod)
+    ? requestedPeriod as string
+    : presentation.default_period;
+  map.setGlobalStateProperty('timeline_period', activePeriod);
+  const expression: unknown[] = ['match', ['global-state', 'timeline_period']];
+  for (const period of presentation.periods) {
+    expression.push(
+      period.period,
+      ['coalesce', ['get', period.color_property], presentation.no_data_color],
+    );
+  }
+  expression.push(presentation.no_data_color);
+  if (map.getLayer('hex-overlay-fill')) {
+    map.setPaintProperty(
+      'hex-overlay-fill',
+      'fill-color',
+      expression as unknown as maplibregl.ExpressionSpecification,
+    );
   }
   for (const layerId of ['building-scores-fill', 'building', 'building-3d']) {
     if (map.getLayer(layerId)) map.setLayoutProperty(layerId, 'visibility', 'none');
@@ -2162,11 +2227,14 @@ export default function Map({
   isochrone = null,
   comparisonDeltaMap = null,
   bivariate = false,
+  timeline = false,
+  timelinePeriod = null,
   onZoomChange,
   sandbox = false,
   onSandboxAvailable,
   onColourDomains,
   onBivariatePresentation,
+  onTimelinePresentation,
   onMarkerClick,
   onMapClick,
 }: MapProps) {
@@ -2480,6 +2548,22 @@ export default function Map({
       if (cancelled || !mapRef.current) return;
 
       activeConfigRef.current = config;
+      if (timeline) {
+        const timelineGeoJSON = await fetchTimelineGeoJSON();
+        if (cancelled || !mapRef.current) return;
+        const presentation = timelineGeoJSON?.metadata ?? null;
+        onTimelinePresentation?.(presentation);
+        updateRadiusOverlay(map, null, renderTag);
+        renderHexOverlay(
+          map,
+          timelineGeoJSON ?? EMPTY_FEATURE_COLLECTION,
+          hexOverlayRef,
+        );
+        setGlobalVisualizationMode(map, true, sandboxRef.current);
+        if (presentation) setTimelineOverview(map, presentation, timelinePeriod);
+        return;
+      }
+      onTimelinePresentation?.(null);
       if (bivariate) {
         const bivariateGeoJSON = await fetchBivariateGeoJSON();
         if (cancelled || !mapRef.current) return;
@@ -2533,10 +2617,16 @@ export default function Map({
   }, [
     renderTag,
     bivariate,
+    timeline,
     localRenderTarget ? `${localRenderTarget.center[0]},${localRenderTarget.center[1]},${localRenderTarget.radiusM}` : 'global',
     refreshKey,
     hotspots,
   ]);
+
+  useEffect(() => {
+    if (!timeline || !timelinePeriod || !mapRef.current?.isStyleLoaded()) return;
+    mapRef.current.setGlobalStateProperty('timeline_period', timelinePeriod);
+  }, [timeline, timelinePeriod]);
 
   /* Draw whatever isochrone the agent computed, and frame it once so the
      result is visible without the reader hunting for it. */

@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
-import { Box, Layers, Search, Shield, TramFront, UtensilsCrossed, X } from 'lucide-react';
+import { Box, Layers, Pause, Play, Search, Shield, TramFront, UtensilsCrossed, X } from 'lucide-react';
 import {
   classBreaks,
   classColor,
   classColors,
   type ScoreDomain,
 } from '../lib/scoreClasses';
-import type { BivariatePresentation } from '../types';
+import type { BivariatePresentation, TimelinePresentation } from '../types';
 
 export type RenderTag = 'general' | 'safety' | 'transit' | 'amenities';
 export type ColourDomain = ScoreDomain;
@@ -21,6 +21,13 @@ interface Props {
   bivariate: boolean;
   bivariatePresentation?: BivariatePresentation | null;
   onBivariateChange: (enabled: boolean) => void;
+  timeline: boolean;
+  timelinePresentation?: TimelinePresentation | null;
+  timelinePeriod?: string | null;
+  timelinePlaying: boolean;
+  onTimelineChange: (enabled: boolean) => void;
+  onTimelinePeriodChange: (period: string) => void;
+  onTimelinePlayingChange: (playing: boolean) => void;
   onSearch: (query: string) => void;
   onResetView: () => void;
   searchError?: string | null;
@@ -152,6 +159,13 @@ export default function InstrumentRail({
   bivariate,
   bivariatePresentation,
   onBivariateChange,
+  timeline,
+  timelinePresentation,
+  timelinePeriod,
+  timelinePlaying,
+  onTimelineChange,
+  onTimelinePeriodChange,
+  onTimelinePlayingChange,
   onSearch,
   onResetView,
   searchError,
@@ -258,9 +272,9 @@ export default function InstrumentRail({
                 key={t}
                 type="button"
                 onClick={() => onTagChange(t)}
-                aria-pressed={!bivariate && tag === t}
+                aria-pressed={!bivariate && !timeline && tag === t}
                 className={`flex items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-[13px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${
-                  !bivariate && tag === t
+                  !bivariate && !timeline && tag === t
                     ? 'bg-foreground text-background'
                     : 'text-foreground hover:bg-muted'
                 }`}
@@ -291,13 +305,83 @@ export default function InstrumentRail({
                 Safety × Transit
               </button>
             )}
+            <button
+              type="button"
+              onClick={() => onTimelineChange(!timeline)}
+              aria-pressed={timeline}
+              aria-label="Collision timeline map"
+              className={`mt-1 flex items-center gap-2.5 rounded-md border px-2 py-1.5 text-left text-[13px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${
+                timeline
+                  ? 'border-foreground bg-foreground text-background'
+                  : 'border-border text-foreground hover:bg-muted'
+              }`}
+            >
+              <span className="font-mono text-[10px]">Q→</span>
+              Collisions over time
+            </button>
           </div>
         </div>
 
         {/* The legend sits directly under the lens that produces it, so the
             relationship needs no explaining. */}
         <div className="border-t border-border">
-          {bivariate && bivariatePresentation ? (
+          {timeline && timelinePresentation ? (
+            <div className="p-3" aria-label="Timeline map controls">
+              {(() => {
+                const periods = timelinePresentation.periods;
+                const activeIndex = Math.max(
+                  0,
+                  periods.findIndex((item) => item.period === timelinePeriod),
+                );
+                const active = periods[activeIndex];
+                return (
+                  <>
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <div className="ud-label">{timelinePresentation.label}</div>
+                        <div className="font-mono text-[11px] tabular-nums">
+                          {active?.period ?? timelinePresentation.default_period}
+                          {active && !active.period_complete ? ' · partial' : ''}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => onTimelinePlayingChange(!timelinePlaying)}
+                        aria-label={timelinePlaying ? 'Pause timeline' : 'Play timeline'}
+                        className="rounded border border-border p-1.5 hover:bg-muted"
+                      >
+                        {timelinePlaying ? <Pause size={14} /> : <Play size={14} />}
+                      </button>
+                    </div>
+                    <input
+                      className="mt-3 w-full accent-foreground"
+                      type="range"
+                      min={0}
+                      max={Math.max(0, periods.length - 1)}
+                      value={activeIndex}
+                      aria-label="Timeline quarter"
+                      onChange={(event) => {
+                        onTimelinePlayingChange(false);
+                        onTimelinePeriodChange(periods[Number(event.target.value)].period);
+                      }}
+                    />
+                    <div className="mt-1 flex justify-between font-mono text-[9px] text-muted-foreground">
+                      <span>{periods[0]?.period}</span>
+                      <span>{periods.at(-1)?.period}</span>
+                    </div>
+                    <div className="mt-3 flex h-2 gap-[2px]">
+                      {(active?.colors ?? []).map((color) => (
+                        <span key={color} className="flex-1" style={{ backgroundColor: color }} />
+                      ))}
+                    </div>
+                    <div className="mt-1 font-mono text-[9px] text-muted-foreground/70">
+                      server quantiles · real period key · {timelinePresentation.cell_count} H3 cells
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          ) : bivariate && bivariatePresentation ? (
             <div className="p-3" aria-label="Bivariate map legend">
               <div className="mb-2 flex items-baseline justify-between">
                 <span className="ud-label">Transit →</span>

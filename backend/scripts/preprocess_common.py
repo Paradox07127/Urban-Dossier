@@ -111,7 +111,9 @@ def add_h3(df: pd.DataFrame, lat_col: str = "latitude", lon_col: str = "longitud
 
 def quarter_label(series: pd.Series) -> pd.Series:
     dt = safe_datetime(series)
-    return dt.dt.to_period("Q").astype("string")
+    observed_at = pd.Timestamp.today()
+    valid = dt.ge(pd.Timestamp("2000-01-01")) & dt.le(observed_at)
+    return dt.dt.to_period("Q").astype("string").where(valid)
 
 
 # ----------------------------------------------------------------------------

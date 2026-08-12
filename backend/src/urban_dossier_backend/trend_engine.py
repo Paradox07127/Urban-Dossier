@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from datetime import date
 from typing import Any
+
+from .periods import canonical_quarter, current_quarter, is_consecutive_quarter, quarter_index
 
 
 TREND_SIGNALS = {
@@ -67,18 +68,35 @@ def compute_baseline_gap(current_value: float | int | None, baseline_dist: dict[
 
 
 def compute_persistence(values_by_period: dict[str, Any], threshold: float | int | None = None) -> dict[str, Any]:
-    periods = values_by_period.get("quarterly_values", [])
+    periods = [
+        point for point in _build_quarterly_series(values_by_period)
+        if point["period_complete"]
+    ]
+    result = {
+        "consecutive_above": 0,
+        "method": "consecutive_calendar_quarters_above_threshold",
+        "threshold": threshold,
+        "n_observations": len(periods),
+        "missing_data_policy": "a missing calendar quarter breaks the run",
+    }
     if not periods or threshold is None:
-        return {"consecutive_above": 0}
+        return result
     count = 0
-    for value in reversed(periods):
+    later_period: str | None = None
+    for point in reversed(periods):
+        period = point["period"]
+        value = point["value"]
+        if later_period is not None and not is_consecutive_quarter(period, later_period):
+            break
         if value is None:
             break
         if value > threshold:
             count += 1
+            later_period = period
         else:
             break
-    return {"consecutive_above": count}
+    result["consecutive_above"] = count
+    return result
 
 
 def compute_anomaly(values_by_period: dict[str, Any]) -> dict[str, Any]:
@@ -87,13 +105,28 @@ def compute_anomaly(values_by_period: dict[str, Any]) -> dict[str, Any]:
     Uses z-score over prior quarters. Requires >= 4 quarters of history so the
     baseline is meaningful. The latest quarter is excluded from the baseline.
     """
-    quarterly = values_by_period.get("quarterly_values") or []
-    usable = [v for v in quarterly if v is not None]
+    quarterly = [
+        point for point in _build_quarterly_series(values_by_period)
+        if point["period_complete"]
+    ]
+    usable = [point for point in quarterly if point["value"] is not None]
+    metadata = {
+        "method": "z_score_latest_vs_prior_observed_quarters_population_std",
+        "minimum_observations": 4,
+        "n_observations": len(usable),
+        "missing_data_policy": "listwise exclusion by real period key; partial current quarter excluded",
+    }
     if len(usable) < 4:
-        return {"is_anomaly": False, "z_score": None, "context": "insufficient_history"}
+        return {
+            "is_anomaly": False,
+            "z_score": None,
+            "context": "insufficient_history",
+            **metadata,
+        }
 
-    baseline = usable[:-1]
-    latest = usable[-1]
+    baseline = [point["value"] for point in usable[:-1]]
+    latest_point = usable[-1]
+    latest = latest_point["value"]
 
     mean = sum(baseline) / len(baseline)
     variance = sum((x - mean) ** 2 for x in baseline) / len(baseline)
@@ -105,6 +138,8 @@ def compute_anomaly(values_by_period: dict[str, Any]) -> dict[str, Any]:
             "is_anomaly": is_different,
             "z_score": None,
             "context": f"zero variance baseline ({mean:.1f}), latest={latest}" if is_different else "no_variance",
+            "latest_period": latest_point["period"],
+            **metadata,
         }
 
     z = (latest - mean) / std
@@ -117,7 +152,13 @@ def compute_anomaly(values_by_period: dict[str, Any]) -> dict[str, Any]:
     else:
         context = "within_normal_range"
 
-    return {"is_anomaly": is_anomaly, "z_score": round(z, 2), "context": context}
+    return {
+        "is_anomaly": is_anomaly,
+        "z_score": round(z, 2),
+        "context": context,
+        "latest_period": latest_point["period"],
+        **metadata,
+    }
 
 
 def determine_direction(signal_name: str, trend: dict[str, Any]) -> str:
@@ -136,25 +177,27 @@ def determine_direction(signal_name: str, trend: dict[str, Any]) -> str:
     return "stable"
 
 
-def _quarter_label_for_offset(offset_from_current: int) -> str:
-    today = date.today()
-    current_quarter = ((today.month - 1) // 3) + 1
-    absolute_index = (today.year * 4 + current_quarter - 1) - offset_from_current
-    year = absolute_index // 4
-    quarter = absolute_index % 4 + 1
-    return f"{year}-Q{quarter}"
-
-
 def _build_quarterly_series(values_by_period: dict[str, Any]) -> list[dict[str, Any]]:
-    quarterly_values = list(values_by_period.get("quarterly_values", []) or [])
-    if not quarterly_values:
-        return []
-    count = len(quarterly_values)
-    labels = [_quarter_label_for_offset(offset) for offset in range(count - 1, -1, -1)]
-    return [
-        {"quarter": label, "count": value}
-        for label, value in zip(labels, quarterly_values)
-    ]
+    by_period: dict[str, dict[str, Any]] = {}
+    for raw in values_by_period.get("quarterly_series", []) or []:
+        if not isinstance(raw, dict):
+            continue
+        period = canonical_quarter(raw.get("period"))
+        value = raw.get("value")
+        if period is None or (value is not None and not isinstance(value, (int, float))):
+            continue
+        coverage = raw.get("coverage")
+        by_period[period] = {
+            "period": period,
+            "value": value,
+            "coverage": coverage if isinstance(coverage, (int, float)) else None,
+            "period_complete": (
+                raw.get("period_complete")
+                if isinstance(raw.get("period_complete"), bool)
+                else period != current_quarter()
+            ),
+        }
+    return [by_period[period] for period in sorted(by_period, key=quarter_index)]
 
 
 def compute_all_trends(current_state: dict[str, Any], historical_queries: dict[str, Any], baselines: dict[str, Any]) -> dict[str, Any]:
@@ -175,6 +218,14 @@ def compute_all_trends(current_state: dict[str, Any], historical_queries: dict[s
                 "same_90d_last_year": values.get("same_90d_last_year"),
             },
             "quarterly_series": _build_quarterly_series(values),
+            "quarterly_methodology": {
+                "period_key": "YYYY-Qn",
+                "alignment": "calendar key",
+                "missing_data_policy": (
+                    "missing periods remain missing; no positional padding; "
+                    "partial current quarter excluded from statistics"
+                ),
+            },
         }
         trend["direction"] = determine_direction(signal_name, trend)
         trends[signal_name] = trend

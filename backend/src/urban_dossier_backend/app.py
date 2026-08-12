@@ -35,6 +35,7 @@ SKILL_PATH = SKILLS_ROOT / "urban_dossier_analyst"
 logger = logging.getLogger(__name__)
 from .metrics import METRICS_BY_ID, metric_to_dict, registry_to_dict
 from .presentation import bivariate_geojson, presentation_contract
+from .timeline import timeline_geojson
 from .schemas import DetailPreviewRequest, DetailRequest, OverviewRequest, WatchlistRequest
 from .service import (
     analyze_point,
@@ -165,6 +166,14 @@ def presentation_bivariate(
 ) -> dict:
     try:
         return bivariate_geojson(x_category, y_category)
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+
+@app.get("/api/timeline")
+def timeline(signal: str = "collision", limit_periods: int = 20) -> dict:
+    try:
+        return timeline_geojson(signal, limit_periods)
     except ValueError as exc:
         return JSONResponse(status_code=422, content={"detail": str(exc)})
 

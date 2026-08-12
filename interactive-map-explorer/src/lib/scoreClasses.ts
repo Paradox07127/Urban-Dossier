@@ -42,7 +42,7 @@ export interface ScoreDomain {
 /** Read server-published edges; fixed bands are only a no-contract fallback. */
 export function classBreaks(domain: ScoreDomain): ClassBreaks {
   if (
-    domain.breaks && domain.breaks.length >= 1 && domain.breaks.length <= 4 &&
+    domain.breaks && domain.breaks.length <= 4 &&
     domain.breaks.every((value, index, values) =>
       Number.isFinite(value) && (index === 0 || value > values[index - 1]))
   ) return domain.breaks;

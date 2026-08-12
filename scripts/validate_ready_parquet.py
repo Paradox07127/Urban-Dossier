@@ -81,6 +81,7 @@ def validate(root: Path, compression: str, max_row_group_rows: int) -> dict[str,
         parquet = pq.ParquetFile(path)
         metadata = parquet.metadata
         columns = set(parquet.schema_arrow.names)
+        period_min = period_max = None
 
         for group_index in range(metadata.num_row_groups):
             group = metadata.row_group(group_index)
@@ -125,6 +126,22 @@ def validate(root: Path, compression: str, max_row_group_rows: int) -> dict[str,
             if null_h3:
                 errors.append(f"{null_h3} h3_r9 values are null or empty")
 
+        if "quarter" in columns:
+            now = datetime.now(timezone.utc)
+            current_quarter = f"{now.year:04d}Q{((now.month - 1) // 3) + 1}"
+            period_min, period_max, invalid_periods = connection.execute(
+                f"SELECT min(quarter), max(quarter), count(*) FILTER ("
+                f"WHERE quarter IS NULL "
+                f"OR NOT regexp_full_match(cast(quarter AS VARCHAR), '[0-9]{{4}}Q[1-4]') "
+                f"OR try_cast(substr(cast(quarter AS VARCHAR), 1, 4) AS INTEGER) < 2000 "
+                f"OR cast(quarter AS VARCHAR) > '{current_quarter}') "
+                f"FROM read_parquet('{escaped}')"
+            ).fetchone()
+            if invalid_periods:
+                errors.append(
+                    f"{invalid_periods} quarter rows are malformed, pre-2000, or future-dated"
+                )
+
         files.append(
             {
                 "path": relative,
@@ -134,6 +151,8 @@ def validate(root: Path, compression: str, max_row_group_rows: int) -> dict[str,
                 "row_groups": metadata.num_row_groups,
                 "score_min": minimum,
                 "score_max": maximum,
+                "period_min": period_min,
+                "period_max": period_max,
                 "status": "ok" if not errors else "invalid",
                 "errors": errors,
             }

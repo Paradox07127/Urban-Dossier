@@ -139,6 +139,13 @@ flowchart LR
 
 ### P0-03 修复趋势与 Pattern 时间对齐
 
+> Implemented 2026-08-12 on `worktree-expansion-platform`: real Gold quarter
+> keys now survive provider → trend → chart/evidence; Pattern correlation uses
+> a period-key inner join; partial current quarters are visible but excluded
+> from statistics; preprocessing and ready-layer validation reject malformed,
+> pre-2000, and future periods. Executable details are recorded in
+> `docs/methodology/period-alignment-and-timeline.md`.
+
 当前季度标签按执行当天倒推，相关序列按数组右端对齐，而不是按真实季度 key 对齐。
 
 交付物：

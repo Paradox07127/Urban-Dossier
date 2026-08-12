@@ -70,7 +70,12 @@ def quantile_breaks(values: list[float], classes: int) -> list[float]:
     if not ordered:
         return []
     raw = [_percentile(ordered, index / classes) for index in range(1, classes)]
-    return [round(value, 2) for index, value in enumerate(raw) if index == 0 or value > raw[index - 1]]
+    minimum = ordered[0]
+    return [
+        round(value, 2)
+        for index, value in enumerate(raw)
+        if value > minimum and (index == 0 or value > raw[index - 1])
+    ]
 
 
 def _srgb_to_lab(color: str, matrix: tuple[tuple[float, ...], ...]) -> tuple[float, float, float]:

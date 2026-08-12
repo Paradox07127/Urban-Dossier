@@ -12,6 +12,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from .metrics import METHODOLOGY_VERSION
+from .periods import canonical_quarter, quarter_index
 from .presentation import score_color
 
 
@@ -155,31 +156,33 @@ def score_composition_chart(
 
 
 def trend_chart(trends: dict[str, Any]) -> ChartSpec | None:
-    code_ref = "urban_dossier_backend.chart_specs:trend_chart@1"
+    code_ref = "urban_dossier_backend.chart_specs:trend_chart@2"
     values = []
-    quarter_order: list[str] = []
+    periods: set[str] = set()
     for signal in TREND_ORDER:
         series = (trends.get(signal) or {}).get("quarterly_series") or []
         for point in series[-20:]:
-            quarter = point.get("quarter")
-            count = point.get("count")
-            if not isinstance(quarter, str):
+            period = canonical_quarter(point.get("period"))
+            value = point.get("value")
+            if period is None:
                 continue
-            if quarter not in quarter_order:
-                quarter_order.append(quarter)
-            if not isinstance(count, (int, float)):
+            if not isinstance(value, (int, float)):
                 continue
+            periods.add(period)
             values.append(
                 {
                     "signal": signal,
                     "signal_label": TREND_LABELS[signal],
-                    "quarter": quarter,
-                    "count": round(float(count), 2),
+                    "period": period,
+                    "value": round(float(value), 2),
+                    "coverage": point.get("coverage"),
+                    "period_complete": point.get("period_complete", True),
                 }
             )
     if not values:
         return None
 
+    period_order = sorted(periods, key=quarter_index)
     spec = _base_spec(code_ref, values)
     spec.update(
         {
@@ -189,13 +192,13 @@ def trend_chart(trends: dict[str, Any]) -> ChartSpec | None:
             "mark": {"type": "line", "point": {"filled": True, "size": 24}, "strokeWidth": 1.5},
             "encoding": {
                 "x": {
-                    "field": "quarter",
+                    "field": "period",
                     "type": "ordinal",
-                    "sort": quarter_order,
+                    "sort": period_order,
                     "axis": {"title": None, "labelAngle": -35},
                 },
                 "y": {
-                    "field": "count",
+                    "field": "value",
                     "type": "quantitative",
                     "axis": {"title": "Observed count"},
                 },
@@ -207,8 +210,10 @@ def trend_chart(trends: dict[str, Any]) -> ChartSpec | None:
                 },
                 "tooltip": [
                     {"field": "signal_label", "type": "nominal", "title": "Signal"},
-                    {"field": "quarter", "type": "ordinal", "title": "Quarter"},
-                    {"field": "count", "type": "quantitative", "title": "Count"},
+                    {"field": "period", "type": "ordinal", "title": "Quarter"},
+                    {"field": "value", "type": "quantitative", "title": "Count"},
+                    {"field": "coverage", "type": "quantitative", "title": "Spatial coverage"},
+                    {"field": "period_complete", "type": "nominal", "title": "Complete quarter"},
                 ],
             },
         }

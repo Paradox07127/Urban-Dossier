@@ -32,6 +32,8 @@ from typing import Any, Iterable
 
 from scipy import stats  # type: ignore[import-untyped]
 
+from .periods import canonical_quarter, quarter_index
+
 logger = logging.getLogger(__name__)
 
 
@@ -68,28 +70,31 @@ _VLLM_TIMEOUT_SECONDS = float(os.getenv("URBAN_DOSSIER_LLM_TIMEOUT", "8"))
 # ---------------------------------------------------------------------------
 
 
-def _extract_signal_series(trends: dict[str, Any]) -> dict[str, list[float]]:
+def _extract_signal_series(trends: dict[str, Any]) -> dict[str, dict[str, float]]:
     """Pull a comparable numeric series for each signal from trends.
 
     The trend engine emits a ``quarterly_series`` list of dicts with a
-    ``count`` key per quarter. That series is the most reliable cross-signal
-    payload because it has consistent length when the upstream data is
-    available. Signals without enough history are dropped here.
+    ``period`` and ``value`` keys. Each signal remains keyed by its real
+    calendar quarter so missing observations cannot shift two arrays into a
+    false pairing. Signals without enough valid history are dropped here.
     """
-    series_by_signal: dict[str, list[float]] = {}
+    series_by_signal: dict[str, dict[str, float]] = {}
     for signal_name, trend in (trends or {}).items():
         if not isinstance(trend, dict):
             continue
         quarterly = trend.get("quarterly_series") or []
-        values: list[float] = []
+        values: dict[str, float] = {}
         for entry in quarterly:
             if not isinstance(entry, dict):
                 continue
-            value = entry.get("count")
-            if value is None:
+            if entry.get("period_complete") is False:
+                continue
+            period = canonical_quarter(entry.get("period"))
+            value = entry.get("value")
+            if period is None or value is None:
                 continue
             try:
-                values.append(float(value))
+                values[period] = float(value)
             except (TypeError, ValueError):
                 continue
         if len(values) >= _MIN_OBS:
@@ -97,13 +102,19 @@ def _extract_signal_series(trends: dict[str, Any]) -> dict[str, list[float]]:
     return series_by_signal
 
 
-def _aligned_pair(a: list[float], b: list[float]) -> tuple[list[float], list[float]]:
-    """Trim two series from the right so they share the most recent N points."""
-    n = min(len(a), len(b))
-    return a[-n:], b[-n:]
+def _aligned_pair(
+    a: dict[str, float],
+    b: dict[str, float],
+) -> tuple[list[float], list[float], list[str]]:
+    """Inner join two series by canonical period key."""
+
+    periods = sorted(set(a) & set(b), key=quarter_index)
+    return [a[period] for period in periods], [b[period] for period in periods], periods
 
 
-def _layer1_correlations(series_by_signal: dict[str, list[float]]) -> list[dict[str, Any]]:
+def _layer1_correlations(
+    series_by_signal: dict[str, dict[str, float]],
+) -> list[dict[str, Any]]:
     """Compute Spearman correlations across all signal pairs with Bonferroni."""
     signals = sorted(series_by_signal.keys())
     pairs = list(combinations(signals, 2))
@@ -114,7 +125,7 @@ def _layer1_correlations(series_by_signal: dict[str, list[float]]) -> list[dict[
 
     significant: list[dict[str, Any]] = []
     for sig_a, sig_b in pairs:
-        a, b = _aligned_pair(series_by_signal[sig_a], series_by_signal[sig_b])
+        a, b, periods = _aligned_pair(series_by_signal[sig_a], series_by_signal[sig_b])
         if len(a) < _MIN_OBS:
             continue
         try:
@@ -135,6 +146,14 @@ def _layer1_correlations(series_by_signal: dict[str, list[float]]) -> list[dict[
                     "p_value": p_value,
                     "n_observations": len(a),
                     "effective_alpha": effective_alpha,
+                    "method": "spearman_rank_bonferroni",
+                    "alignment": "period_key_inner_join",
+                    "missing_data_policy": (
+                        "pairwise complete calendar quarters; partial current quarter excluded"
+                    ),
+                    "minimum_observations": _MIN_OBS,
+                    "period_start": periods[0],
+                    "period_end": periods[-1],
                 }
             )
     return significant
@@ -305,6 +324,12 @@ def _assemble_pattern(pair: dict[str, Any], llm: dict[str, Any] | None) -> dict[
         "severity": severity,
         "correlation_coefficient": round(pair["rho"], 4),
         "p_value": float(pair["p_value"]),
+        "n_observations": pair["n_observations"],
+        "correlation_method": pair["method"],
+        "period_alignment": pair["alignment"],
+        "missing_data_policy": pair["missing_data_policy"],
+        "period_start": pair["period_start"],
+        "period_end": pair["period_end"],
         "llm_confidence": confidence,
     }
 
@@ -332,9 +357,9 @@ def detect_multi_signal_patterns(current_state: dict, trends: dict) -> list[dict
     The output contract preserves v1's ``pattern_id``, ``title``, ``summary``,
     ``evidence_ids`` and ``severity`` fields so downstream consumers
     (service.py, evidence.py, report.py) keep working unchanged. Three new
-    fields are added: ``correlation_coefficient``, ``p_value`` and
-    ``llm_confidence`` (1 if the LLM successfully named the pattern, 0 if a
-    fallback title was used).
+    fields disclose the correlation coefficient, p-value, sample size,
+    period-key alignment and missing-data policy. ``llm_confidence`` is 1 if
+    the LLM successfully named the pattern and 0 if a fallback title was used.
     """
     series_by_signal = _extract_signal_series(trends)
     if len(series_by_signal) < 2:

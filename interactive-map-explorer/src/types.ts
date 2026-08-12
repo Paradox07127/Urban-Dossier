@@ -178,6 +178,40 @@ export interface BivariatePresentation {
   };
 }
 
+export interface TimelinePeriod {
+  period: string;
+  period_complete: boolean;
+  value_property: string;
+  color_property: string;
+  breaks: number[];
+  colors: string[];
+  classification: string;
+  requested_classes: number;
+  effective_classes: number;
+  population_n: number;
+  total_value: number;
+}
+
+export interface TimelinePresentation {
+  schema_version: string;
+  code_ref: string;
+  methodology_version: string;
+  signal: string;
+  label: string;
+  available: boolean;
+  artifact_version: string;
+  periods: TimelinePeriod[];
+  default_period: string;
+  population: string;
+  cell_count: number;
+  no_data_color: string;
+  animation: {
+    state_property: string;
+    lookup: string;
+    tick_mutation: string;
+  };
+}
+
 export interface DetailResponse extends Omit<DetailPreviewResponse, 'mode' | 'preview_ready'> {
   mode: 'detail';
   report_summary: string;
