@@ -6,6 +6,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 from .categories import CATEGORY_CONFIG, DEFAULT_PRIORITY_ORDER, signal_to_category_map
+from .chart_specs import compare_scores_chart, detail_chart_specs
 from .config import URBAN_DOSSIER_DATA_MODE, PRIORITY_DECAY
 from .evidence import build_evidence, extract_why_now, verify_priority_actions
 from .pattern_detector import detect_multi_signal_patterns
@@ -197,6 +198,7 @@ def _build_detail_payload(
         logger.warning("Hotspot detection failed (non-fatal): %s", exc)
 
     detail_items["hotspots"] = hotspots
+    chart_specs = detail_chart_specs(scores, score_coverage, trends)
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -217,6 +219,7 @@ def _build_detail_payload(
         "evidence_table": evidence_table,
         "data_gaps": point_payload.get("data_gaps", []),
         "scores": scores,
+        "chart_specs": chart_specs,
         # How much of each category's intended evidence base was actually
         # present. Sits beside `scores` rather than inside it so the score
         # contract is unchanged, and so a consumer that ignores coverage keeps
@@ -372,6 +375,7 @@ def run_watchlist(
             }
         )
     items.sort(key=lambda item: (item["top_priority_score"], item["priority_count"]), reverse=True)
+
     return {
         "schema_version": SCHEMA_VERSION,
         "mode": "watchlist",
@@ -436,12 +440,15 @@ def compare_points(
             continue
         deltas[category] = round(float(value_b) - float(value_a), 2)
 
+    compare_chart = compare_scores_chart(scores_a, scores_b, deltas)
+
     return {
         "schema_version": SCHEMA_VERSION,
         "mode": "compare",
         "point_a": payload_a,
         "point_b": payload_b,
         "deltas": deltas,
+        "chart_specs": {compare_chart.chart_id: compare_chart.model_dump()},
         "radius_m": radius_m,
         "priority_order": order,
     }

@@ -10,6 +10,15 @@ export interface Scores {
   building?: number | null;
 }
 
+export interface ChartSpec {
+  schema_version: '1.0';
+  chart_id: string;
+  title: string;
+  code_ref: string;
+  methodology_version: string;
+  spec: Record<string, unknown>;
+}
+
 export interface EvidenceEntry {
   evidence_id: string;
   source: string;
@@ -83,6 +92,7 @@ export interface DetailPreviewResponse {
   evidence_table: EvidenceEntry[];
   data_gaps: string[];
   scores: Scores;
+  chart_specs?: Record<string, ChartSpec>;
   // How much of each category's intended evidence base produced a value.
   score_coverage?: Record<string, ScoreCoverage>;
   // 95% intervals from the offline sensitivity analysis, at cell grain.

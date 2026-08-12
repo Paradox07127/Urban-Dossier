@@ -35,6 +35,8 @@ import type {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import MethodologyPanel from './components/MethodologyPanel';
+import VegaChart from './components/VegaChart';
+import { useComparison } from './features/compare/useComparison';
 
 // --- Constants ---
 
@@ -55,18 +57,6 @@ const PRIORITY_ICONS: Record<string, React.ComponentType<{ className?: string }>
 const RADIUS_OPTIONS: RadiusMeters[] = [200, 500, 1000];
 
 // --- Utils ---
-interface CompareResponse {
-  point_a: DetailResponse;
-  point_b: DetailResponse;
-  deltas: Record<string, number | null>;
-}
-
-function samePoint(
-  a: DetailPreviewResponse['target'],
-  b: DetailPreviewResponse['target'],
-): boolean {
-  return a.latitude === b.latitude && a.longitude === b.longitude;
-}
 
 function formatScore(score: number | null | undefined): string {
   return typeof score === 'number' && !Number.isNaN(score) ? String(Math.round(score)) : '--';
@@ -232,7 +222,6 @@ export default function App() {
   const [center, setCenter] = useState<[number, number]>(NYC_OVERVIEW);
   const [zoom, setZoom] = useState(NYC_OVERVIEW_ZOOM);
   const [selectedTarget, setSelectedTarget] = useState<SelectedTarget | null>(null);
-  const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [priorities, setPriorities] = useState(['Amenities', 'Transit', 'Safety']);
   const [activePriority, setActivePriority] = useState<string | null>(null);
@@ -243,16 +232,6 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [reportLoading, setReportLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Compare mode
-  const [pinnedPreview, setPinnedPreview] = useState<DetailPreviewResponse | null>(null);
-  // Deltas for the compare strip come from /api/compare-points, per
-  // EXPANSION_PLAN 2.3: comparisons are backend facts, not frontend
-  // arithmetic. The subtraction looks identical today; the rule exists so
-  // that when deltas grow uncertainty bands or become maps, there is one
-  // place computing them. null = not loaded or failed -> no delta chips.
-  const [serverComparison, setServerComparison] = useState<CompareResponse | null>(null);
-
-  const [pinnedTitle, setPinnedTitle] = useState<string>('');
   const [panelExpanded, setPanelExpanded] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
@@ -282,34 +261,14 @@ export default function App() {
     [preview, selectedTarget],
   );
   const priorityOrder = useMemo(() => priorityOrderKey(priorities), [priorities]);
-  useEffect(() => {
-    setServerComparison(null);
-    const a = pinnedPreview?.target;
-    const b = preview?.target;
-    if (!a || !b || samePoint(a, b)) return;
-
-    const ac = new AbortController();
-    fetch('/api/compare-points', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal: ac.signal,
-      body: JSON.stringify({
-        point_a: { latitude: a.latitude, longitude: a.longitude },
-        point_b: { latitude: b.latitude, longitude: b.longitude },
-        radius_m: selectedRadiusM,
-        priority_order: priorityOrder,
-        time_window_days: 365,
-      }),
-    })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((data: CompareResponse) => {
-        if (!ac.signal.aborted) setServerComparison(data);
-      })
-      .catch(() => {
-        if (!ac.signal.aborted) setServerComparison(null);
-      });
-    return () => ac.abort();
-  }, [pinnedPreview, preview, selectedRadiusM, priorityOrder]);
+  const {
+    pinnedPreview,
+    pinnedTitle,
+    serverComparison,
+    comparisonActive,
+    pin: pinComparison,
+    clear: clearComparison,
+  } = useComparison(preview, selectedRadiusM, priorityOrder);
 
   // Zoom ref to avoid stale closure in onMapClick
   const zoomRef = useRef(zoom);
@@ -461,7 +420,6 @@ export default function App() {
     setCenter(pos);
     setZoom(15);
     setSelectedTarget({ title: label, position: pos, category: 'Search Result' });
-    setIsSearchOpen(false);
     setSearchQuery('');
   };
 
@@ -553,8 +511,7 @@ export default function App() {
 
   const handleGlobalView = () => {
     handleClose();
-    setPinnedPreview(null);
-    setPinnedTitle('');
+    clearComparison();
     setActivePriority(null);
     setCenter(NYC_OVERVIEW);
     setZoom(NYC_OVERVIEW_ZOOM);
@@ -569,7 +526,6 @@ export default function App() {
   // Extract hidden data for Neighborhood Insights
   const enrichedContext = preview?.enriched_context as Record<string, any> | undefined;
   const currentState = preview?.current_state as Record<string, any> | undefined;
-  const trends = preview?.trends as Record<string, any> | undefined;
   const baselines = preview?.baselines as Record<string, any> | undefined;
   const whyNow = preview?.why_now as Array<{ signal: string; trend_type: string }> | undefined;
   const hotspots = preview?.detail_items?.hotspots as Array<any> | undefined;
@@ -725,12 +681,12 @@ export default function App() {
                 <button
                   onClick={() => {
                     if (preview) {
-                      setPinnedPreview(preview);
-                      setPinnedTitle(display?.title || 'Pinned');
+                      pinComparison(preview, display?.title || 'Pinned');
                     }
                   }}
                   className={`p-2 hover:bg-muted rounded-md ${pinnedPreview ? 'text-primary' : ''}`}
                   title="Pin for compare"
+                  aria-label="Pin current location for comparison"
                 >
                   <Pin className="w-4 h-4" />
                 </button>
@@ -780,11 +736,11 @@ export default function App() {
 
               <div className="p-5 space-y-5">
                 {/* Compare bar */}
-                {pinnedPreview && preview && !samePoint(pinnedPreview.target, preview.target) && (
+                {pinnedPreview && preview && comparisonActive && (
                   <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 space-y-3">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-semibold uppercase tracking-wider text-primary">Compare</span>
-                      <button onClick={() => setPinnedPreview(null)} className="text-xs text-muted-foreground hover:text-foreground">Clear pin</button>
+                      <button onClick={clearComparison} className="text-xs text-muted-foreground hover:text-foreground">Clear pin</button>
                     </div>
                     <div className="grid grid-cols-3 gap-2 text-center text-xs">
                       <div className="font-medium text-muted-foreground truncate" title={pinnedTitle}>{pinnedTitle}</div>
@@ -821,6 +777,9 @@ export default function App() {
                         </div>
                       );
                     })}
+                    {serverComparison?.chart_specs?.compare_scores && (
+                      <VegaChart chart={serverComparison.chart_specs.compare_scores} />
+                    )}
                   </div>
                 )}
 
@@ -851,6 +810,10 @@ export default function App() {
                     ))}
                   </div>
                 </div>
+
+                {preview?.chart_specs?.score_composition && (
+                  <VegaChart chart={preview.chart_specs.score_composition} />
+                )}
                 {/* Score cards — 2x2 grid */}
                 <div className="grid grid-cols-2 gap-3">
                   {/* Overall score - spans full width */}
@@ -1073,47 +1036,8 @@ export default function App() {
                       </div>
                     )}
 
-                    {/* Trend sparklines — collision, rodent, violations */}
-                    {trends && Object.keys(trends).length > 0 && (
-                      <div className="space-y-2">
-                        {(['collision', 'rodent', 'housing_violations'] as const).map((key) => {
-                          const t = trends[key] as any;
-                          if (!t?.raw_windows) return null;
-                          const last30 = t.raw_windows.last_30d ?? 0;
-                          const prev30 = t.raw_windows.prev_30d ?? 0;
-                          const delta = last30 - prev30;
-                          const arrow = delta > 0 ? '\u2191' : delta < 0 ? '\u2193' : '\u2192';
-                          const color = delta > 0 ? 'text-red-600' : delta < 0 ? 'text-green-600' : 'text-muted-foreground';
-                          const label = key === 'housing_violations' ? 'Violations' : key.charAt(0).toUpperCase() + key.slice(1) + 's';
-                          // Sparkline from quarterly_series
-                          const qs = (t.quarterly_series as Array<{ quarter: string; count: number }>) ?? [];
-                          const recent = qs.slice(-20);
-                          let sparkSvg: React.ReactNode = null;
-                          if (recent.length >= 2) {
-                            const vals = recent.map((q) => q.count);
-                            const maxV = Math.max(...vals, 1);
-                            const minV = Math.min(...vals, 0);
-                            const range = maxV - minV || 1;
-                            const w = 120, h = 28;
-                            const pts = vals.map((v, i) => `${(i / (vals.length - 1)) * w},${h - ((v - minV) / range) * (h - 4) - 2}`).join(' ');
-                            const strokeColor = delta > 0 ? '#dc2626' : delta < 0 ? '#16a34a' : '#6b7280';
-                            sparkSvg = (
-                              <svg width={w} height={h} className="flex-shrink-0">
-                                <polyline points={pts} fill="none" stroke={strokeColor} strokeWidth="1.5" strokeLinejoin="round" />
-                              </svg>
-                            );
-                          }
-                          return (
-                            <div key={key} className="flex items-center gap-2 px-1">
-                              <span className="text-xs text-muted-foreground w-20 flex-shrink-0">{label}</span>
-                              {sparkSvg}
-                              <span className={`text-xs font-mono font-semibold ml-auto ${color}`}>
-                                {last30} {arrow}
-                              </span>
-                            </div>
-                          );
-                        })}
-                      </div>
+                    {preview?.chart_specs?.recent_trends && (
+                      <VegaChart chart={preview.chart_specs.recent_trends} />
                     )}
                   </div>
                 )}

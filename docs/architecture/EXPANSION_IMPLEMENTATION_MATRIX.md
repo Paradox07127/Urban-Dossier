@@ -36,9 +36,9 @@ must be updated in the same commit that changes an item's status.
 
 | Item | Status | Current evidence | Missing proof / next gate |
 | --- | --- | --- | --- |
-| 2.1 ChartSpec + VegaChart | not started | No Vega dependency or ChartSpec schema | Split analysis state from `App.tsx`; deterministic backend spec with `code_ref`; offline renderer |
-| 2.2 Rich score cards | partial | Hand-built histogram, uncertainty band and sparklines | Render distribution marker, composition and trends through ChartSpec |
-| 2.3 Delta map + compare workbench | partial | Backend owns point deltas; compare bar consumes one comparison response | No spatial delta layer or compare charts |
+| 2.1 ChartSpec + VegaChart | done | Versioned backend ChartSpec carries `code_ref` and methodology; local Vega bundle compiles all specs; Chromium smoke renders SVG with zero external requests; Compare state moved to a feature hook | Keep spec values backend-owned and add every new chart to the offline smoke path |
+| 2.2 Rich score cards | partial | Score composition and quarter-keyed trends render through ChartSpec; point score and sensitivity range remain visible | Add city distribution histogram with a “you are here” marker and migrate the sensitivity range into the chart contract |
+| 2.3 Delta map + compare workbench | partial | Backend owns point deltas; compare feature state and grouped ChartSpec consume one comparison response | Add spatial delta layer and diverging server-owned presentation contract |
 | 2.4 Server breaks/colors + bivariate | not started | Building domains are server-published; overview uses fixed bands | General class-break service, palette contract, color-vision checks, 3×3 bivariate map |
 | 2.5 Timeline | not started | Quarterly data exists | Period-key API contract and MapLibre global-state animation |
 | 2.6 Offline HTML export | not started | Existing report templates are not the required Vega self-contained export | Inline data, runtime, method version and generated timestamp |
