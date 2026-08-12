@@ -25,6 +25,7 @@ dist/
 .playwright-cli/
 playwright-report/
 test-results/
+evals/results/
 
 # Generated/downloaded datasets, map caches, and runtime output
 # data/ includes ready Parquet, official boundary downloads, and overview cache.

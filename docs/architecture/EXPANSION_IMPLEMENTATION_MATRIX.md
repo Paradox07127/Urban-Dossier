@@ -61,7 +61,7 @@ must be updated in the same commit that changes an item's status.
 
 | Item | Status | Current evidence | Missing proof / next gate |
 | --- | --- | --- | --- |
-| 4.1 Fixed business evaluation set | not started | Unit tests are not a model/business trajectory benchmark | Versioned 20–30 case corpus, expected tools/evidence, replay runner |
+| 4.1 Fixed business evaluation set | done | Versioned 24-case corpus covers four business intents; order-aware tool/evidence scorer supports live collection and deterministic JSONL replay, with corpus hash in each report | Run the fixed corpus for every 4.2/4.3 model configuration and retain result artifacts |
 | 4.2 FP8/BF16 KV A/B | not started | None | Run on 4.1 with paired quality analysis |
 | 4.3 Three-model benchmark | not started | Planning estimates only | Measured tool success, P95, throughput and memory |
 | 4.4 Qwen3-VL pilot | not started | None | Co-residency and map screenshot task set |
@@ -88,4 +88,3 @@ An item can move to **done** only when all applicable evidence exists:
 4. Frontend presentation of errors and missingness.
 5. End-to-end runtime evidence, not only a unit test.
 6. Documentation and this matrix updated in the same commit.
-
