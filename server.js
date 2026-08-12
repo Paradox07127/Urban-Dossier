@@ -668,8 +668,36 @@ app.get('/api/render/global', async (req, res) => {
 });
 
 // ── Disk-backed response cache for slow backend queries ──
+//
+// Versioned by the backend's methodology version, which this proxy learns
+// from /api/metrics at first use. The cache used to key on coordinates alone
+// with no version and no expiry, so a payload written under one methodology
+// was served forever under every later one -- after the 3.9.0 deploy it was
+// still answering with 3.7.8 analyses that lacked score_uncertainty, and
+// nothing looked wrong. Payloads cached before the version reaches us are
+// simply not read: an unversioned entry is exactly the trap being removed.
+// Files from other versions are swept when the version is learned.
 const CACHE_DIR = path.join(__dirname, 'data', 'cache', 'api');
 try { fs.mkdirSync(CACHE_DIR, { recursive: true }); } catch {}
+
+let cacheVersion = null;
+async function ensureCacheVersion() {
+  if (cacheVersion) return cacheVersion;
+  try {
+    const registry = await backendRequest('/api/metrics');
+    if (registry?.methodology_version) {
+      cacheVersion = String(registry.methodology_version).replace(/[^0-9A-Za-z.-]/g, '');
+      for (const file of fs.readdirSync(CACHE_DIR)) {
+        if (!file.startsWith(`v${cacheVersion}_`)) {
+          try { fs.unlinkSync(path.join(CACHE_DIR, file)); } catch {}
+        }
+      }
+    }
+  } catch {
+    // Backend not up yet; stay uncached rather than serve stale.
+  }
+  return cacheVersion;
+}
 
 function previewCacheKey(body) {
   const lat = Number(body?.latitude ?? 0).toFixed(4);
@@ -679,31 +707,35 @@ function previewCacheKey(body) {
   return `${lat}_${lng}_${r}_${p.replace(/,/g, '-')}`;
 }
 
-function cacheGet(prefix, key) {
+async function cacheGet(prefix, key) {
+  const version = await ensureCacheVersion();
+  if (!version) return null;
   try {
-    const fp = path.join(CACHE_DIR, `${prefix}_${key}.json`);
+    const fp = path.join(CACHE_DIR, `v${version}_${prefix}_${key}.json`);
     if (!fs.existsSync(fp)) return null;
     return JSON.parse(fs.readFileSync(fp, 'utf8'));
   } catch { return null; }
 }
 
-function cacheSet(prefix, key, data) {
+async function cacheSet(prefix, key, data) {
+  const version = await ensureCacheVersion();
+  if (!version) return;
   try {
-    const fp = path.join(CACHE_DIR, `${prefix}_${key}.json`);
+    const fp = path.join(CACHE_DIR, `v${version}_${prefix}_${key}.json`);
     fs.writeFileSync(fp, JSON.stringify(data));
   } catch {}
 }
 
 app.post('/api/detail/preview', async (req, res) => {
   const key = previewCacheKey(req.body);
-  const cached = cacheGet('preview', key);
+  const cached = await cacheGet('preview', key);
   if (cached) return res.json(cached);
   try {
     const payload = await backendRequest('/api/detail/preview', {
       method: 'POST',
       body: req.body,
     });
-    cacheSet('preview', key, payload);
+    await cacheSet('preview', key, payload);
     res.json(payload);
   } catch (error) {
     sendProxyError(res, 502, 'Detail preview proxy failed', { details: error.payload ?? null });
@@ -712,14 +744,14 @@ app.post('/api/detail/preview', async (req, res) => {
 
 app.post('/api/analyze-point', async (req, res) => {
   const key = previewCacheKey(req.body) + '_' + (req.body?.report_mode ?? 'individual');
-  const cached = cacheGet('report', key);
+  const cached = await cacheGet('report', key);
   if (cached) return res.json(cached);
   try {
     const payload = await backendRequest('/api/analyze-point', {
       method: 'POST',
       body: req.body,
     });
-    cacheSet('report', key, payload);
+    await cacheSet('report', key, payload);
     res.json(payload);
   } catch (error) {
     sendProxyError(res, 502, 'Detail report proxy failed', { details: error.payload ?? null });
@@ -1063,7 +1095,20 @@ app.get('/global-render', (req, res) => {
 const distPath = path.join(__dirname, 'interactive-map-explorer', 'dist');
 if (fs.existsSync(distPath)) {
   app.use(express.static(distPath));
-  // SPA fallback
+  // Unmatched data routes 404 cleanly instead of falling through to the SPA.
+  // The fallback below is app.use, which matches EVERY method -- so a
+  // misspelled or removed API path used to answer 200 with index.html, and a
+  // client would try to JSON.parse a page of HTML and report an error with
+  // nothing to do with the cause. This bit three separate times (a POST to a
+  // GET-only route, the removed plateau tiles, the removed chat endpoint)
+  // before earning its fix.
+  app.use((req, res, next) => {
+    if (/^\/(api|tiles|fonts|building-tiles|plateau-dem)\//.test(req.path)) {
+      return res.status(404).json({ detail: `No such route: ${req.method} ${req.path}` });
+    }
+    next();
+  });
+  // SPA fallback -- now only for page navigations.
   app.use((req, res) => {
     res.sendFile(path.join(distPath, 'index.html'));
   });
