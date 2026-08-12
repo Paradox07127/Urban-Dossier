@@ -148,8 +148,9 @@ def test_real_data_smoke(tmp_path):
     assert summary["cells"] > 1000
     assert h["median_interval_width"] > 0
     assert h["median_interval_width_production_norm"] > 0
-    # Both flagged metrics exist in real data, so both effects are measured.
-    assert set(h["toggle_effects"]) == {"collision_transport", "311_sanitation"}
+    # collision_transport left the registry in v3.8.0, so the only remaining
+    # flagged toggle is the sanitation evidence source.
+    assert set(h["toggle_effects"]) == {"311_sanitation"}
     assert len(frame) == per_cell.shape[0]
     # The production artifact was not touched.
     assert (tmp_path / "sensitivity_cells.parquet").exists()

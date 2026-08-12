@@ -81,6 +81,15 @@ PREPARED_PARTIAL = {
 }
 
 # name -> (state, prepared, priority, expected scores)
+#
+# Re-pinned for methodology 3.8.0 in the same commit that moved the weights,
+# per the procedure in the module docstring. What moved and why:
+#   - transit is None on every fallback case: its only fallback formula scored
+#     the removed collision copy, and access metrics have no formulas.
+#   - safety composites shift by a point or two under the renormalised
+#     weights (collision 0.25 -> 0.3125, rodent/311 0.20 each -> 0.125 each,
+#     ems 0.20 -> 0.25, fire 0.15 -> 0.1875).
+# The 3.7.8 values are in git history at this file's previous revision.
 GOLDEN = {
     "empty": (
         state(), None, None,
@@ -88,11 +97,11 @@ GOLDEN = {
     ),
     "full_fallback": (
         state(**FULL), None, None,
-        {"safety": 64, "transit": 53, "amenities": 56, "building": 78, "overall": 58},
+        {"safety": 63, "transit": None, "amenities": 56, "building": 78, "overall": 60},
     ),
     "safety_one_signal": (
         state(collision_count_500m=30), None, None,
-        {"safety": 62, "transit": 59, "amenities": None, "building": None, "overall": 61},
+        {"safety": 62, "transit": None, "amenities": None, "building": None, "overall": 62},
     ),
     "rodent_only": (
         state(rodent_positive_500m=25), None, None,
@@ -100,21 +109,21 @@ GOLDEN = {
     ),
     "prepared_full": (
         state(**FULL), PREPARED_FULL, None,
-        {"safety": 68, "transit": 66, "amenities": 55, "building": 72, "overall": 64},
+        {"safety": 70, "transit": 66, "amenities": 55, "building": 72, "overall": 64},
     ),
     "prepared_partial_safety": (
         state(**FULL), PREPARED_PARTIAL, None,
-        {"safety": 70, "transit": 53, "amenities": 56, "building": 78, "overall": 61},
+        {"safety": 70, "transit": None, "amenities": 56, "building": 78, "overall": 64},
     ),
     "priority_weights": (
         state(**FULL), PREPARED_FULL, {"safety": 0.5, "transit": 0.3, "amenities": 0.2},
-        {"safety": 68, "transit": 66, "amenities": 55, "building": 72, "overall": 65},
+        {"safety": 70, "transit": 66, "amenities": 55, "building": 72, "overall": 66},
     ),
     "extreme_bad": (
         state(collision_count_500m=9999, rodent_positive_500m=9999,
               sanitation_311_recent_count=9999, ems_avg_response_seconds=9999,
               fire_avg_response_seconds=9999), None, None,
-        {"safety": 44, "transit": 35, "amenities": None, "building": None, "overall": 40},
+        {"safety": 45, "transit": None, "amenities": None, "building": None, "overall": 45},
     ),
 }
 
@@ -169,8 +178,9 @@ SINGLE_SIGNAL = {
     ),
     "only_ped_injuries": (
         # collision_count is a real zero here, not a gap, so the metric scores.
+        # transit stopped echoing it in v3.8.0: no fallback formulas remain.
         state(collision_count_500m=0, ped_cyclist_injuries_1km=6),
-        {"safety": 88, "transit": 88, "amenities": None, "building": None, "overall": 88},
+        {"safety": 88, "transit": None, "amenities": None, "building": None, "overall": 88},
     ),
 }
 
@@ -227,7 +237,8 @@ def test_one_live_input_produces_exactly_one_sub_score():
         ("safety", "sanitation_311_recent_count", 10),
         ("safety", "ems_avg_response_seconds", 420),
         ("safety", "fire_avg_response_seconds", 260),
-        ("transit", "collision_count_500m", 30),
+        # transit is absent from this list on purpose: since v3.8.0 it has no
+        # fallback formulas, so no single input can produce a transit sub-score.
         ("amenities", "park_acres_zip_proxy", 40),
         ("amenities", "tree_count_500m", 300),
         ("amenities", "toilet_count_1km", 2),
@@ -311,7 +322,7 @@ def test_a_one_source_score_and_a_five_source_score_are_now_distinguishable():
 
     assert thin["available"] == 1
     assert thick["available"] == 5
-    assert thin["ratio"] == pytest.approx(0.25)
+    assert thin["ratio"] == pytest.approx(0.3125)
     assert thick["ratio"] == pytest.approx(1.0)
 
 
@@ -329,13 +340,14 @@ def test_coverage_is_weighted_not_counted():
     """
     thin = _coverage("prepared_partial_safety")["safety"]
     assert thin["available"] / thin["total"] == pytest.approx(0.2)
-    assert thin["ratio"] == pytest.approx(0.25)
+    assert thin["ratio"] == pytest.approx(0.3125)
 
 
 def test_a_rodent_only_reading_reports_almost_no_evidence():
     """overall 40 looks decisive; it rests on 8% of the intended evidence."""
     cov = _coverage("rodent_only")
-    assert cov["overall"]["effective_ratio"] == pytest.approx(0.08)
+    # rodent's weight is 0.125 since the v3.8.0 merge: 0.40 * 0.125 = 0.05.
+    assert cov["overall"]["effective_ratio"] == pytest.approx(0.05)
     assert cov["overall"]["categories_used"] == ["safety"]
     assert cov["overall"]["categories_missing"] == ["amenities", "transit"]
 
@@ -343,17 +355,23 @@ def test_a_rodent_only_reading_reports_almost_no_evidence():
 def test_effective_ratio_folds_category_coverage_into_category_weight():
     """Three half-covered categories must not report themselves fully covered."""
     cov = _coverage("full_fallback")["overall"]
-    assert cov["ratio"] == pytest.approx(1.0)  # all three categories produced a score
-    assert cov["effective_ratio"] < cov["ratio"]  # but not from all their metrics
-    assert cov["effective_ratio"] == pytest.approx(0.745)
+    # transit no longer produces a fallback score, so only two of the three
+    # weighted categories contribute at all.
+    assert cov["ratio"] == pytest.approx(0.7)
+    assert cov["effective_ratio"] < cov["ratio"]
+    assert cov["effective_ratio"] == pytest.approx(0.655)
 
 
-def test_the_transit_fallback_declares_itself_thin():
-    """A fallback transit score is one collision reading; coverage says 0.30."""
+def test_transit_has_no_fallback_at_all():
+    """Since v3.8.0 a fallback transit score does not exist.
+
+    The category's one formula scored the removed collision copy; the four
+    access metrics cannot be derived from analyse-point state. Honest None
+    beats a road-safety number wearing a transit label."""
     cov = _coverage("full_fallback")["transit"]
-    assert cov["source"] == "fallback"
-    assert cov["present"] == ["collision_transport"]
-    assert cov["ratio"] == pytest.approx(0.30)
+    assert cov["source"] == "none"
+    assert cov["present"] == []
+    assert cov["ratio"] == 0.0
 
 
 def test_source_distinguishes_prepared_tables_from_fallback_formulas():
@@ -388,7 +406,7 @@ def test_building_is_excluded_from_overall_coverage_because_its_weight_is_zero()
 
 def test_weakest_category_ratio_surfaces_the_thinnest_contributor():
     cov = _coverage("full_fallback")["overall"]
-    assert cov["weakest_category_ratio"] == pytest.approx(0.30)  # transit
+    assert cov["weakest_category_ratio"] == pytest.approx(0.85)  # amenities, missing facilities
 
 
 def test_priority_weights_reweight_overall_coverage_too():

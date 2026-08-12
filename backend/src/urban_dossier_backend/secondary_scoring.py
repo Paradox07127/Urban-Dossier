@@ -115,20 +115,13 @@ def _fallback_subscores(current_state: dict, baselines: dict) -> dict[str, dict[
             "fire_response": fire_score,
         }
 
-    if not _has_any_data(transit, ["collision_count_500m", "ped_cyclist_injuries_1km"]):
-        out["transit"] = None
-    else:
-        collision_transport = None
-        if transit.get("collision_count_500m") is not None:
-            collision_transport = _clamp(
-                100.0
-                - min((transit.get("collision_count_500m", 0) / max(baselines["collision"].get("p75", 1), 1)) * 55, 65)
-                - min(transit.get("ped_cyclist_injuries_1km", 0) * 2, 20)
-            )
-        # subway and bus have no fallback formula at all, so a fallback transit
-        # score is one collision reading. Recorded as explicit Nones so the
-        # coverage figure says 0.30 rather than 1.00.
-        out["transit"] = {"collision_transport": collision_transport, "subway": None, "bus": None}
+    # Transit has no fallback since v3.8.0. Its only fallback formula scored
+    # the collision copy that the correlation work removed from the category,
+    # and none of the four access metrics (subway, bus, bike routes, open
+    # streets) can be derived from the analyse-point state. Without prepared
+    # score tables, transit is honestly None -- which the old path disguised
+    # as a road-safety number wearing a transit label.
+    out["transit"] = None
 
     if not _has_any_data(amenities, ["park_acres_zip_proxy", "tree_count_500m", "toilet_count_1km", "linknyc_count_500m", "restaurant_count_500m"]):
         out["amenities"] = None

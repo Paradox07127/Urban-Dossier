@@ -15,18 +15,50 @@ absent, so a checkout that has not run the pipeline still has a green suite.
 
 from __future__ import annotations
 
+import json
 import random
+import sys
 from pathlib import Path
 
 import pytest
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from urban_dossier_backend.metrics import METHODOLOGY_VERSION
+
 BUILDINGS_DIR = Path("/mnt/data/urban-dossier-state/maps/buildings")
 SCORES = BUILDINGS_DIR / "building_scores.parquet"
+MANIFEST = BUILDINGS_DIR / "building_scores.manifest.json"
 
-pytestmark = pytest.mark.skipif(
-    not SCORES.exists(),
-    reason="building_scores.parquet not built; run backend/scripts/score_buildings.py",
-)
+
+def _baked_version() -> str | None:
+    try:
+        return json.loads(MANIFEST.read_text()).get("methodology_version")
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+# Two distinct skip conditions, kept apart because they mean different things.
+# Absent artefacts are a checkout that never ran the pipeline. A version
+# mismatch is a bake from an older methodology: comparing it against current
+# code would fail on every weight change by design, which punishes the change
+# rather than the staleness. The remedy for the second skip is a re-bake --
+# and it is a *loud* skip, not a pass: the tiles on screen carry the old
+# weights until someone runs score_buildings.py again.
+pytestmark = [
+    pytest.mark.skipif(
+        not SCORES.exists(),
+        reason="building_scores.parquet not built; run backend/scripts/score_buildings.py",
+    ),
+    pytest.mark.skipif(
+        SCORES.exists() and _baked_version() != METHODOLOGY_VERSION,
+        reason=(
+            f"baked scores are methodology {_baked_version() or 'pre-versioning'}, "
+            f"code is {METHODOLOGY_VERSION}; re-run backend/scripts/score_buildings.py "
+            "and rebuild the building tiles"
+        ),
+    ),
+]
 
 
 @pytest.fixture(scope="module")

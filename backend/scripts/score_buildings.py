@@ -52,6 +52,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "backend" / "src"))
 
 from urban_dossier_backend.categories import CATEGORY_CONFIG  # noqa: E402
+from urban_dossier_backend.metrics import METHODOLOGY_VERSION  # noqa: E402
 from urban_dossier_backend.secondary_scoring import (  # noqa: E402
     _weighted_score,
     compute_secondary_scores,
@@ -367,6 +368,10 @@ def main() -> int:
         }
 
     manifest = {
+        # Which version of the weights and definitions produced these scores.
+        # The bake goes stale the moment metrics.py bumps this; consumers and
+        # tests compare it rather than guessing from timestamps.
+        "methodology_version": METHODOLOGY_VERSION,
         "buildings": int(stats[0]),
         "with_overall_score": int(stats[1]),
         "distinct_overall_values": int(stats[2]),

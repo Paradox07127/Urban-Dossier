@@ -6,12 +6,12 @@ Each draw simultaneously perturbs sub-metric weights (x U(0.75, 1.25)), switches
 
 ## Headline numbers
 
-- Median 95% interval width on the 0-100 score: **37.61** points (95th percentile of widths: 55.57). Holding normalization at the production choice narrows the median width to **12.31** -- the difference is the price of the normalization method itself, the rest is weights, the flagged metrics and the missing-data rule.
-- Mean absolute rank shift (median-of-draws vs nominal): **639** places out of 7,205 (8.9% of the ranking).
-- Dropping `collision_transport` moves a cell's score by **2.66** points on average (95th percentile 5.14).
-- Dropping `311_sanitation` moves it by **2.7** (95th percentile 5.55).
-- Imputation vs renormalization: mean absolute difference **10.82** points.
-- Citywide mean composite under each normalization: percentile 50.74, minmax 51.19, zscore 50.14 -- the level differences are why scores must state their method version.
+- Median 95% interval width on the 0-100 score: **34.17** points (95th percentile of widths: 59.25). Holding normalization at the production choice narrows the median width to **9.9** -- the difference is the price of the normalization method itself, the rest is weights, the flagged metrics and the missing-data rule.
+- Mean absolute rank shift (median-of-draws vs nominal): **652** places out of 7,205 (9.0% of the ranking).
+- Dropping `collision_transport` moves a cell's score by **n/a** points on average (95th percentile n/a).
+- Dropping `311_sanitation` moves it by **1.09** (95th percentile 2.57).
+- Imputation vs renormalization: mean absolute difference **11.28** points.
+- Citywide mean composite under each normalization: percentile 50.68, minmax 44.3, zscore 50.15 -- the level differences are why scores must state their method version.
 
 ## What this licenses
 

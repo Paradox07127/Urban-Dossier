@@ -53,10 +53,11 @@ def test_grain_is_disclosed_for_a_zip_level_metric():
     assert body["spatial_grain"] == "zip"
 
 
-def test_the_copied_collision_table_is_visible_over_http():
-    body = client.get("/api/metrics/collision_transport").json()
-    assert body["derived_from"] == "collision"
-    assert "byte-identical" in (body["notes"] or "")
+def test_the_removed_collision_copy_is_a_404_not_a_ghost():
+    """collision_transport left the registry in v3.8.0; the API must agree."""
+    resp = client.get("/api/metrics/collision_transport")
+    assert resp.status_code == 404
+    assert "collision" in resp.json()["known"]
 
 
 def test_unknown_metric_is_a_404_that_says_what_exists():

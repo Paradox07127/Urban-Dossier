@@ -42,8 +42,25 @@ from enum import Enum
 
 # Bumped when a change alters the numbers a metric produces. Reported alongside
 # every score so a screenshot taken today can be explained six months from now.
-# Tracks the preprocessing release that introduced percentile normalisation.
-METHODOLOGY_VERSION = "3.7.8"
+#
+# 3.7.8  preprocessing release that introduced percentile normalisation.
+# 3.8.0  the correlation-driven restructure (items 1.3/1.4):
+#        - `collision_transport` removed. It was a byte copy of `collision`
+#          (measured rho = 1.000), giving one dataset 19% of `overall` under
+#          two names. Transit's remaining four access metrics renormalise
+#          proportionally, so transit is now purely about getting around;
+#          collision risk lives in safety alone, at 12.5% of overall.
+#        - `rodent` and `311_sanitation` (measured rho = 0.897) are one
+#          construct with two evidence sources: confirmed inspections and
+#          resident reports. The construct occupies a single 0.20-weight slot
+#          split 0.125/0.125, instead of the 0.40 the pair had stacked to;
+#          safety renormalises proportionally around it. Complaint data does
+#          not carry independent weight because it confounds conditions with
+#          reporting propensity (Walsh 2014, saved in the methodology
+#          reference set).
+#        Sensitivity analysis put the average per-cell cost of each change at
+#        ~2.7 points (docs/methodology/sensitivity-analysis.md).
+METHODOLOGY_VERSION = "3.8.0"
 
 
 class Direction(str, Enum):
@@ -167,10 +184,11 @@ CATEGORIES: tuple[CategoryDefinition, ...] = (
         map_driving=True,
         detail_rankable=True,
         notes=(
-            "Only collision_transport has a fallback formula; subway and bus "
-            "resolve to None when prepared score tables are absent. A fallback "
-            "transit score is therefore a road-safety measure wearing a "
-            "transit label."
+            "Pure infrastructure access since v3.8.0. No transit metric has a "
+            "fallback formula, so without prepared score tables the category "
+            "is honestly None rather than a road-safety measure wearing a "
+            "transit label, which is what the removed collision copy used to "
+            "produce."
         ),
     ),
     CategoryDefinition(
@@ -211,7 +229,7 @@ METRICS: tuple[MetricDefinition, ...] = (
         spatial_grain=SpatialGrain.H3_R9,
         temporal_grain=TemporalGrain.DAILY,
         normalization=Normalization.EMPIRICAL_PERCENTILE,
-        weight_in_category=0.25,
+        weight_in_category=0.3125,
         source_dataset="NYPD Motor Vehicle Collisions - Crashes",
         source_relpath="safety/motor_vehicle_collisions.csv",
         score_table="safety/collisions_scores_h3.parquet",
@@ -228,7 +246,7 @@ METRICS: tuple[MetricDefinition, ...] = (
         spatial_grain=SpatialGrain.H3_R9,
         temporal_grain=TemporalGrain.DAILY,
         normalization=Normalization.EMPIRICAL_PERCENTILE,
-        weight_in_category=0.20,
+        weight_in_category=0.125,
         source_dataset="DOHMH Rodent Inspection",
         source_relpath="environment/rodent_inspections.csv",
         score_table="safety/rodent_scores_h3.parquet",
@@ -237,8 +255,12 @@ METRICS: tuple[MetricDefinition, ...] = (
         overlaps_with=("311_sanitation",),
         notes=(
             "Inspection outcomes, not complaints: rows whose RESULT mentions "
-            "rats, a failed inspection or active signs. See `311_sanitation`, "
-            "which counts the resident-reported side of the same phenomenon."
+            "rats, a failed inspection or active signs. Since v3.8.0 this and "
+            "`311_sanitation` are one construct -- sanitation conditions -- "
+            "with two evidence sources, sharing a single 0.20-weight slot "
+            "(0.125 each after safety's proportional renormalisation). They "
+            "were separately weighted 0.20 + 0.20 before, which stacked one "
+            "phenomenon (measured rho = 0.897) to 40% of the category."
         ),
     ),
     MetricDefinition(
@@ -255,7 +277,7 @@ METRICS: tuple[MetricDefinition, ...] = (
         spatial_grain=SpatialGrain.H3_R9,
         temporal_grain=TemporalGrain.DAILY,
         normalization=Normalization.EMPIRICAL_PERCENTILE,
-        weight_in_category=0.20,
+        weight_in_category=0.125,
         source_dataset="311 Service Requests (2020 - Present)",
         source_relpath="quality_of_life/311_service_requests_2020_present.csv",
         score_table="safety/311_scores_h3.parquet",
@@ -266,9 +288,11 @@ METRICS: tuple[MetricDefinition, ...] = (
             "Despite the id, the filter admits RODENT complaints alongside the "
             "two sanitation types, so this metric and `rodent` both count rat "
             "activity -- one as resident reports, one as confirmed "
-            "inspections. Both sit in safety at weight 0.20, so rodent "
-            "activity carries up to 0.40 of the category between them. How "
-            "much they actually co-move is what item 1.3 measures. Separately, "
+            "inspections. Since v3.8.0 the pair shares one 0.20 construct "
+            "slot (0.125 each) -- item 1.3 measured their co-movement at "
+            "rho = 0.897, and complaint data additionally confounds "
+            "conditions with reporting propensity (Walsh 2014), so it does "
+            "not earn independent weight. Separately, "
             "the fallback formula scores this with a bare multiplier "
             "(count * 2.5, capped at 55) rather than against a measured "
             "baseline, unlike every other safety sub-metric."
@@ -284,7 +308,7 @@ METRICS: tuple[MetricDefinition, ...] = (
         spatial_grain=SpatialGrain.ZIP,
         temporal_grain=TemporalGrain.DAILY,
         normalization=Normalization.EMPIRICAL_PERCENTILE,
-        weight_in_category=0.20,
+        weight_in_category=0.25,
         source_dataset="EMS Incident Dispatch Data",
         source_relpath="safety/ems_incident_dispatch.csv",
         score_table="safety/ems_scores_zip.parquet",
@@ -300,42 +324,22 @@ METRICS: tuple[MetricDefinition, ...] = (
         spatial_grain=SpatialGrain.ZIP,
         temporal_grain=TemporalGrain.DAILY,
         normalization=Normalization.EMPIRICAL_PERCENTILE,
-        weight_in_category=0.15,
+        weight_in_category=0.1875,
         source_dataset="Fire Incident Dispatch Data",
         source_relpath="safety/fire_incident_dispatch.csv",
         score_table="safety/fire_scores_zip.parquet",
         state_keys=("fire_avg_response_seconds",),
     ),
     # ---- transit -----------------------------------------------------------
-    MetricDefinition(
-        id="collision_transport",
-        category="transit",
-        label="Road safety for travel",
-        description=(
-            "The collision picture read as a travel-risk signal rather than a "
-            "neighbourhood-safety one."
-        ),
-        unit="collisions within 500 m",
-        direction=Direction.LOWER_IS_BETTER,
-        spatial_grain=SpatialGrain.H3_R9,
-        temporal_grain=TemporalGrain.DAILY,
-        normalization=Normalization.EMPIRICAL_PERCENTILE,
-        weight_in_category=0.30,
-        source_dataset="NYPD Motor Vehicle Collisions - Crashes",
-        source_relpath="safety/motor_vehicle_collisions.csv",
-        score_table="transit/collision_transport_scores_h3.parquet",
-        indexed_table="transit/collision_transport_indexed.parquet",
-        state_keys=("collision_count_500m", "ped_cyclist_injuries_1km"),
-        derived_from="collision",
-        notes=(
-            "Not an independent measurement. The preprocessing driver writes "
-            "the collision score table to this path unchanged (a 'score_copy' "
-            "extra output), so the two parquet files are byte-identical. The "
-            "same dataset therefore reaches `overall` twice: once at "
-            "0.40 * 0.25 and again at 0.30 * 0.30, together 19% of the "
-            "composite. Resolving that double count is work item 1.3."
-        ),
-    ),
+    # `collision_transport` stood first in this category until v3.8.0: a
+    # byte copy of the safety `collision` table (measured rho = 1.000) that
+    # let one dataset reach `overall` twice, 19% combined. Removed rather
+    # than reweighted -- transit is now purely about access, and collision
+    # risk is safety's to score. The four remaining weights are the old ones
+    # renormalised proportionally (x 10/7), expressed as exact fractions so
+    # they sum to 1 without rounding drift. A genuine transit-risk metric
+    # (severity-weighted, exposure-normalised) is under research as its
+    # eventual successor.
     MetricDefinition(
         id="subway",
         category="transit",
@@ -346,7 +350,7 @@ METRICS: tuple[MetricDefinition, ...] = (
         spatial_grain=SpatialGrain.H3_R9,
         temporal_grain=TemporalGrain.IRREGULAR,
         normalization=Normalization.EMPIRICAL_PERCENTILE,
-        weight_in_category=0.25,
+        weight_in_category=5 / 14,
         source_dataset="MTA Subway Entrances and Exits (2024)",
         source_relpath="transit/mta_subway_entrances_exits_2024.csv",
         score_table="transit/subway_scores_h3.parquet",
@@ -363,7 +367,7 @@ METRICS: tuple[MetricDefinition, ...] = (
         spatial_grain=SpatialGrain.H3_R9,
         temporal_grain=TemporalGrain.IRREGULAR,
         normalization=Normalization.EMPIRICAL_PERCENTILE,
-        weight_in_category=0.20,
+        weight_in_category=4 / 14,
         source_dataset="Bus Stop Shelters",
         source_relpath="transit/bus_stop_shelters.csv",
         score_table="transit/bus_scores_h3.parquet",
@@ -383,7 +387,7 @@ METRICS: tuple[MetricDefinition, ...] = (
         spatial_grain=SpatialGrain.H3_R9,
         temporal_grain=TemporalGrain.IRREGULAR,
         normalization=Normalization.EMPIRICAL_PERCENTILE,
-        weight_in_category=0.15,
+        weight_in_category=3 / 14,
         source_dataset="NYC Bike Routes",
         source_relpath="transit/nyc_bike_routes.csv",
         score_table="transit/bike_routes_scores_h3.parquet",
@@ -404,7 +408,7 @@ METRICS: tuple[MetricDefinition, ...] = (
         spatial_grain=SpatialGrain.H3_R9,
         temporal_grain=TemporalGrain.IRREGULAR,
         normalization=Normalization.EMPIRICAL_PERCENTILE,
-        weight_in_category=0.10,
+        weight_in_category=2 / 14,
         source_dataset="Open Streets Locations",
         source_relpath="transit/open_streets_locations.csv",
         score_table="transit/open_streets_scores_h3.parquet",

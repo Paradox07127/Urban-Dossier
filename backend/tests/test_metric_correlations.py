@@ -7,13 +7,12 @@ double-counting question. The fixture for that is two series that agree
 wherever both exist and disagree about where the zeros are; the inner join
 calls them identical, the zero-filled frame does not.
 
-The real-data layer runs only where the ready tables exist, and pins the two
-findings the whole exercise was for: the byte-copied collision pair at exactly
-rho 1, and the rodent/sanitation overlap high enough to matter. Floors are
-deliberately below the measured values (1.0 and 0.897) so a data refresh can
-move the numbers without breaking the build, while a fix that actually
-decouples the metrics -- or a regression that breaks the measurement -- still
-fails loudly.
+The real-data layer runs only where the ready tables exist. It originally
+pinned the byte-copied collision pair at exactly rho 1 -- that finding led to
+the metric's removal in v3.8.0, so the pin flipped to asserting no duplicated
+sources remain. The rodent/sanitation overlap stays pinned with a floor
+deliberately below the measured 0.897, so a data refresh can move the number
+without breaking the build while a real decoupling still fails loudly.
 """
 from __future__ import annotations
 
@@ -131,14 +130,18 @@ requires_ready = pytest.mark.skipif(
 
 
 @requires_ready
-def test_the_copied_collision_table_measures_exactly_one():
+def test_no_duplicated_source_pairs_remain_to_measure():
+    """The rho = 1.000 pair this analysis caught was removed in v3.8.0.
+
+    The registry no longer declares any duplicated source, so the report's
+    duplicated_source section must be empty. The measurement that justified
+    the removal is preserved in the git history of
+    docs/methodology/metric-correlations.md.
+    """
     report = amc.analyze(READY)
-    declared = {
-        tuple(e["pair"]): e["rho"]
-        for e in report["declared_relationships"]
-        if e["kind"] == "duplicated_source"
-    }
-    assert declared[("collision", "collision_transport")] == pytest.approx(1.0)
+    assert [
+        e for e in report["declared_relationships"] if e["kind"] == "duplicated_source"
+    ] == []
 
 
 @requires_ready

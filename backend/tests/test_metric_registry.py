@@ -37,7 +37,12 @@ from urban_dossier_backend.metrics import (
 )
 
 
-# Verbatim copy of `CATEGORY_CONFIG` before it was derived from the registry.
+# Verbatim pin of the derived `CATEGORY_CONFIG`. Updated in the same commit as
+# any weight change in metrics.py, so the diff of this literal IS the record of
+# scores moving. Pinned at methodology 3.8.0: collision_transport removed
+# (transit renormalised x 10/7), rodent + 311_sanitation merged into one 0.20
+# construct slot (safety renormalised x 1.25). The 3.7.8 literal -- and the
+# hand-written original it froze -- are in this file's git history.
 LEGACY_CATEGORY_CONFIG = {
     "safety": {
         "label": "Safety",
@@ -47,30 +52,30 @@ LEGACY_CATEGORY_CONFIG = {
         "weight_in_overall": 0.40,
         "sub_datasets": {
             "collision": {
-                "weight": 0.25,
+                "weight": 0.3125,
                 "query_by": "h3",
                 "score_table": "safety/collisions_scores_h3.parquet",
                 "indexed_table": "safety/collisions_indexed.parquet",
             },
             "rodent": {
-                "weight": 0.20,
+                "weight": 0.125,
                 "query_by": "h3",
                 "score_table": "safety/rodent_scores_h3.parquet",
                 "indexed_table": "safety/rodent_indexed.parquet",
             },
             "311_sanitation": {
-                "weight": 0.20,
+                "weight": 0.125,
                 "query_by": "h3",
                 "score_table": "safety/311_scores_h3.parquet",
                 "indexed_table": "safety/311_safety_indexed.parquet",
             },
             "ems_response": {
-                "weight": 0.20,
+                "weight": 0.25,
                 "query_by": "zip",
                 "score_table": "safety/ems_scores_zip.parquet",
             },
             "fire_response": {
-                "weight": 0.15,
+                "weight": 0.1875,
                 "query_by": "zip",
                 "score_table": "safety/fire_scores_zip.parquet",
             },
@@ -80,35 +85,29 @@ LEGACY_CATEGORY_CONFIG = {
         "label": "Transit",
         "map_driving": True,
         "detail_rankable": True,
-        "signals": ["collision_transport", "subway", "bus", "bike_routes", "open_streets"],
+        "signals": ["subway", "bus", "bike_routes", "open_streets"],
         "weight_in_overall": 0.30,
         "sub_datasets": {
-            "collision_transport": {
-                "weight": 0.30,
-                "query_by": "h3",
-                "score_table": "transit/collision_transport_scores_h3.parquet",
-                "indexed_table": "transit/collision_transport_indexed.parquet",
-            },
             "subway": {
-                "weight": 0.25,
+                "weight": 5 / 14,
                 "query_by": "h3",
                 "score_table": "transit/subway_scores_h3.parquet",
                 "indexed_table": "transit/subway_indexed.parquet",
             },
             "bus": {
-                "weight": 0.20,
+                "weight": 4 / 14,
                 "query_by": "h3",
                 "score_table": "transit/bus_scores_h3.parquet",
                 "indexed_table": "transit/bus_indexed.parquet",
             },
             "bike_routes": {
-                "weight": 0.15,
+                "weight": 3 / 14,
                 "query_by": "h3",
                 "score_table": "transit/bike_routes_scores_h3.parquet",
                 "indexed_table": "transit/bike_routes_indexed.parquet",
             },
             "open_streets": {
-                "weight": 0.10,
+                "weight": 2 / 14,
                 "query_by": "h3",
                 "score_table": "transit/open_streets_scores_h3.parquet",
                 "indexed_table": "transit/open_streets_indexed.parquet",
@@ -270,36 +269,25 @@ def test_query_by_follows_spatial_grain():
 # --- the double count -------------------------------------------------------
 
 
-def test_collision_transport_is_declared_as_a_copy_not_a_measurement():
-    """The transit collision table is byte-identical to the safety one.
+def test_collision_transport_is_gone():
+    """The byte-copied transit metric was removed in v3.8.0, not reweighted.
 
-    `preprocess_common.py` writes the same grouped frame to both paths via a
-    'score_copy' extra output. Recording that in the registry is what stops the
-    duplication from reading as two independent corroborating signals.
+    It measured rho = 1.000 against its source (docs/methodology/
+    metric-correlations.md) and gave one dataset 19% of overall under two
+    names. If a metric with this id reappears, it must be an independent
+    measurement, and this test should be replaced by one that proves that.
     """
-    transport = METRICS_BY_ID["collision_transport"]
-    assert transport.derived_from == "collision"
-    assert transport.source_relpath == METRICS_BY_ID["collision"].source_relpath
+    assert "collision_transport" not in METRICS_BY_ID
+    assert all(m.derived_from is None for m in METRICS)
 
 
-def test_duplicated_sources_reports_the_collision_pair():
-    duplicates = duplicated_sources()
-    assert duplicates == {
-        "safety/motor_vehicle_collisions.csv": ("collision", "collision_transport")
-    }
+def test_no_source_file_feeds_two_metrics_any_more():
+    assert duplicated_sources() == {}
 
 
-def test_the_collision_double_count_is_nineteen_percent_of_overall():
-    """Pins the size of the problem so a fix has a number to move.
-
-    safety 0.40 * 0.25 = 0.10, transit 0.30 * 0.30 = 0.09.
-    """
-    assert overall_contribution("collision") == pytest.approx(0.10)
-    assert overall_contribution("collision_transport") == pytest.approx(0.09)
-    combined = overall_contribution("collision") + overall_contribution(
-        "collision_transport"
-    )
-    assert combined == pytest.approx(0.19)
+def test_collisions_reach_overall_exactly_once():
+    """0.40 * 0.3125 = 0.125 -- down from the stacked 0.19."""
+    assert overall_contribution("collision") == pytest.approx(0.125)
 
 
 def test_the_311_filter_admits_rodent_complaints_so_the_overlap_is_declared():
@@ -338,13 +326,21 @@ def test_overlapping_pairs_lists_each_pair_once():
     assert overlapping_pairs() == (("311_sanitation", "rodent"),)
 
 
-def test_rodent_signal_reaches_forty_percent_of_the_safety_category():
-    """Pins the stacked weight so item 1.3 has a number to argue against."""
+def test_the_sanitation_construct_holds_one_slot_not_two():
+    """v3.8.0: the pair shares a single 0.20-slot (0.25 after renorm).
+
+    They stacked to 0.40 of safety before -- more than any other signal --
+    while measuring one phenomenon at rho 0.897. Two evidence sources, one
+    construct, one weight.
+    """
     combined = (
         METRICS_BY_ID["rodent"].weight_in_category
         + METRICS_BY_ID["311_sanitation"].weight_in_category
     )
-    assert combined == pytest.approx(0.40)
+    assert combined == pytest.approx(0.25)
+    assert METRICS_BY_ID["rodent"].weight_in_category == pytest.approx(
+        METRICS_BY_ID["311_sanitation"].weight_in_category
+    )
 
 
 def test_a_derived_metric_points_at_a_metric_that_exists():
@@ -381,15 +377,9 @@ def test_registry_payload_covers_every_metric_and_category():
     assert {c["id"] for c in payload["categories"]} == set(CATEGORIES_BY_ID)
 
 
-def test_registry_payload_exposes_the_combined_duplicate_contribution():
+def test_registry_payload_reports_no_duplicated_sources():
     payload = registry_to_dict()
-    assert payload["duplicated_sources"] == [
-        {
-            "source_relpath": "safety/motor_vehicle_collisions.csv",
-            "metrics": ["collision", "collision_transport"],
-            "combined_overall_contribution": 0.19,
-        }
-    ]
+    assert payload["duplicated_sources"] == []
 
 
 def test_registry_payload_exposes_the_overlapping_pair():
@@ -397,7 +387,7 @@ def test_registry_payload_exposes_the_overlapping_pair():
     assert payload["overlapping_metrics"] == [
         {
             "metrics": ["311_sanitation", "rodent"],
-            "combined_overall_contribution": 0.16,
+            "combined_overall_contribution": 0.1,
         }
     ]
 

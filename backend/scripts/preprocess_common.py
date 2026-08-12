@@ -198,15 +198,11 @@ SPECS: dict[str, DatasetSpec] = {
         lon_col="longitude",
         zip_col="zip",
         borough_col="borough",
-        extra_outputs=[
-            {
-                "kind": "score_copy",
-                "output_dir": "transit",
-                "indexed_name": "collision_transport_indexed.parquet",
-                "score_name": "collision_transport_scores_h3.parquet",
-                "trend_name": "collision_transport_quarterly_h3.parquet",
-            },
-        ],
+        # Until v3.8.0 a 'score_copy' extra output duplicated this dataset's
+        # tables into transit/collision_transport_*. The copy fed a metric the
+        # correlation analysis removed (rho = 1.000 with its source by
+        # construction), so the copy step went with it. The machinery for
+        # extra_outputs stays; nothing uses it at present.
     ),
     "safety_rodent": DatasetSpec(
         name="safety_rodent",

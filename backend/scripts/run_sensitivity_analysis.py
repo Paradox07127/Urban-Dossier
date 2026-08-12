@@ -78,7 +78,11 @@ from urban_dossier_backend.metrics import (  # noqa: E402
 
 WEIGHT_NOISE = 0.25          # COINr get_noisy_weights, NoiseFactor 0.25
 INTERVAL = (2.5, 97.5)       # CDC PLACES convention
-TOGGLE_METRICS = ("collision_transport", "311_sanitation")
+# Metrics whose inclusion is itself an assumption worth perturbing. Absent ids
+# are skipped gracefully, so this list can name metrics that later leave the
+# registry -- collision_transport did exactly that in v3.8.0, resolving the
+# question its toggle was here to quantify.
+TOGGLE_METRICS = ("311_sanitation",)
 NORMALIZATIONS = ("percentile", "minmax", "zscore")
 
 
