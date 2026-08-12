@@ -10,6 +10,8 @@ from __future__ import annotations
 __all__ = [
     "TOOLS",
     "dispatch_tool",
+    "get_available_tools",
+    "tool_availability",
     "run_agent",
     "AgentResponse",
     "ToolCallTrace",
@@ -17,5 +19,5 @@ __all__ = [
 ]
 
 from .schemas import AgentResponse, Point, ToolCallTrace
-from .tools import TOOLS, dispatch_tool
+from .tools import TOOLS, dispatch_tool, get_available_tools, tool_availability
 from .agent_loop import run_agent

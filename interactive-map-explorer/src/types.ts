@@ -157,6 +157,17 @@ export interface AgentStatus {
   nemoclaw_available: boolean;
   scripts_available: boolean;
   model: string;
+  tools: Record<
+    string,
+    {
+      available: boolean;
+      reason: string;
+      release_gate: string;
+      interventions?: string[];
+    }
+  >;
+  available_tools: string[];
+  unavailable_tools: string[];
 }
 
 /** One dispatched tool call, as returned in the /api/agent/ask trace. */

@@ -10,6 +10,7 @@ interface Props {
   analysisPayload: any;
   target?: { latitude: number; longitude: number; label?: string } | null;
   onIsochrone?: (feature: any | null) => void;
+  toolAvailability?: Record<string, { available: boolean; reason: string }>;
 }
 
 const TABS = [
@@ -26,6 +27,7 @@ export default function AgentPanel({
   analysisPayload,
   target,
   onIsochrone,
+  toolAvailability,
 }: Props) {
   const [activeTab, setActiveTab] = useState<TabId>('chat');
 
@@ -69,6 +71,7 @@ export default function AgentPanel({
             onCreateSession={onCreateSession}
             target={target}
             onIsochrone={onIsochrone}
+            toolAvailability={toolAvailability}
           />
         )}
         {activeTab === 'report' && (

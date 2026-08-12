@@ -221,12 +221,17 @@ outstanding half of the convergence.
 | --- | --- | --- |
 | `score_neighborhood` | `/api/analyze-point` | working |
 | `search_address` | `/api/search` | working |
-| `find_similar_neighborhoods` | `/api/watchlist/run` | working |
+| `find_similar_neighborhoods` | `/api/watchlist/run` | not released; current watchlist path is not score-vector similarity |
 | `compare_neighborhoods` | `/api/compare-points` | working |
 | `query_dataset` | `/api/dataset/query` | working |
 | `walking_isochrone` | `/api/isochrone` | working, needs the walking graph built |
 | `simulate_intervention` | `/api/simulate` | working, needs the elasticity fit built |
 | `retrieve_dataset_docs` | `rag.retrieve` | unavailable until the vector index is built |
+
+The schema catalog keeps all eight names stable, while each Agent request sees
+only tools whose release artifacts pass validation. `/api/agent/status`
+publishes the sanitized decision and the UI hides suggestions that cannot run
+in the current deployment.
 
 `walking_isochrone` is real street-network routing over an OSM pedestrian
 graph, not a radius approximation. `simulate_intervention` projects scores from

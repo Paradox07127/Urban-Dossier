@@ -384,6 +384,24 @@ def is_agent_available() -> dict:
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
 
+    try:
+        from urban_dossier_analyst.tools import tool_availability
+
+        raw_tools = tool_availability()
+        # /api/agent/status is intentionally unauthenticated for the UI toggle.
+        # Publish capability decisions, never absolute artifact paths.
+        tools = {
+            name: {
+                key: value
+                for key, value in state.items()
+                if key in {"available", "reason", "release_gate", "interventions"}
+            }
+            for name, state in raw_tools.items()
+        }
+    except Exception as exc:  # noqa: BLE001 - status must remain available
+        logger.warning("Could not resolve agent tool availability: %s", exc)
+        tools = {}
+
     return {
         "enabled": True,
         "backend": AGENT_BACKEND,
@@ -392,6 +410,9 @@ def is_agent_available() -> dict:
         "scripts_available": scripts_ok,
         "nemoclaw_available": nemoclaw_ok,
         "model": os.environ.get("URBAN_DOSSIER_MODEL", "auto"),
+        "tools": tools,
+        "available_tools": [name for name, state in tools.items() if state.get("available")],
+        "unavailable_tools": [name for name, state in tools.items() if not state.get("available")],
     }
 
 

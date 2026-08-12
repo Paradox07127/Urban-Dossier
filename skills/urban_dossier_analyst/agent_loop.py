@@ -35,7 +35,12 @@ from typing import Any, Callable
 
 from .prompts import FINAL_ANSWER_PROMPT, REFLECTION_PROMPT, SYSTEM_PROMPT
 from .schemas import AgentResponse, ToolCallTrace
-from .tools import TOOLS, dispatch_tool
+from .tools import (
+    dispatch_tool,
+    get_available_tools,
+    tool_availability,
+    tool_availability_prompt,
+)
 
 
 Message = dict[str, Any]
@@ -210,7 +215,15 @@ def run_agent(
         client_factory = _default_client_factory
     client = client_factory(vllm_base_url)
 
-    messages: list[Message] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    availability = tool_availability()
+    active_tools = get_available_tools(availability)
+    active_tool_names = {tool["function"]["name"] for tool in active_tools}
+    messages: list[Message] = [
+        {
+            "role": "system",
+            "content": SYSTEM_PROMPT + tool_availability_prompt(availability),
+        }
+    ]
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": user_message})
@@ -232,7 +245,7 @@ def run_agent(
             response = client.chat.completions.create(
                 model=model,
                 messages=messages,
-                tools=TOOLS,
+                tools=active_tools,
                 tool_choice="auto",
                 temperature=0.2,
             )
@@ -346,9 +359,19 @@ def run_agent(
                     trace=trace,
                 ).model_dump()
 
-            # Normal dispatch path.
+            # Refuse a forged or stale call even if the model emits a tool that
+            # was not present in this request's published schema list.
             started = time.perf_counter()
-            result = dispatch_tool(tool_name, args)
+            if tool_name not in active_tool_names:
+                state = availability.get(tool_name, {})
+                result = {
+                    "error": "tool_not_released",
+                    "tool": tool_name,
+                    "reason": state.get("reason", "unknown_tool"),
+                    "retry_hint": "Use only tools published for this request.",
+                }
+            else:
+                result = dispatch_tool(tool_name, args)
             latency_ms = int((time.perf_counter() - started) * 1000)
 
             tools_called.append(tool_name)

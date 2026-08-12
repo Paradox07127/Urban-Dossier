@@ -13,6 +13,7 @@ interface Props {
   target?: { latitude: number; longitude: number; label?: string } | null;
   /** Hands a computed isochrone up to the map. */
   onIsochrone?: (feature: any | null) => void;
+  toolAvailability?: Record<string, { available: boolean; reason: string }>;
 }
 
 /**
@@ -22,10 +23,17 @@ interface Props {
  * projection.
  */
 const SUGGESTED = [
-  { label: 'What drives the safety score here?', tool: 'scoring' },
-  { label: 'How far can I walk in 10 minutes?', tool: 'routing' },
-  { label: 'What would 3 more public toilets change?', tool: 'projection' },
+  { label: 'What drives the safety score here?', tool: 'score_neighborhood' },
+  { label: 'How far can I walk in 10 minutes?', tool: 'walking_isochrone' },
+  { label: 'What would 3 more public toilets change?', tool: 'simulate_intervention' },
 ];
+
+const TOOL_LABELS: Record<string, string> = {
+  find_similar_neighborhoods: 'similar-neighborhood search',
+  walking_isochrone: 'walking routes',
+  simulate_intervention: 'intervention projections',
+  retrieve_dataset_docs: 'dataset-document search',
+};
 
 /**
  * Strip machine residue from the answer before it is read.
@@ -132,6 +140,7 @@ export default function AgentChat({
   onCreateSession,
   target,
   onIsochrone,
+  toolAvailability,
 }: Props) {
   const [messages, setMessages] = useState<AgentChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -139,6 +148,12 @@ export default function AgentChat({
   const [startedAt, setStartedAt] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasStarted = messages.length > 0;
+  const suggestions = SUGGESTED.filter(
+    (item) => toolAvailability?.[item.tool]?.available !== false,
+  );
+  const unavailableLabels = Object.entries(toolAvailability ?? {})
+    .filter(([, state]) => !state.available)
+    .map(([name]) => TOOL_LABELS[name] ?? name);
 
   const resolvedTarget = useMemo(() => {
     if (target) return target;
@@ -276,11 +291,17 @@ export default function AgentChat({
                 it made. Scores come from the data, not from the model.
               </p>
 
+              {unavailableLabels.length > 0 && (
+                <p className="mt-3 text-xs leading-relaxed text-muted-foreground max-w-[52ch]">
+                  Not enabled in this deployment: {unavailableLabels.join(', ')}.
+                </p>
+              )}
+
               {/* Kept next to the invitation rather than pinned above the input:
                   these are examples of what to ask, so they belong with the
                   sentence that asks. */}
               <ul className="mt-5 space-y-1.5">
-                {SUGGESTED.map((q) => (
+                {suggestions.map((q) => (
                   <li key={q.label}>
                     <button
                       type="button"

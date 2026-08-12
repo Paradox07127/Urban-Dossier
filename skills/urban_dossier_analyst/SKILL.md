@@ -38,22 +38,24 @@ Other anti-triggers:
 - The user wants a polished printable report (route to the report skill).
 - The user wants a poster (route to the poster skill).
 
-## Available Tools
+## Tool catalog
 
-The agent reaches the world only through these eight tools. Names are locked.
+The catalog contains eight locked names. Runtime release gates publish only the
+subset whose graph, fitted curves or vector index is valid; never claim a
+catalogued but unpublished tool ran.
 
 | # | Tool | Purpose |
 |---|------|---------|
 | 1 | `score_neighborhood(latitude, longitude, radius_m=500)` | Four category scores for a point (safety, transit, amenities, building). |
 | 2 | `compare_neighborhoods(point_a, point_b, radius_m=500)` | Side-by-side score comparison of two points. |
-| 3 | `query_dataset(dataset_id, filters, limit=100)` | Filtered raw rows from one of the 17 NYC Open Data sources. |
-| 4 | `find_similar_neighborhoods(latitude, longitude, k=5)` | K-nearest neighbors to the seed in score-vector space. |
+| 3 | `query_dataset(dataset_id, filters, limit=100)` | Filtered raw rows from one of the 18 NYC Open Data sources. |
+| 4 | `find_similar_neighborhoods(latitude, longitude, k=5)` | Reserved for score-vector KNN; not released while the implementation is a watchlist approximation. |
 | 5 | `walking_isochrone(latitude, longitude, minutes=10)` | GeoJSON polygon reachable on foot within N minutes. |
 | 6 | `simulate_intervention(latitude, longitude, intervention_type, count=1)` | What-if projection for adding bike_lane / park / toilet / linknyc / bus_stop. |
 | 7 | `search_address(query, limit=5)` | Geocode an address or place name to candidate lat/lon. |
 | 8 | `retrieve_dataset_docs(query, dataset_filter=None, top_k=5)` | RAG over dataset documentation - the primary anti-hallucination guard. |
 
-The 17 datasets behind these tools span four categories:
+The 18 datasets behind these tools span four categories:
 
 - **Safety:** collisions, rodent_complaints, 311_sanitation, ems_response, fire_response
 - **Transit:** collision_transport, subway_stations, bus_stops, bike_routes, open_streets

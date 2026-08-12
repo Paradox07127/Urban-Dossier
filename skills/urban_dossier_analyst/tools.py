@@ -22,19 +22,20 @@ Dispatch modes for tools 1, 3, 4, 7:
     fall back to ``httpx`` against ``http://localhost:8090/api/...`` with a
     30s timeout and 2 retries. Same path used in the v1 implementation.
 
-Tools 2, 5, 6 stub out with NotImplementedError because the backend endpoint
-does not exist yet - dispatch_tool catches it and surfaces a structured
-error so the agent can pivot rather than crash.
-Tool 8 calls into the rag package built by a parallel agent; import is lazy
-so this module loads even when the rag package is not yet on sys.path.
+The eight schemas are stable, but each request receives only the subset whose
+release artifacts pass validation. Optional RAG imports remain lazy so this
+module can load without that stack.
 """
 
 from __future__ import annotations
 
+import copy
 import dataclasses
+import json
 import logging
 import os
 import time
+from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, Literal
 
@@ -554,7 +555,7 @@ TOOLS: list[dict[str, Any]] = [
     ),
     _fn(
         "query_dataset",
-        "Run a filtered query against one of the 17 NYC Open Data sources. "
+        "Run a filtered query against one of the 18 NYC Open Data sources. "
         "Use only when the user wants a literal count or list of records.",
         {
             "type": "object",
@@ -656,6 +657,197 @@ TOOLS: list[dict[str, Any]] = [
         },
     ),
 ]
+
+
+_CORE_TOOLS = {
+    "score_neighborhood",
+    "compare_neighborhoods",
+    "query_dataset",
+    "search_address",
+}
+
+
+def _artifact_state(available: bool, reason: str, **details: Any) -> dict[str, Any]:
+    return {"available": available, "reason": reason, **details}
+
+
+def _walking_state() -> dict[str, Any]:
+    graph_dir = Path(
+        os.getenv("URBAN_DOSSIER_WALK_GRAPH_DIR", "/mnt/data/urban-dossier-state/maps/walk")
+    )
+    manifest_path = graph_dir / "walk_graph.manifest.json"
+    required = [
+        graph_dir / "walk_nodes.parquet",
+        graph_dir / "walk_edges.parquet",
+        manifest_path,
+    ]
+    missing = [
+        str(path)
+        for path in required
+        if not path.is_file() or path.stat().st_size == 0
+    ]
+    manifest_valid = False
+    if not missing:
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest_valid = (
+                manifest.get("network_type") == "walking"
+                and int(manifest.get("node_count", 0)) > 0
+                and int(manifest.get("edge_count", 0)) > 0
+            )
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            manifest_valid = False
+    available = not missing and manifest_valid
+    return _artifact_state(
+        available,
+        "ready"
+        if available
+        else ("walking_graph_missing" if missing else "walking_manifest_invalid"),
+        release_gate="walking_graph",
+        required_files=[str(path) for path in required],
+        missing_files=missing,
+    )
+
+
+def _elasticity_state() -> dict[str, Any]:
+    override = os.getenv("URBAN_DOSSIER_ELASTICITY_PATH")
+    if override:
+        path = Path(override)
+    else:
+        data_root = Path(os.getenv("URBAN_DOSSIER_DATA_ROOT", "data"))
+        path = data_root / "cache" / "simulation" / "elasticity.json"
+    if not path.is_file():
+        return _artifact_state(
+            False,
+            "elasticity_artifact_missing",
+            release_gate="elasticity_artifact",
+            artifact=str(path),
+            interventions=[],
+        )
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return _artifact_state(
+            False,
+            "elasticity_artifact_invalid",
+            release_gate="elasticity_artifact",
+            artifact=str(path),
+            detail=str(exc),
+            interventions=[],
+        )
+    interventions = sorted(
+        name
+        for name, entry in (payload.get("interventions") or {}).items()
+        if isinstance(entry, dict) and entry.get("available") is True
+    )
+    return _artifact_state(
+        bool(interventions),
+        "ready" if interventions else "no_fitted_interventions",
+        release_gate="elasticity_artifact",
+        artifact=str(path),
+        interventions=interventions,
+    )
+
+
+def _rag_state() -> dict[str, Any]:
+    base = Path(os.getenv("RAG_INDEX_DIR", "index"))
+    explicit = os.getenv("RAG_INDEX_FILENAME")
+    candidates = (
+        [base / explicit]
+        if explicit
+        else [base / "corpus.cuvs", base / "corpus.faiss"]
+    )
+    for path in candidates:
+        meta = path.with_suffix(path.suffix + ".meta.json")
+        index_exists = (path.is_file() and path.stat().st_size > 0) or (
+            path.suffix == ".cuvs"
+            and Path(str(path) + ".vectors.npy").is_file()
+            and Path(str(path) + ".vectors.npy").stat().st_size > 0
+        )
+        metadata_valid = False
+        if meta.is_file():
+            try:
+                payload = json.loads(meta.read_text(encoding="utf-8"))
+                metadata_valid = (
+                    int(payload.get("dim", 0)) > 0
+                    and isinstance(payload.get("metadata"), list)
+                    and bool(payload["metadata"])
+                )
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                metadata_valid = False
+        if index_exists and metadata_valid:
+            return _artifact_state(
+                True,
+                "ready",
+                release_gate="rag_index",
+                artifact=str(path),
+                metadata=str(meta),
+            )
+    return _artifact_state(
+        False,
+        "rag_index_missing",
+        release_gate="rag_index",
+        required_any=[str(path) for path in candidates],
+    )
+
+
+def tool_availability() -> dict[str, dict[str, Any]]:
+    """Return the runtime release decision for every stable tool name."""
+
+    states = {name: _artifact_state(True, "ready", release_gate="core") for name in _CORE_TOOLS}
+    states.update(
+        {
+            "find_similar_neighborhoods": _artifact_state(
+                False,
+                "dedicated_similarity_not_implemented",
+                release_gate="dedicated_similarity_index",
+            ),
+            "walking_isochrone": _walking_state(),
+            "simulate_intervention": _elasticity_state(),
+            "retrieve_dataset_docs": _rag_state(),
+        }
+    )
+    return {name: states[name] for name in sorted(states)}
+
+
+def get_available_tools(
+    states: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Return copied schemas for tools that pass their release gate."""
+
+    states = states or tool_availability()
+    active: list[dict[str, Any]] = []
+    for schema in TOOLS:
+        name = schema["function"]["name"]
+        state = states[name]
+        if not state["available"]:
+            continue
+        published = copy.deepcopy(schema)
+        if name == "simulate_intervention":
+            intervention = published["function"]["parameters"]["properties"][
+                "intervention_type"
+            ]
+            intervention["enum"] = state["interventions"]
+        active.append(published)
+    return active
+
+
+def tool_availability_prompt(states: dict[str, dict[str, Any]] | None = None) -> str:
+    """Align the system prose with the schemas published for this request."""
+
+    states = states or tool_availability()
+    active = [name for name, state in states.items() if state["available"]]
+    inactive = [
+        f"{name} ({state['reason']})"
+        for name, state in states.items()
+        if not state["available"]
+    ]
+    return (
+        "\n\n# Runtime tool release gates\n"
+        f"Active tools for this request: {', '.join(active)}.\n"
+        f"Unavailable tools: {', '.join(inactive) or 'none'}. "
+        "Do not claim to run or cite an unavailable tool; explain the limitation instead."
+    )
 
 
 # --------------------------------------------------------------------------- #

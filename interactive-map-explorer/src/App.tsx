@@ -27,6 +27,7 @@ import type {
   DetailPreviewResponse,
   DetailResponse,
   EvidenceEntry,
+  AgentStatus,
   PriorityAction,
   RadiusMeters,
   Scores,
@@ -262,7 +263,7 @@ export default function App() {
 
   // Agent mode
   const [agentMode, setAgentMode] = useState(false);
-  const [agentAvailable, setAgentAvailable] = useState(false);
+  const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null);
   const [agentSessionId, setAgentSessionId] = useState<string | null>(null);
   /* Isochrone the agent computed for the current point, drawn on the map. */
   const [isochrone, setIsochrone] = useState<any | null>(null);
@@ -320,8 +321,8 @@ export default function App() {
   useEffect(() => {
     fetch('/api/agent/status')
       .then((r) => r.json())
-      .then((data) => setAgentAvailable(data.enabled))
-      .catch(() => setAgentAvailable(false));
+      .then((data: AgentStatus) => setAgentStatus(data))
+      .catch(() => setAgentStatus(null));
   }, []);
 
   // Create agent session on demand
@@ -709,7 +710,7 @@ export default function App() {
                 <AgentToggle
                   enabled={agentMode}
                   onToggle={setAgentMode}
-                  available={agentAvailable}
+                  available={agentStatus?.enabled ?? false}
                 />
                 <button
                   onClick={() => setPanelExpanded(!panelExpanded)}
@@ -756,6 +757,7 @@ export default function App() {
                       : null
                   }
                   onIsochrone={setIsochrone}
+                  toolAvailability={agentStatus?.tools}
                 />
               ) : (
               <>

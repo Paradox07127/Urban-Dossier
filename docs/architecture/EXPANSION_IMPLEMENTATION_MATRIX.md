@@ -48,14 +48,14 @@ must be updated in the same commit that changes an item's status.
 | Item | Status | Current evidence | Missing proof / next gate |
 | --- | --- | --- | --- |
 | 3.1 One `/ask` contract | done | FastAPI, Node and React use `/api/agent/ask`; response carries trace/evidence/session | Remove stale comments and keep contract test in full CI |
-| 3.2 Typed tool registry | partial | Eight Pydantic argument models and local validation | Availability must be derived from implementation gates; currently experimental tools are exposed prematurely |
+| 3.2 Typed tool registry | done | Eight stable Pydantic schemas validate arguments locally; each Agent run publishes only the artifact-gated subset, narrows simulation enums to fitted interventions, and exposes sanitized decisions in Agent status | Keep new tools closed until their implementation and artifact gate are both tested |
 | 3.3 Payload policy | not started | No `schema_only/schema+aggregates/+sample` field or AnalysisRun record | Define enum, persisted audit record, enforcement tests |
 | 3.4 Intent router | not started | Prompt-only routing | Deterministic local router and out-of-scope short circuit |
 | 3.5 Socrata ingestion | partial | Keyset snapshot downloader with partial-file quarantine | Discovery catalog traversal, watermark state, publish transaction and quarantine index |
 | 3.6 Profile/semantic inference | partial | Prep-data skills contain profile/clean logic | Controlled backend job, lexical identifier protection tests and NYC spatial-role inference |
 | 3.7 Controlled text-to-SQL | not started | Generic dataset filters are deterministic, but no NL→SQL executor | Parsed SELECT-only plan, allowlisted semantic layer, isolated DuckDB process, timeout/resource limits and one repair pass |
 | 3.8 Catalog RAG | partial | Ingest/embed/index/retrieve/rerank code and 18-entry catalog | No built index; runtime retrieval is not release-gated; no end-to-end dataset recall evaluation |
-| 3.9 Legacy skill consolidation | partial | Several former stubs now call real endpoints | `find_similar` is a watchlist approximation; tool header/docs are stale; unqualified tools remain model-visible |
+| 3.9 Legacy skill consolidation | partial | Former stubs call real endpoints; tool docs and the 18-source count now match runtime; unreleased tools are hidden | Replace the watchlist approximation with a dedicated score-vector similarity implementation and remove its legacy route |
 
 ## 4. Local models
 
