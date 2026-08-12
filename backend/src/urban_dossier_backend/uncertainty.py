@@ -34,11 +34,12 @@ logger = logging.getLogger(__name__)
 _CELLS_PATH = READY_DATA_DIR / "analysis" / "sensitivity_cells.parquet"
 _lock = threading.Lock()
 _cache: dict[str, dict] | None = None
+_city_distribution: dict | None = None
 _cache_missing = False
 
 
 def _load() -> dict[str, dict] | None:
-    global _cache, _cache_missing
+    global _cache, _city_distribution, _cache_missing
     if _cache is not None or _cache_missing:
         return _cache
     with _lock:
@@ -60,6 +61,31 @@ def _load() -> dict[str, dict] | None:
                 "rank_nominal", "rank_median", "rank_p5", "rank_p95",
             ]
             _cache = {row[0]: dict(zip(columns[1:], row[1:])) for row in rows}
+            nominal_scores = [
+                float(entry["nominal"])
+                for entry in _cache.values()
+                if entry["nominal"] is not None
+            ]
+            bin_width = 5
+            counts = [0] * (100 // bin_width)
+            for score in nominal_scores:
+                index = min(max(int(score // bin_width), 0), len(counts) - 1)
+                counts[index] += 1
+            _city_distribution = {
+                "grain": "h3_r9_analysis_cells",
+                "score_field": "nominal",
+                "population_n": len(nominal_scores),
+                "bin_width": bin_width,
+                "bins": [
+                    {
+                        "bin_start": index * bin_width,
+                        "bin_end": (index + 1) * bin_width,
+                        "count": count,
+                    }
+                    for index, count in enumerate(counts)
+                ],
+                "method": "midrank_ecdf",
+            }
             logger.info("loaded %d cells of score intervals", len(_cache))
         except Exception as exc:  # noqa: BLE001 - disclosure must not break analysis
             logger.warning("failed to load sensitivity cells: %s", exc)
@@ -87,11 +113,33 @@ def score_uncertainty(latitude: float, longitude: float) -> dict | None:
     def _round(value: float | None) -> float | None:
         return None if value is None else round(float(value), 1)
 
+    nominal_score = _round(entry["nominal"])
+    nominal_values = [
+        float(item["nominal"])
+        for item in cells.values()
+        if item["nominal"] is not None
+    ]
+    nominal_percentile = None
+    if nominal_score is not None and nominal_values:
+        below = sum(value < float(entry["nominal"]) for value in nominal_values)
+        equal = sum(value == float(entry["nominal"]) for value in nominal_values)
+        nominal_percentile = round((below + 0.5 * equal) / len(nominal_values), 4)
+    distribution = None
+    if _city_distribution is not None:
+        distribution = {
+            **_city_distribution,
+            "marker_score": nominal_score,
+            "marker_percentile": nominal_percentile,
+        }
+
     return {
         "grain": "h3_r9_cell",
         "methodology_version": METHODOLOGY_VERSION,
         "draws": 1000,
         "score_median": _round(entry["median"]),
+        "nominal_score": nominal_score,
+        "nominal_percentile": nominal_percentile,
+        "distribution": distribution,
         "score_range": [_round(entry["lo95_prodnorm"]), _round(entry["hi95_prodnorm"])],
         "score_range_all_methods": [_round(entry["lo95"]), _round(entry["hi95"])],
         "rank_range_share": None if entry["rank_p5"] is None or entry["rank_p95"] is None
@@ -110,7 +158,8 @@ def score_uncertainty(latitude: float, longitude: float) -> dict | None:
 
 def reset_cache() -> None:
     """Test hook: drop the memoized table so a new path can be exercised."""
-    global _cache, _cache_missing
+    global _cache, _city_distribution, _cache_missing
     with _lock:
         _cache = None
+        _city_distribution = None
         _cache_missing = False

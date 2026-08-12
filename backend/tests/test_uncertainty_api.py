@@ -50,6 +50,14 @@ def test_a_manhattan_point_gets_both_intervals():
     assert (hi_all - lo_all) > 0 and (hi - lo) > 0
     assert out["methodology_version"] == METHODOLOGY_VERSION
     assert out["grain"] == "h3_r9_cell"
+    distribution = out["distribution"]
+    assert distribution["grain"] == "h3_r9_analysis_cells"
+    assert sum(item["count"] for item in distribution["bins"]) == distribution[
+        "population_n"
+    ]
+    assert distribution["marker_score"] == out["nominal_score"]
+    assert distribution["marker_percentile"] == out["nominal_percentile"]
+    assert 0 <= out["nominal_percentile"] <= 1
 
 
 @requires_cells

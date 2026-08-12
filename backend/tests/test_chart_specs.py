@@ -8,8 +8,10 @@ from urban_dossier_backend.chart_specs import (
     compare_scores_chart,
     detail_chart_specs,
     score_composition_chart,
+    score_distribution_chart,
     trend_chart,
 )
+from urban_dossier_backend.providers.direct_provider import DirectQueryDataProvider
 
 
 def _values(chart) -> list[dict]:
@@ -84,6 +86,88 @@ def test_detail_bundle_has_no_empty_trend_placeholder():
     )
 
     assert set(charts) == {"score_composition"}
+
+
+def test_overview_distribution_bins_and_midrank_share_one_population():
+    distribution = DirectQueryDataProvider._overview_score_distribution(
+        [
+            {"overall_score": 0},
+            {"overall_score": 4},
+            {"overall_score": 5},
+            {"overall_score": 50},
+            {"overall_score": 100},
+            {"overall_score": None},
+        ],
+        "overall_score",
+        5,
+    )
+
+    assert distribution is not None
+    assert distribution["grain"] == "h3_r8_land_cells"
+    assert distribution["population_n"] == 5
+    assert sum(item["count"] for item in distribution["bins"]) == 5
+    assert distribution["bins"][0]["count"] == 2
+    assert distribution["bins"][1]["count"] == 1
+    assert distribution["bins"][10]["count"] == 1
+    assert distribution["bins"][19]["count"] == 1
+    assert distribution["marker_percentile"] == 0.5
+    assert DirectQueryDataProvider._overview_score_distribution([], "overall_score", 5) is None
+
+
+def test_distribution_chart_layers_cell_marker_and_sensitivity_interval():
+    overview_context = {
+        "overall": {
+            "distribution": {
+                "bins": [
+                    {"bin_start": 0, "bin_end": 5, "count": 3},
+                    {"bin_start": 5, "bin_end": 10, "count": 7},
+                ],
+                "marker_score": 54,
+                "marker_percentile": 0.72,
+            }
+        }
+    }
+    chart = score_distribution_chart(
+        overview_context,
+        {
+            "score_range": [48, 61],
+            "distribution": {
+                "grain": "h3_r9_analysis_cells",
+                "bins": [
+                    {"bin_start": 0, "bin_end": 5, "count": 11},
+                    {"bin_start": 5, "bin_end": 10, "count": 13},
+                ],
+                "marker_score": 52,
+                "marker_percentile": 0.68,
+            },
+        },
+    )
+
+    assert chart is not None
+    assert chart.code_ref.endswith("score_distribution_chart@1")
+    assert len(chart.spec["layer"]) == 3
+    assert chart.spec["layer"][0]["data"]["values"] == [
+        {"range_start": 48.0, "range_end": 61.0}
+    ]
+    assert chart.spec["layer"][1]["data"]["values"] == [
+        {"bin_start": 0, "bin_end": 5, "count": 11},
+        {"bin_start": 5, "bin_end": 10, "count": 13},
+    ]
+    assert chart.spec["layer"][2]["data"]["values"] == [
+        {"score": 52.0, "percentile": 0.68, "marker_label": "Center cell"}
+    ]
+    assert "transform" not in json.dumps(chart.model_dump())
+
+    without_interval = score_distribution_chart(overview_context, None)
+    assert without_interval is not None
+    assert len(without_interval.spec["layer"]) == 2
+
+    mismatched_interval = score_distribution_chart(
+        overview_context,
+        {"score_range": [48, 61]},
+    )
+    assert mismatched_interval is not None
+    assert len(mismatched_interval.spec["layer"]) == 2
 
 
 def test_preview_response_publishes_chart_specs(monkeypatch):

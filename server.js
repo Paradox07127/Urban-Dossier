@@ -778,7 +778,9 @@ app.get('/api/render/global', async (req, res) => {
 // data_mode) and keeps coordinates to sub-metre precision. The TTL is also the
 // invalidation guard for a refreshed data snapshot that intentionally keeps
 // the same methodology version.
-const CACHE_DIR = path.join(__dirname, 'data', 'cache', 'api');
+const CACHE_DIR = process.env.URBAN_DOSSIER_API_CACHE_DIR
+  ? path.resolve(process.env.URBAN_DOSSIER_API_CACHE_DIR)
+  : path.join(__dirname, 'data', 'cache', 'api');
 const configuredCacheTtl = Number(process.env.URBAN_DOSSIER_API_CACHE_TTL_MS || 900000);
 const CACHE_TTL_MS = Number.isFinite(configuredCacheTtl) && configuredCacheTtl >= 0
   ? configuredCacheTtl

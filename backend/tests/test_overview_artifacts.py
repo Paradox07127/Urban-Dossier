@@ -246,3 +246,21 @@ def test_overview_payload_reports_the_artifact_version():
         pytest.skip("provider overview dir not configured in this environment")
     payload = provider.get_overview_layer("overall", None, None, None)
     assert payload["overview_methodology_version"] == METHODOLOGY_VERSION
+
+
+@requires_artifacts
+def test_detail_overview_context_publishes_land_cell_distribution():
+    from urban_dossier_backend.providers.direct_provider import DirectQueryDataProvider
+
+    provider = DirectQueryDataProvider()
+    context = provider.get_overview_context(40.7484, -73.9857)
+
+    assert context is not None
+    distribution = context["overall"]["distribution"]
+    assert distribution["grain"] == "h3_r8_land_cells"
+    assert distribution["population_n"] > 0
+    assert sum(item["count"] for item in distribution["bins"]) == distribution[
+        "population_n"
+    ]
+    assert 0 <= distribution["marker_score"] <= 100
+    assert 0 <= distribution["marker_percentile"] <= 1

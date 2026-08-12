@@ -51,9 +51,10 @@ try {
   const renderedCharts = await page.locator('.vega-embed svg').count();
 
   assert(captions.some((text) => text.includes('Score composition')));
+  assert(captions.some((text) => text.includes('City score distribution')));
   assert(captions.some((text) => text.includes('Quarterly signals')));
   assert(captions.some((text) => text.includes('Score comparison')));
-  assert(renderedCharts >= 3, `expected at least 3 rendered Vega SVGs, got ${renderedCharts}`);
+  assert(renderedCharts >= 4, `expected at least 4 rendered Vega SVGs, got ${renderedCharts}`);
   assert.equal(externalRequests.length, 0, `external requests attempted: ${externalRequests}`);
   assert.deepEqual(pageErrors, []);
 

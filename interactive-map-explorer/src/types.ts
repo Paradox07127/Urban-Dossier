@@ -116,6 +116,18 @@ export interface ScoreUncertainty {
   methodology_version: string;
   draws: number;
   score_median: number | null;
+  nominal_score: number | null;
+  nominal_percentile: number | null;
+  distribution?: {
+    grain: string;
+    score_field: string;
+    population_n: number;
+    bin_width: number;
+    bins: Array<{ bin_start: number; bin_end: number; count: number }>;
+    marker_score: number | null;
+    marker_percentile: number | null;
+    method: string;
+  } | null;
   // Production normalization held fixed; weights, inclusion and the
   // missing-data rule vary. The interval a reader should lead with.
   score_range: [number | null, number | null];

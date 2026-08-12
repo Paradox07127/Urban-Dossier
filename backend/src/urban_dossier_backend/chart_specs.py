@@ -213,6 +213,149 @@ def trend_chart(trends: dict[str, Any]) -> ChartSpec | None:
     )
 
 
+def score_distribution_chart(
+    overview_context: dict[str, Any] | None,
+    uncertainty: dict[str, Any] | None,
+) -> ChartSpec | None:
+    code_ref = "urban_dossier_backend.chart_specs:score_distribution_chart@1"
+    overall = (overview_context or {}).get("overall") or {}
+    overview_distribution = overall.get("distribution") or {}
+    uncertainty_distribution = (uncertainty or {}).get("distribution") or {}
+    # The interval artifact is H3 r9 while the public overview is H3 r8. Only
+    # layer an interval when its own r9 histogram and marker are available;
+    # otherwise fall back to the overview distribution without pretending the
+    # two grains describe the same estimand.
+    distribution = uncertainty_distribution or overview_distribution
+    bins = distribution.get("bins") or []
+    marker_score = distribution.get("marker_score")
+    marker_percentile = distribution.get("marker_percentile")
+    if not bins or not isinstance(marker_score, (int, float)):
+        return None
+
+    layers: list[dict[str, Any]] = []
+    score_range = (
+        (uncertainty or {}).get("score_range") or []
+        if uncertainty_distribution
+        else []
+    )
+    if (
+        len(score_range) == 2
+        and isinstance(score_range[0], (int, float))
+        and isinstance(score_range[1], (int, float))
+    ):
+        layers.append(
+            {
+                "data": {
+                    "values": [
+                        {
+                            "range_start": float(score_range[0]),
+                            "range_end": float(score_range[1]),
+                        }
+                    ]
+                },
+                "mark": {"type": "rect", "color": "#765b8a", "opacity": 0.14},
+                "encoding": {
+                    "x": {
+                        "field": "range_start",
+                        "type": "quantitative",
+                        "scale": {"domain": [0, 100], "nice": False},
+                    },
+                    "x2": {"field": "range_end"},
+                    "tooltip": [
+                        {
+                            "field": "range_start",
+                            "type": "quantitative",
+                            "title": "Sensitivity low",
+                        },
+                        {
+                            "field": "range_end",
+                            "type": "quantitative",
+                            "title": "Sensitivity high",
+                        },
+                    ],
+                },
+            }
+        )
+    layers.extend(
+        [
+            {
+                "data": {"values": bins},
+                "mark": {"type": "bar", "color": "#98a2b3", "opacity": 0.8},
+                "encoding": {
+                    "x": {
+                        "field": "bin_start",
+                        "type": "quantitative",
+                        "bin": "binned",
+                        "scale": {"domain": [0, 100], "nice": False},
+                        "axis": {"title": "Overall score", "tickCount": 5},
+                    },
+                    "x2": {"field": "bin_end"},
+                    "y": {
+                        "field": "count",
+                        "type": "quantitative",
+                        "axis": {"title": "H3 cells", "tickMinStep": 1},
+                    },
+                    "tooltip": [
+                        {"field": "bin_start", "type": "quantitative", "title": "From"},
+                        {"field": "bin_end", "type": "quantitative", "title": "To"},
+                        {"field": "count", "type": "quantitative", "title": "Cells"},
+                    ],
+                },
+            },
+            {
+                "data": {
+                    "values": [
+                        {
+                            "score": float(marker_score),
+                            "percentile": marker_percentile,
+                            "marker_label": "Center cell",
+                        }
+                    ]
+                },
+                "mark": {"type": "rule", "color": "#101828", "strokeWidth": 2},
+                "encoding": {
+                    "x": {
+                        "field": "score",
+                        "type": "quantitative",
+                        "scale": {"domain": [0, 100], "nice": False},
+                    },
+                    "tooltip": [
+                        {"field": "marker_label", "type": "nominal", "title": "Marker"},
+                        {"field": "score", "type": "quantitative", "title": "Cell score"},
+                        {
+                            "field": "percentile",
+                            "type": "quantitative",
+                            "format": ".0%",
+                            "title": "City percentile",
+                        },
+                    ],
+                },
+            },
+        ]
+    )
+
+    spec = _base_spec(code_ref, [])
+    spec.pop("data")
+    grain = distribution.get("grain") or "unknown_cell_population"
+    spec.update(
+        {
+            "description": (
+                f"City distribution of {grain}; marker and any sensitivity "
+                "range refer to the same containing cell and score method."
+            ),
+            "width": "container",
+            "height": 145,
+            "layer": layers,
+        }
+    )
+    return ChartSpec(
+        chart_id="score_distribution",
+        title="City score distribution · containing cell",
+        code_ref=code_ref,
+        spec=spec,
+    )
+
+
 def compare_scores_chart(
     scores_a: dict[str, Any], scores_b: dict[str, Any], deltas: dict[str, Any]
 ) -> ChartSpec:
@@ -285,7 +428,15 @@ def compare_scores_chart(
 
 
 def detail_chart_specs(
-    scores: dict[str, Any], coverage: dict[str, Any], trends: dict[str, Any]
+    scores: dict[str, Any],
+    coverage: dict[str, Any],
+    trends: dict[str, Any],
+    overview_context: dict[str, Any] | None = None,
+    uncertainty: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    charts = [score_composition_chart(scores, coverage), trend_chart(trends)]
+    charts = [
+        score_composition_chart(scores, coverage),
+        score_distribution_chart(overview_context, uncertainty),
+        trend_chart(trends),
+    ]
     return {chart.chart_id: chart.model_dump() for chart in charts if chart is not None}

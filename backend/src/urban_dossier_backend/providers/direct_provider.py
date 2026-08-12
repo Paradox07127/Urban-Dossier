@@ -464,6 +464,58 @@ class DirectQueryDataProvider(DataProvider):
                 best_row = row
         return best_row
 
+    @staticmethod
+    def _overview_score_distribution(
+        rows: list[dict[str, Any]], score_field: str, marker_score: float | None
+    ) -> dict[str, Any] | None:
+        """Histogram and mid-rank for the same land-clipped H3 population.
+
+        The marker is the containing/nearest overview cell score, not the
+        radius-aggregated headline score. Keeping both the population and the
+        marker at H3 r8 with standard overview weights makes the percentile a
+        real comparison rather than a visually convenient mismatch.
+        """
+
+        scores = [
+            value
+            for row in rows
+            if (value := to_float(row.get(score_field))) is not None
+        ]
+        if not scores:
+            return None
+
+        bin_width = 5
+        bin_count = 100 // bin_width
+        counts = [0] * bin_count
+        for score in scores:
+            index = min(max(int(score // bin_width), 0), bin_count - 1)
+            counts[index] += 1
+        bins = [
+            {
+                "bin_start": index * bin_width,
+                "bin_end": (index + 1) * bin_width,
+                "count": count,
+            }
+            for index, count in enumerate(counts)
+        ]
+
+        percentile = None
+        if marker_score is not None:
+            below = sum(value < marker_score for value in scores)
+            equal = sum(value == marker_score for value in scores)
+            percentile = round((below + 0.5 * equal) / len(scores), 4)
+
+        return {
+            "grain": "h3_r8_land_cells",
+            "score_field": score_field,
+            "population_n": len(scores),
+            "bin_width": bin_width,
+            "bins": bins,
+            "marker_score": marker_score,
+            "marker_percentile": percentile,
+            "method": "midrank_ecdf",
+        }
+
     def get_overview_context(self, latitude: float, longitude: float) -> dict[str, Any] | None:
         if self.overview_dir is None or not self.overview_dir.exists():
             return None
@@ -494,6 +546,11 @@ class DirectQueryDataProvider(DataProvider):
                 "score": score,
                 "cell_id": nearest.get("h3") or nearest.get("cell_id"),
                 "level": nearest.get("risk_level") or nearest.get("level"),
+                "distribution": self._overview_score_distribution(
+                    rows,
+                    "overall_score" if category_id == "overall" else f"{category_id}_score",
+                    score,
+                ),
             }
             if category_id == "overall":
                 overall_context = payload

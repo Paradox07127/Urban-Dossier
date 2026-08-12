@@ -811,9 +811,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {preview?.chart_specs?.score_composition && (
-                  <VegaChart chart={preview.chart_specs.score_composition} />
-                )}
                 {/* Score cards — 2x2 grid */}
                 <div className="grid grid-cols-2 gap-3">
                   {/* Overall score - spans full width */}
@@ -834,46 +831,6 @@ export default function App() {
                       >
                         {formatScore(scores?.overall)}
                       </span>
-                      {/* The 95% interval from the sensitivity analysis. A
-                          single integer overstates what the method knows; the
-                          band under the number is the honest width. Absent
-                          when the offline analysis has not been generated --
-                          absence is shown as nothing, never as fake
-                          confidence. */}
-                      {/* The interval's estimand is NOT the headline number:
-                          it describes the centre cell under standard weights,
-                          while the number above is a radius aggregate under
-                          the user's priority weights. The band used to carry
-                          a tick marking the headline on it -- a visual claim
-                          that the two are comparable, which they are not (a
-                          headline outside the band is expected, not an
-                          error). The tick is gone and the caption names the
-                          band's own object. */}
-                      {preview?.score_uncertainty?.score_range?.[0] != null && (
-                        <div className="mt-1.5">
-                          <div className="relative h-1.5 w-28 rounded-full bg-border/60 ml-auto">
-                            <div
-                              className="absolute h-full rounded-full bg-foreground/30"
-                              style={{
-                                left: `${preview.score_uncertainty.score_range[0]}%`,
-                                width: `${Math.max(
-                                  (preview.score_uncertainty.score_range[1] ?? 0) -
-                                    (preview.score_uncertainty.score_range[0] ?? 0),
-                                  1,
-                                )}%`,
-                              }}
-                            />
-                          </div>
-                          <div
-                            className="mt-0.5 font-mono text-[10px] tabular-nums text-muted-foreground"
-                            title={preview.score_uncertainty.note}
-                          >
-                            {Math.round(preview.score_uncertainty.score_range[0] ?? 0)}
-                            –{Math.round(preview.score_uncertainty.score_range[1] ?? 0)}
-                            {' '}· center cell, std weights
-                          </div>
-                        </div>
-                      )}
                     </div>
                   </div>
                   {/* Category scores — one per cell */}
@@ -923,6 +880,13 @@ export default function App() {
                     );
                   })}
                 </div>
+
+                {preview?.chart_specs?.score_composition && (
+                  <VegaChart chart={preview.chart_specs.score_composition} />
+                )}
+                {preview?.chart_specs?.score_distribution && (
+                  <VegaChart chart={preview.chart_specs.score_distribution} />
+                )}
 
                 {/* Method footer: version + the door to item 1.6's page. */}
                 <div className="flex items-center justify-between font-mono text-[10px] text-muted-foreground/70">

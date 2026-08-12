@@ -198,7 +198,14 @@ def _build_detail_payload(
         logger.warning("Hotspot detection failed (non-fatal): %s", exc)
 
     detail_items["hotspots"] = hotspots
-    chart_specs = detail_chart_specs(scores, score_coverage, trends)
+    uncertainty_payload = score_uncertainty(latitude, longitude)
+    chart_specs = detail_chart_specs(
+        scores,
+        score_coverage,
+        trends,
+        overview_context,
+        uncertainty_payload,
+    )
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -231,7 +238,7 @@ def _build_detail_payload(
         # at the grain it was computed at (the containing cell). None when the
         # artifact has not been generated -- absent uncertainty is disclosed
         # as absent, never faked as a point estimate's confidence.
-        "score_uncertainty": score_uncertainty(latitude, longitude),
+        "score_uncertainty": uncertainty_payload,
         "baselines": baselines,
         "enriched_context": point_payload.get("enriched_context", {}),
     }
