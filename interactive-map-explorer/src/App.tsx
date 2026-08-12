@@ -232,6 +232,13 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   // Compare mode
   const [pinnedPreview, setPinnedPreview] = useState<DetailPreviewResponse | null>(null);
+  // Deltas for the compare strip come from /api/compare-points, per
+  // EXPANSION_PLAN 2.3: comparisons are backend facts, not frontend
+  // arithmetic. The subtraction looks identical today; the rule exists so
+  // that when deltas grow uncertainty bands or become maps, there is one
+  // place computing them. null = not loaded or failed -> no delta chips.
+  const [serverDeltas, setServerDeltas] = useState<Record<string, number | null> | null>(null);
+
   const [pinnedTitle, setPinnedTitle] = useState<string>('');
   const [panelExpanded, setPanelExpanded] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -262,6 +269,28 @@ export default function App() {
     [preview, selectedTarget],
   );
   const priorityOrder = useMemo(() => priorityOrderKey(priorities), [priorities]);
+  useEffect(() => {
+    setServerDeltas(null);
+    const a = pinnedPreview?.target;
+    const b = preview?.target;
+    if (!pinnedPreview || !preview || pinnedPreview === preview) return;
+    if (a?.latitude == null || b?.latitude == null) return;
+    let cancelled = false;
+    fetch('/api/compare-points', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        point_a: { latitude: a.latitude, longitude: a.longitude },
+        point_b: { latitude: b.latitude, longitude: b.longitude },
+        radius_m: selectedRadiusM,
+        priority_order: priorityOrder,
+      }),
+    })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((data) => { if (!cancelled) setServerDeltas(data?.deltas ?? null); })
+      .catch(() => { if (!cancelled) setServerDeltas(null); });
+    return () => { cancelled = true; };
+  }, [pinnedPreview, preview, selectedRadiusM, priorityOrder]);
 
   // Zoom ref to avoid stale closure in onMapClick
   const zoomRef = useRef(zoom);
@@ -745,7 +774,13 @@ export default function App() {
                       const cScore = scores?.[cat as keyof Scores];
                       const pVal = typeof pScore === 'number' ? pScore : null;
                       const cVal = typeof cScore === 'number' ? cScore : null;
-                      const diff = pVal != null && cVal != null ? cVal - pVal : null;
+                      // Backend-computed; local subtraction is not a fallback,
+                      // because a silently different delta path is worse than
+                      // a briefly absent chip. Chip colours are the ramp's own
+                      // poles -- green/red is banned here for the same reason
+                      // it is banned on the map.
+                      const rawDelta = serverDeltas?.[cat];
+                      const diff = typeof rawDelta === 'number' ? Math.round(rawDelta) : null;
                       return (
                         <div key={cat} className="grid grid-cols-3 gap-2 text-center text-sm tabular-nums">
                           <span className="font-bold" style={scoreTextStyle(pVal)}>{pVal ?? '--'}</span>
@@ -753,7 +788,10 @@ export default function App() {
                           <span className="font-bold" style={scoreTextStyle(cVal)}>
                             {cVal ?? '--'}
                             {diff != null && diff !== 0 && (
-                              <span className={`text-[10px] ml-1 ${diff > 0 ? 'text-green-600' : 'text-red-600'}`}>
+                              <span
+                                className="text-[10px] ml-1"
+                                style={{ color: diff > 0 ? '#1e7a70' : '#8c5a10' }}
+                              >
                                 {diff > 0 ? '+' : ''}{diff}
                               </span>
                             )}
@@ -817,6 +855,15 @@ export default function App() {
                           when the offline analysis has not been generated --
                           absence is shown as nothing, never as fake
                           confidence. */}
+                      {/* The interval's estimand is NOT the headline number:
+                          it describes the centre cell under standard weights,
+                          while the number above is a radius aggregate under
+                          the user's priority weights. The band used to carry
+                          a tick marking the headline on it -- a visual claim
+                          that the two are comparable, which they are not (a
+                          headline outside the band is expected, not an
+                          error). The tick is gone and the caption names the
+                          band's own object. */}
                       {preview?.score_uncertainty?.score_range?.[0] != null && (
                         <div className="mt-1.5">
                           <div className="relative h-1.5 w-28 rounded-full bg-border/60 ml-auto">
@@ -831,16 +878,14 @@ export default function App() {
                                 )}%`,
                               }}
                             />
-                            {scores?.overall != null && (
-                              <div
-                                className="absolute top-1/2 h-3 w-[2px] -translate-y-1/2 rounded bg-foreground"
-                                style={{ left: `${scores.overall}%` }}
-                              />
-                            )}
                           </div>
-                          <div className="mt-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
-                            95%: {Math.round(preview.score_uncertainty.score_range[0] ?? 0)}
+                          <div
+                            className="mt-0.5 font-mono text-[10px] tabular-nums text-muted-foreground"
+                            title={preview.score_uncertainty.note}
+                          >
+                            {Math.round(preview.score_uncertainty.score_range[0] ?? 0)}
                             –{Math.round(preview.score_uncertainty.score_range[1] ?? 0)}
+                            {' '}· center cell, std weights
                           </div>
                         </div>
                       )}

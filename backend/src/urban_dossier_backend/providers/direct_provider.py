@@ -1476,6 +1476,39 @@ class DirectQueryDataProvider(DataProvider):
             "quarterly_values": quarterly_values,
         }
 
+    def _overview_artifact_version(self) -> str | None:
+        """The methodology version the overview artifacts were built under.
+
+        None when the manifest is absent -- which is itself the pre-versioning
+        signature. The August 2026 incident this guards against: the artifacts
+        kept serving weights three versions of scoring ago, and with no stamp
+        nothing could tell. Checked once per process; a mismatch logs loudly
+        and is reported in the payload, but the layer still serves -- a stale
+        overview labelled stale beats a blank map.
+        """
+        cached = getattr(self, "_overview_version_cache", "unset")
+        if cached != "unset":
+            return cached
+        version: str | None = None
+        try:
+            import json
+
+            manifest = self.overview_dir / "overview.manifest.json"
+            if manifest.exists():
+                version = json.loads(manifest.read_text()).get("methodology_version")
+        except (OSError, ValueError) as exc:
+            logger.warning("overview manifest unreadable: %s", exc)
+        from ..metrics import METHODOLOGY_VERSION
+
+        if version != METHODOLOGY_VERSION:
+            logger.warning(
+                "overview artifacts are methodology %s but the code is %s; "
+                "re-run backend/scripts/build_overview_tiles.py and build_overview_nta.py",
+                version or "pre-versioning", METHODOLOGY_VERSION,
+            )
+        self._overview_version_cache = version
+        return version
+
     def get_overview_layer(self, view_mode: str, category_id: str | None, viewport: dict | None, zoom: int | None) -> dict[str, Any]:
         requested = "overall" if view_mode == "overall" else (category_id or "unknown")
         if view_mode != "overall" and category_id not in CATEGORY_CONFIG:
@@ -1542,6 +1575,9 @@ class DirectQueryDataProvider(DataProvider):
                 "available_categories": ["overall", *[k for k, v in CATEGORY_CONFIG.items() if v["map_driving"]]],
                 "missing_categories": [],
             },
+            # None means artifacts predate versioning; a value that differs
+            # from /api/metrics' methodology_version means they are stale.
+            "overview_methodology_version": self._overview_artifact_version(),
             "data_mode": "direct",
         }
 

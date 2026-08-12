@@ -26,8 +26,13 @@ for:
 from __future__ import annotations
 
 import argparse
+import json
+import sys
+from datetime import date
 from pathlib import Path
 from typing import Iterable
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 try:
     import cudf.pandas
@@ -59,33 +64,45 @@ NYC_BBOX = {
 # (tag -> list of (weight, parquet relative path)). Only H3-scored datasets are
 # included. ZIP-scored tables (ems/fire/parks) are not aggregated into r8
 # tiles; they still contribute to point-level preview.
-CATEGORY_SOURCES: dict[str, list[tuple[float, str]]] = {
-    "safety": [
-        (0.30, "safety/collisions_scores_h3.parquet"),
-        (0.30, "safety/rodent_scores_h3.parquet"),
-        (0.40, "safety/311_scores_h3.parquet"),
-    ],
-    "transit": [
-        (0.30, "transit/collision_transport_scores_h3.parquet"),
-        (0.25, "transit/subway_scores_h3.parquet"),
-        (0.20, "transit/bus_scores_h3.parquet"),
-        (0.15, "transit/bike_routes_scores_h3.parquet"),
-        (0.10, "transit/open_streets_scores_h3.parquet"),
-    ],
-    "amenities": [
-        (0.25, "amenities/trees_scores_h3.parquet"),
-        (0.20, "amenities/restaurants_scores_h3.parquet"),
-        (0.20, "amenities/facilities_scores_h3.parquet"),
-        (0.15, "amenities/linknyc_scores_h3.parquet"),
-        (0.10, "amenities/toilets_scores_h3.parquet"),
-    ],
-}
+#
+# Derived from the metric registry, never written by hand. A hand-maintained
+# copy of this mapping lived here until 2026-08-12 and was the last of three
+# independent weight tables in the repo: it carried its own numbers that never
+# matched CATEGORY_CONFIG in any era, and it kept reading the collision copy
+# and the count-based rodent table long after the registry retired both -- so
+# the low-zoom overview served one methodology while the buildings and the
+# detail panel served another, with nothing to say so. Deriving here is the
+# same cure categories.py got in v3.8.0: a weight has exactly one home.
+#
+# ZIP-grain metrics are excluded and the remaining H3 weights renormalise
+# within each category -- the documented decision this script always embodied,
+# now computed instead of transcribed.
 
-OVERALL_WEIGHTS = {
-    "safety": 0.40,
-    "transit": 0.30,
-    "amenities": 0.30,
-}
+
+def _registry_sources() -> tuple[dict[str, list[tuple[float, str]]], dict[str, float]]:
+    from urban_dossier_backend.metrics import CATEGORIES, metrics_for_category
+
+    sources: dict[str, list[tuple[float, str]]] = {}
+    overall: dict[str, float] = {}
+    for category in CATEGORIES:
+        if not category.map_driving or category.weight_in_overall <= 0:
+            continue
+        h3_metrics = [
+            m for m in metrics_for_category(category.id)
+            if m.spatial_grain.value == "h3_r9"
+        ]
+        weight_sum = sum(m.weight_in_category for m in h3_metrics)
+        if weight_sum <= 0:
+            continue
+        sources[category.id] = [
+            (m.weight_in_category / weight_sum, m.score_table) for m in h3_metrics
+        ]
+        overall[category.id] = category.weight_in_overall
+    total = sum(overall.values())
+    return sources, {k: v / total for k, v in overall.items()}
+
+
+CATEGORY_SOURCES, OVERALL_WEIGHTS = _registry_sources()
 
 
 def _aggregate_to_r8(path: Path) -> pd.DataFrame | None:
@@ -243,12 +260,38 @@ def build_tiles(ready_root: Path, overview_root: Path) -> dict[str, int]:
     return counts
 
 
+def write_manifest(overview_root: Path, counts: dict[str, int]) -> None:
+    """Version stamp beside the artifacts, so staleness is detectable.
+
+    The August artifacts had no version field, which is why a methodology
+    change could leave them serving silently. The runtime and the
+    reconciliation test both compare this against the code's version.
+    """
+    from urban_dossier_backend.metrics import METHODOLOGY_VERSION
+
+    manifest = {
+        "methodology_version": METHODOLOGY_VERSION,
+        "generated": date.today().isoformat(),
+        "category_sources": {
+            tag: [[round(w, 4), rel] for w, rel in pairs]
+            for tag, pairs in CATEGORY_SOURCES.items()
+        },
+        "overall_weights": {k: round(v, 4) for k, v in OVERALL_WEIGHTS.items()},
+        "cells": counts,
+    }
+    (overview_root / "overview.manifest.json").write_text(
+        json.dumps(manifest, indent=2) + "\n"
+    )
+
+
 def main(argv: Iterable[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--ready-root", type=Path, default=DEFAULT_READY_ROOT)
     parser.add_argument("--overview-root", type=Path, default=DEFAULT_OVERVIEW_ROOT)
     args = parser.parse_args(list(argv) if argv is not None else None)
-    build_tiles(args.ready_root, args.overview_root)
+    counts = build_tiles(args.ready_root, args.overview_root)
+    write_manifest(args.overview_root, counts)
+    print(json.dumps({"methodology_version_stamped": True, **counts}))
 
 
 if __name__ == "__main__":
