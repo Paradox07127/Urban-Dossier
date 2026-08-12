@@ -496,6 +496,50 @@ async def ask(request: AskRequest) -> AskResponse | JSONResponse:
     else:
         session_id = store.create({"mode": "agent_ask"})
 
+    # Deterministic intent gate -- EXPANSION_PLAN 3.4. Sits BEFORE the skill
+    # import on purpose: out_of_scope and meta_help never touch the agent
+    # loop, the sandbox, or the model, so the gate holds even on a host where
+    # none of those exist. Ambiguity falls through to the agent; only
+    # unmistakable patterns short-circuit.
+    from urban_dossier_analyst.routing import (  # type: ignore[import-not-found]
+        Intent,
+        OUT_OF_SCOPE_ANSWER,
+        meta_help_answer,
+        route_intent,
+    )
+
+    route = route_intent(request.message, has_history=bool(history))
+    if route.intent in (Intent.OUT_OF_SCOPE, Intent.META_HELP):
+        if route.intent is Intent.META_HELP:
+            try:
+                from urban_dossier_analyst.tools import released_tool_names
+                answer_text = meta_help_answer(released_tool_names())
+            except Exception:  # noqa: BLE001 - the canned answer degrades fine
+                answer_text = meta_help_answer([])
+        else:
+            answer_text = OUT_OF_SCOPE_ANSWER
+        if session is not None:
+            session.add_chat("user", request.message)
+            session.add_chat("assistant", answer_text)
+        elapsed_ms = (time.perf_counter() - start_ms) * 1000.0
+        logger.info(
+            "agent_ask routed intent=%s rule=%s latency_ms=%.1f",
+            route.intent.value, route.rule, elapsed_ms,
+        )
+        return AskResponse(
+            answer=answer_text,
+            evidence=[],
+            tools_called=[],
+            iterations=0,
+            trace=[{
+                "type": "intent_router",
+                "intent": route.intent.value,
+                "rule": route.rule,
+                "note": "short-circuited before the agent loop by design",
+            }],
+            session_id=session_id,
+        )
+
     # Lazy import so a missing or in-flight skill module does not crash startup.
     # Imported as a package (urban_dossier_analyst) so the relative imports
     # inside the skill's modules (`from .schemas import ...`) resolve correctly.

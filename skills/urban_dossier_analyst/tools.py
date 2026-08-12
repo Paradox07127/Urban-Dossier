@@ -810,6 +810,15 @@ def tool_availability() -> dict[str, dict[str, Any]]:
     return {name: states[name] for name in sorted(states)}
 
 
+def released_tool_names() -> list[str]:
+    """Just the names of tools passing their release gate -- for the intent
+    router's meta-help answer, which must describe what is actually callable
+    rather than the full aspirational registry."""
+    return [
+        schema["function"]["name"] for schema in get_available_tools()
+    ]
+
+
 def get_available_tools(
     states: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
@@ -931,4 +940,9 @@ def dispatch_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
         }
 
     result.setdefault("latency_ms", int((time.perf_counter() - started) * 1000))
-    return result
+    # The payload policy is the last gate before a result becomes model
+    # context. Errors above bypass it deliberately: an error string carries no
+    # data rows, and the model needs it verbatim to pivot.
+    from .payload_policy import apply_policy, resolve_policy
+
+    return apply_policy(result, resolve_policy())
