@@ -270,7 +270,7 @@ def run(
     }
 
     per_cell = np.column_stack(
-        [nominal, median, lo, hi, nominal_rank, rank_median, rank_lo, rank_hi]
+        [nominal, median, lo, hi, pct_lo, pct_hi, nominal_rank, rank_median, rank_lo, rank_hi]
     )
     write_per_cell(frame, per_cell, cell_output_dir or ready_root / "analysis")
     return summary, per_cell, frame
@@ -291,16 +291,21 @@ def write_per_cell(frame: list[str], per_cell: np.ndarray, out_dir: Path) -> Pat
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "sensitivity_cells.parquet"
     con = duckdb.connect()
+    # lo95/hi95 span every perturbed assumption including the normalization
+    # method itself; lo95_prodnorm/hi95_prodnorm hold normalization at the
+    # production choice and answer the narrower "given our method" question.
+    # The API serves both, labelled.
     con.execute(
         """
         CREATE TABLE t (
             h3_r9 VARCHAR, nominal DOUBLE, median DOUBLE, lo95 DOUBLE, hi95 DOUBLE,
+            lo95_prodnorm DOUBLE, hi95_prodnorm DOUBLE,
             rank_nominal DOUBLE, rank_median DOUBLE, rank_p5 DOUBLE, rank_p95 DOUBLE
         )
         """
     )
     con.executemany(
-        "INSERT INTO t VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO t VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
             (frame[i], *[None if np.isnan(v) else float(v) for v in per_cell[i]])
             for i in range(len(frame))

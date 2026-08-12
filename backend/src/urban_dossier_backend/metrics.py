@@ -151,6 +151,11 @@ class MetricDefinition:
     # Set when this metric's score table is a copy of another metric's, rather
     # than an independent measurement. See ``collision_transport``.
     derived_from: str | None = None
+    # When the underlying data was actually collected -- as distinct from how
+    # often the source refreshes. A metric can refresh daily and still be a
+    # decade old (the street tree census is 2015-2016). Only verified vintages
+    # are recorded; None means unverified, not current.
+    data_vintage: str | None = None
     # Metrics measuring overlapping phenomena from different sources. Weaker
     # than ``derived_from``: these are genuinely separate measurements that
     # nonetheless partly count the same thing, so their weights partly stack.
@@ -241,6 +246,7 @@ METRICS: tuple[MetricDefinition, ...] = (
         source_dataset="NYPD Motor Vehicle Collisions - Crashes",
         source_relpath="safety/motor_vehicle_collisions.csv",
         score_table="safety/collisions_scores_h3.parquet",
+        data_vintage="through 2026-06; upstream updates paused, restart expected Aug 2026",
         indexed_table="safety/collisions_indexed.parquet",
         state_keys=("collision_count_500m", "ped_cyclist_injuries_1km"),
     ),
@@ -259,6 +265,7 @@ METRICS: tuple[MetricDefinition, ...] = (
         temporal_grain=TemporalGrain.DAILY,
         normalization=Normalization.EMPIRICAL_PERCENTILE,
         weight_in_category=0.125,
+        data_vintage="rolling 3-year inspection window (see rodent_rate.manifest.json)",
         source_dataset="DOHMH Rodent Inspection",
         source_relpath="environment/rodent_inspections.csv",
         score_table="safety/rodent_rate_scores_h3.parquet",
@@ -369,6 +376,7 @@ METRICS: tuple[MetricDefinition, ...] = (
         temporal_grain=TemporalGrain.IRREGULAR,
         normalization=Normalization.EMPIRICAL_PERCENTILE,
         weight_in_category=5 / 14,
+        data_vintage="2024 station inventory",
         source_dataset="MTA Subway Entrances and Exits (2024)",
         source_relpath="transit/mta_subway_entrances_exits_2024.csv",
         score_table="transit/subway_scores_h3.parquet",
@@ -465,6 +473,7 @@ METRICS: tuple[MetricDefinition, ...] = (
         temporal_grain=TemporalGrain.IRREGULAR,
         normalization=Normalization.EMPIRICAL_PERCENTILE,
         weight_in_category=0.15,
+        data_vintage="2015-2016 decennial census; a decade old and shown as such",
         source_dataset="Street Tree Census",
         source_relpath="amenities/street_trees.csv",
         score_table="amenities/trees_scores_h3.parquet",
@@ -692,6 +701,7 @@ def metric_to_dict(metric: MetricDefinition) -> dict:
         "score_table": metric.score_table,
         "state_keys": list(metric.state_keys),
         "methodology_version": metric.methodology_version,
+        "data_vintage": metric.data_vintage,
         "derived_from": metric.derived_from,
         "overlaps_with": list(metric.overlaps_with),
         "notes": metric.notes,

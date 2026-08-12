@@ -47,6 +47,18 @@ def test_a_metric_response_answers_the_four_acceptance_questions():
     assert body["methodology_version"] == METHODOLOGY_VERSION
 
 
+def test_a_stale_dataset_discloses_its_vintage():
+    """The tree census is a decade old; refresh cadence must not imply otherwise."""
+    body = client.get("/api/metrics/trees").json()
+    assert body["data_vintage"] is not None
+    assert "2015" in body["data_vintage"]
+
+
+def test_unverified_vintage_is_null_not_guessed():
+    body = client.get("/api/metrics/public_toilets").json()
+    assert body["data_vintage"] is None
+
+
 def test_grain_is_disclosed_for_a_zip_level_metric():
     """A ZIP metric drawn on hexagons must still report itself as ZIP."""
     body = client.get("/api/metrics/ems_response").json()

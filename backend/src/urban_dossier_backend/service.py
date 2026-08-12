@@ -15,6 +15,7 @@ from .providers.direct_provider import DirectQueryDataProvider
 from .providers.skill_provider import SkillDataProvider
 from .report import generate_action_brief
 from .secondary_scoring import compute_scores_with_coverage
+from .uncertainty import score_uncertainty
 from .trend_engine import compute_all_trends
 from .gpu_accel import get_gpu_status
 from .utils import build_priority_weights
@@ -222,6 +223,12 @@ def _build_detail_payload(
         # working -- while one that reads it can stop presenting a one-source
         # score as though it were a five-source one.
         "score_coverage": score_coverage,
+        # And how firm the composite is under the assumptions behind it: 95%
+        # intervals from the offline 1,000-draw sensitivity analysis, served
+        # at the grain it was computed at (the containing cell). None when the
+        # artifact has not been generated -- absent uncertainty is disclosed
+        # as absent, never faked as a point estimate's confidence.
+        "score_uncertainty": score_uncertainty(latitude, longitude),
         "baselines": baselines,
         "enriched_context": point_payload.get("enriched_context", {}),
     }
