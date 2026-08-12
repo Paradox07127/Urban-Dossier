@@ -1,0 +1,434 @@
+{
+  "generated": "2026-08-11",
+  "method": {
+    "frame": "union of H3 r9 cells across all H3 score tables",
+    "frame_cells": 7205,
+    "fill": "absent cell = raw_count 0 (never observed, not missing)",
+    "statistic": "spearman",
+    "thresholds": {
+      "collinear": 0.9,
+      "high": 0.7
+    }
+  },
+  "h3_metrics": [
+    "collision",
+    "rodent",
+    "311_sanitation",
+    "collision_transport",
+    "subway",
+    "bus",
+    "bike_routes",
+    "open_streets",
+    "trees",
+    "public_toilets",
+    "linknyc",
+    "restaurant_context",
+    "facilities",
+    "housing_violations",
+    "aep"
+  ],
+  "matrix": [
+    [
+      1.0,
+      0.721,
+      0.74,
+      1.0,
+      0.335,
+      0.477,
+      0.381,
+      0.196,
+      0.433,
+      0.155,
+      0.409,
+      0.663,
+      0.616,
+      0.701,
+      0.304
+    ],
+    [
+      0.721,
+      1.0,
+      0.897,
+      0.721,
+      0.293,
+      0.385,
+      0.31,
+      0.219,
+      0.573,
+      0.139,
+      0.386,
+      0.58,
+      0.591,
+      0.866,
+      0.391
+    ],
+    [
+      0.74,
+      0.897,
+      1.0,
+      0.74,
+      0.285,
+      0.402,
+      0.306,
+      0.208,
+      0.604,
+      0.145,
+      0.359,
+      0.571,
+      0.599,
+      0.933,
+      0.415
+    ],
+    [
+      1.0,
+      0.721,
+      0.74,
+      1.0,
+      0.335,
+      0.477,
+      0.381,
+      0.196,
+      0.433,
+      0.155,
+      0.409,
+      0.663,
+      0.616,
+      0.701,
+      0.304
+    ],
+    [
+      0.335,
+      0.293,
+      0.285,
+      0.335,
+      1.0,
+      0.238,
+      0.211,
+      0.125,
+      0.106,
+      0.086,
+      0.355,
+      0.387,
+      0.31,
+      0.266,
+      0.151
+    ],
+    [
+      0.477,
+      0.385,
+      0.402,
+      0.477,
+      0.238,
+      1.0,
+      0.253,
+      0.122,
+      0.224,
+      0.134,
+      0.313,
+      0.466,
+      0.403,
+      0.368,
+      0.16
+    ],
+    [
+      0.381,
+      0.31,
+      0.306,
+      0.381,
+      0.211,
+      0.253,
+      1.0,
+      0.175,
+      0.11,
+      0.173,
+      0.269,
+      0.308,
+      0.336,
+      0.267,
+      0.181
+    ],
+    [
+      0.196,
+      0.219,
+      0.208,
+      0.196,
+      0.125,
+      0.122,
+      0.175,
+      1.0,
+      0.151,
+      0.056,
+      0.218,
+      0.223,
+      0.215,
+      0.203,
+      0.13
+    ],
+    [
+      0.433,
+      0.573,
+      0.604,
+      0.433,
+      0.106,
+      0.224,
+      0.11,
+      0.151,
+      1.0,
+      0.053,
+      0.214,
+      0.319,
+      0.292,
+      0.596,
+      0.228
+    ],
+    [
+      0.155,
+      0.139,
+      0.145,
+      0.155,
+      0.086,
+      0.134,
+      0.173,
+      0.056,
+      0.053,
+      1.0,
+      0.101,
+      0.148,
+      0.227,
+      0.135,
+      0.067
+    ],
+    [
+      0.409,
+      0.386,
+      0.359,
+      0.409,
+      0.355,
+      0.313,
+      0.269,
+      0.218,
+      0.214,
+      0.101,
+      1.0,
+      0.444,
+      0.392,
+      0.331,
+      0.185
+    ],
+    [
+      0.663,
+      0.58,
+      0.571,
+      0.663,
+      0.387,
+      0.466,
+      0.308,
+      0.223,
+      0.319,
+      0.148,
+      0.444,
+      1.0,
+      0.557,
+      0.541,
+      0.248
+    ],
+    [
+      0.616,
+      0.591,
+      0.599,
+      0.616,
+      0.31,
+      0.403,
+      0.336,
+      0.215,
+      0.292,
+      0.227,
+      0.392,
+      0.557,
+      1.0,
+      0.567,
+      0.278
+    ],
+    [
+      0.701,
+      0.866,
+      0.933,
+      0.701,
+      0.266,
+      0.368,
+      0.267,
+      0.203,
+      0.596,
+      0.135,
+      0.331,
+      0.541,
+      0.567,
+      1.0,
+      0.432
+    ],
+    [
+      0.304,
+      0.391,
+      0.415,
+      0.304,
+      0.151,
+      0.16,
+      0.181,
+      0.13,
+      0.228,
+      0.067,
+      0.185,
+      0.248,
+      0.278,
+      0.432,
+      1.0
+    ]
+  ],
+  "flagged_pairs": [
+    {
+      "pair": [
+        "collision",
+        "collision_transport"
+      ],
+      "rho": 1.0,
+      "level": "collinear",
+      "score_rho_inner": 1.0,
+      "inner_n": 6723
+    },
+    {
+      "pair": [
+        "311_sanitation",
+        "housing_violations"
+      ],
+      "rho": 0.933,
+      "level": "collinear",
+      "score_rho_inner": 0.893,
+      "inner_n": 5460
+    },
+    {
+      "pair": [
+        "rodent",
+        "311_sanitation"
+      ],
+      "rho": 0.897,
+      "level": "high",
+      "score_rho_inner": 0.834,
+      "inner_n": 5670
+    },
+    {
+      "pair": [
+        "rodent",
+        "housing_violations"
+      ],
+      "rho": 0.866,
+      "level": "high",
+      "score_rho_inner": 0.777,
+      "inner_n": 5281
+    },
+    {
+      "pair": [
+        "collision",
+        "311_sanitation"
+      ],
+      "rho": 0.74,
+      "level": "high",
+      "score_rho_inner": 0.661,
+      "inner_n": 6137
+    },
+    {
+      "pair": [
+        "311_sanitation",
+        "collision_transport"
+      ],
+      "rho": 0.74,
+      "level": "high",
+      "score_rho_inner": 0.661,
+      "inner_n": 6137
+    },
+    {
+      "pair": [
+        "collision",
+        "rodent"
+      ],
+      "rho": 0.721,
+      "level": "high",
+      "score_rho_inner": 0.627,
+      "inner_n": 5722
+    },
+    {
+      "pair": [
+        "rodent",
+        "collision_transport"
+      ],
+      "rho": 0.721,
+      "level": "high",
+      "score_rho_inner": 0.627,
+      "inner_n": 5722
+    },
+    {
+      "pair": [
+        "collision",
+        "housing_violations"
+      ],
+      "rho": 0.701,
+      "level": "high",
+      "score_rho_inner": 0.609,
+      "inner_n": 5480
+    },
+    {
+      "pair": [
+        "collision_transport",
+        "housing_violations"
+      ],
+      "rho": 0.701,
+      "level": "high",
+      "score_rho_inner": 0.609,
+      "inner_n": 5480
+    }
+  ],
+  "declared_relationships": [
+    {
+      "pair": [
+        "collision",
+        "collision_transport"
+      ],
+      "kind": "duplicated_source",
+      "source": "safety/motor_vehicle_collisions.csv",
+      "rho": 1.0
+    },
+    {
+      "pair": [
+        "311_sanitation",
+        "rodent"
+      ],
+      "kind": "declared_overlap",
+      "rho": 0.897
+    }
+  ],
+  "zip_pairs": [
+    {
+      "pair": [
+        "ems_response",
+        "fire_response"
+      ],
+      "rho": 0.269,
+      "n_zips": 171
+    },
+    {
+      "pair": [
+        "ems_response",
+        "parks_access"
+      ],
+      "rho": -0.123,
+      "n_zips": 171
+    },
+    {
+      "pair": [
+        "fire_response",
+        "parks_access"
+      ],
+      "rho": 0.082,
+      "n_zips": 171
+    }
+  ]
+}
