@@ -313,7 +313,7 @@ METRICS: tuple[MetricDefinition, ...] = (
         score_table="safety/311_scores_h3.parquet",
         indexed_table="safety/311_safety_indexed.parquet",
         state_keys=("sanitation_311_recent_count",),
-        overlaps_with=("rodent",),
+        overlaps_with=("rodent", "housing_violations"),
         notes=(
             "Despite the id, the filter admits RODENT complaints alongside the "
             "two sanitation types, so this metric and `rodent` both count rat "
@@ -323,8 +323,13 @@ METRICS: tuple[MetricDefinition, ...] = (
             "propensity (Walsh 2014), so it does not earn independent "
             "weight; since v3.9.0 its partner measures the inspection-"
             "anchored rate, and the pair's co-movement dropped from 0.897 "
-            "to 0.486 -- two genuinely complementary evidence sources. "
-            "Separately, "
+            "to 0.258 -- two genuinely complementary evidence sources. "
+            "This count surface is also collinear with `housing_violations` "
+            "(rho 0.933), but housing has zero overall weight, so the pair "
+            "does not currently stack in the public composite. Building may "
+            "not gain overall weight until that activity-density confound is "
+            "removed or the shared construct is capped and sensitivity is "
+            "rerun. Separately, "
             "the fallback formula scores this with a bare multiplier "
             "(count * 2.5, capped at 55) rather than against a measured "
             "baseline, unlike every other safety sub-metric."
@@ -585,7 +590,16 @@ METRICS: tuple[MetricDefinition, ...] = (
         score_table="building/housing_violations_scores_h3.parquet",
         indexed_table="building/housing_violations_indexed.parquet",
         state_keys=("open_class_c_250m", "open_class_b_250m"),
-        notes="Only violations still open at snapshot time are counted.",
+        overlaps_with=("311_sanitation",),
+        notes=(
+            "Only violations still open at snapshot time are counted. This "
+            "count surface is collinear with `311_sanitation` (rho 0.933 raw; "
+            "0.893 for inner-joined published scores). No weight changes in "
+            "v3.9.0 because building has zero overall weight and the pair is "
+            "never combined in a public composite. Promoting building into "
+            "overall requires a rate/exposure correction or a capped shared "
+            "construct, followed by correlation and sensitivity reruns."
+        ),
     ),
     MetricDefinition(
         id="aep",

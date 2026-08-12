@@ -8,6 +8,7 @@ Frame: 7,196 H3 r9 cells (union of H3 r9 cells across all H3 score tables). Coun
 
 The metric registry's declared relationships are measured below:
 
+- `311_sanitation` vs `housing_violations` -- declared overlap: **rho = +0.933**
 - `311_sanitation` vs `rodent` -- declared overlap: **rho = +0.258**
 
 ## All pairs at |rho| >= 0.7
@@ -49,8 +50,8 @@ Most count metrics share a positive activity-density baseline: busy, densely obs
 
 The inspection-anchored `rodent` rate is no longer highly correlated with `311_sanitation` or `housing_violations`; this is the intended v3.9 result. The remaining collinear pair is `311_sanitation` / `housing_violations`, both count surfaces that still share the activity-density baseline and underlying building conditions.
 
-## Decisions and remaining question
+## Decisions
 
 1. Resolved in v3.8: `collision_transport` was removed and transit was reweighted; the measured replacement remains an unregistered candidate.
 2. Resolved in v3.9: rodent changed from positive-inspection counts to an inspection failure rate; uninspected cells are missing, not zero.
-3. Remaining: decide whether the `311_sanitation` / `housing_violations` collinearity warrants a weight change. Any such change belongs in the sensitivity analysis before publication.
+3. Resolved in v3.9: retain the current weights for the `311_sanitation` / `housing_violations` pair. The relationship is now declared in the registry, but it crosses safety and building, and building has zero overall weight, so housing contributes exactly zero to the current public composite. This is not permission to add building later: before any non-zero overall or priority weight, replace the shared activity-density count with an exposure-adjusted rate or cap the pair as one construct, then rerun correlation and sensitivity.

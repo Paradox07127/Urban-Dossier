@@ -324,7 +324,24 @@ def test_no_metric_declares_an_overlap_with_itself():
 
 
 def test_overlapping_pairs_lists_each_pair_once():
-    assert overlapping_pairs() == (("311_sanitation", "rodent"),)
+    assert overlapping_pairs() == (
+        ("311_sanitation", "housing_violations"),
+        ("311_sanitation", "rodent"),
+    )
+
+
+def test_housing_overlap_cannot_double_count_in_the_current_overall():
+    """The 0.933 cross-category pair is disclosed but not stacked.
+
+    Housing is a detail-only category. If this assertion changes, the release
+    must first implement the rate/shared-construct gate documented on both
+    metric definitions and rerun correlation plus sensitivity.
+    """
+    sanitation = METRICS_BY_ID["311_sanitation"]
+    housing = METRICS_BY_ID["housing_violations"]
+    assert "housing_violations" in sanitation.overlaps_with
+    assert "311_sanitation" in housing.overlaps_with
+    assert overall_contribution("housing_violations") == 0
 
 
 def test_the_sanitation_construct_holds_one_slot_not_two():
@@ -391,9 +408,13 @@ def test_registry_payload_reports_no_duplicated_sources():
     assert payload["duplicated_sources"] == []
 
 
-def test_registry_payload_exposes_the_overlapping_pair():
+def test_registry_payload_exposes_the_overlapping_pairs():
     payload = registry_to_dict()
     assert payload["overlapping_metrics"] == [
+        {
+            "metrics": ["311_sanitation", "housing_violations"],
+            "combined_overall_contribution": 0.05,
+        },
         {
             "metrics": ["311_sanitation", "rodent"],
             "combined_overall_contribution": 0.1,

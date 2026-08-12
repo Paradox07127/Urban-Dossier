@@ -19,9 +19,11 @@ Design (each element traceable to a collected source, see
     - normalization method: the published empirical-percentile scores, or
       min-max, or z-score (both recomputed from raw values, direction-aware)
       -- the handbook's method-substitution test;
-    - inclusion of `311_sanitation` (Bernoulli 1/2) -- the remaining
-      configured overlap toggle. The duplicated `collision_transport` metric
-      was removed in v3.8 and is no longer a live assumption;
+    - inclusion of `311_sanitation` (Bernoulli 1/2) -- the retained
+      complaint/inspection construct toggle. The duplicated
+      `collision_transport` metric was removed in v3.8 and is no longer a
+      live assumption; housing is not toggled because its overall weight is
+      zero;
     - missing-data rule: renormalize over present metrics (production
       behaviour) or impute absent sub-scores with the metric's citywide mean
       -- the handbook's implicit-vs-explicit imputation comparison.
@@ -365,8 +367,11 @@ def render_markdown(summary: dict) -> str:
         "regenerable with the seed). A published score can now carry its "
         "interval, and a rank claim ('safer than X% of the city') its range -- "
         "the acceptance criterion for item 1.4. The live toggle effect above "
-        "quantifies the remaining overlap decision before any weight change is "
-        "published.",
+        "quantifies the retained sanitation/rodent construct decision. The "
+        "cross-category sanitation/housing overlap is excluded because "
+        "building has zero overall weight; making that weight non-zero first "
+        "requires exposure adjustment or a shared-construct cap and a fresh "
+        "sensitivity run.",
         "",
         "## Stated limits",
         "",

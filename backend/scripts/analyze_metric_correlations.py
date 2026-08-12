@@ -363,16 +363,22 @@ def render_markdown(report: dict) -> str:
         "`housing_violations`, both count surfaces that still share the "
         "activity-density baseline and underlying building conditions.",
         "",
-        "## Decisions and remaining question",
+        "## Decisions",
         "",
         "1. Resolved in v3.8: `collision_transport` was removed and transit "
         "was reweighted; the measured replacement remains an unregistered "
         "candidate.",
         "2. Resolved in v3.9: rodent changed from positive-inspection counts to "
         "an inspection failure rate; uninspected cells are missing, not zero.",
-        "3. Remaining: decide whether the `311_sanitation` / "
-        "`housing_violations` collinearity warrants a weight change. Any such "
-        "change belongs in the sensitivity analysis before publication.",
+        "3. Resolved in v3.9: retain the current weights for the "
+        "`311_sanitation` / `housing_violations` pair. The relationship is "
+        "now declared in the registry, but it crosses safety and building, "
+        "and building has zero overall weight, so housing contributes exactly "
+        "zero to the current public composite. This is not permission to add "
+        "building later: before any non-zero overall or priority weight, "
+        "replace the shared activity-density count with an exposure-adjusted "
+        "rate or cap the pair as one construct, then rerun correlation and "
+        "sensitivity.",
         "",
     ]
     return "\n".join(lines)

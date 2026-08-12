@@ -190,6 +190,19 @@ def test_the_rodent_sanitation_overlap_is_declared_measured_and_tamed():
 
 
 @requires_ready
+def test_the_housing_sanitation_collinearity_is_declared_and_pinned():
+    """The no-reweight decision depends on this overlap staying explicit."""
+    report = amc.analyze(READY)
+    declared = {
+        tuple(sorted(e["pair"])): e["rho"]
+        for e in report["declared_relationships"]
+        if e["kind"] == "declared_overlap"
+    }
+    rho = declared[("311_sanitation", "housing_violations")]
+    assert rho >= 0.85, rho
+
+
+@requires_ready
 def test_report_serialises_and_carries_the_matrix():
     import json
 

@@ -303,6 +303,14 @@
     {
       "pair": [
         "311_sanitation",
+        "housing_violations"
+      ],
+      "kind": "declared_overlap",
+      "rho": 0.933
+    },
+    {
+      "pair": [
+        "311_sanitation",
         "rodent"
       ],
       "kind": "declared_overlap",

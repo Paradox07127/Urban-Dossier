@@ -15,7 +15,7 @@ Each draw simultaneously perturbs sub-metric weights (x U(0.75, 1.25)), switches
 
 ## What this licenses
 
-Per-cell intervals and rank ranges are in `data/ready/analysis/sensitivity_cells.parquet` (untracked, regenerable with the seed). A published score can now carry its interval, and a rank claim ('safer than X% of the city') its range -- the acceptance criterion for item 1.4. The live toggle effect above quantifies the remaining overlap decision before any weight change is published.
+Per-cell intervals and rank ranges are in `data/ready/analysis/sensitivity_cells.parquet` (untracked, regenerable with the seed). A published score can now carry its interval, and a rank claim ('safer than X% of the city') its range -- the acceptance criterion for item 1.4. The live toggle effect above quantifies the retained sanitation/rodent construct decision. The cross-category sanitation/housing overlap is excluded because building has zero overall weight; making that weight non-zero first requires exposure adjustment or a shared-construct cap and a fresh sensitivity run.
 
 The detail API also derives a fixed-width histogram over the 7,194 cells with a non-null nominal score, plus the containing cell's nominal score and midrank ECDF percentile. The histogram, marker and production-normalization interval are deliberately sourced from this same H3 r9 artifact. The H3 r8 public overview distribution is retained only as a fallback when the sensitivity artifact is absent; an r9 interval is never overlaid on that r8 population.
 
