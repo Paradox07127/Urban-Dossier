@@ -85,3 +85,13 @@ def test_unknown_metric_does_not_fall_through_to_the_registry_route():
     listing = client.get("/api/metrics").json()
     assert "metrics" in listing
     assert "id" not in listing
+
+
+def test_runtime_dataset_coverage_is_a_complete_partition():
+    body = client.get("/api/coverage").json()
+    required = set(body["required_datasets"])
+    available = set(body["available_datasets"])
+    missing = set(body["missing_datasets"])
+    assert required
+    assert available.isdisjoint(missing)
+    assert available | missing == required

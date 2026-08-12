@@ -8,6 +8,10 @@ const {
   buildOfflineHtmlReport,
   ExportValidationError,
 } = require('./scripts/html-report-export');
+const {
+  buildMethodologyPublication,
+  MethodologyPublicationError,
+} = require('./scripts/methodology-publication');
 const EXPECTED_METHODOLOGY_VERSION = '3.9.0';
 const EXPECTED_BUILDING_SCORING_CONTRACT = 'point-radius-haversine-v1';
 
@@ -531,6 +535,35 @@ app.get('/api/metrics/:metricId', async (req, res) => {
       return res.status(error.status).json(error.payload ?? { detail: 'Metric lookup failed' });
     }
     sendProxyError(res, 502, 'Python backend metric lookup failed', { details: error.payload ?? null });
+  }
+});
+
+// Public methodology publication. Unlike the raw pass-through routes above,
+// this is deliberately gated by the Node code version on every request. A
+// stale registry or even one stale metric fails closed, so the shareable page
+// cannot render claims from a different scoring implementation.
+app.get('/api/methodology', async (req, res) => {
+  try {
+    const [registry, coverage] = await Promise.all([
+      backendRequest('/api/metrics'),
+      backendRequest('/api/coverage'),
+    ]);
+    res.json(buildMethodologyPublication(
+      registry,
+      coverage,
+      EXPECTED_METHODOLOGY_VERSION,
+    ));
+  } catch (error) {
+    if (error instanceof MethodologyPublicationError) {
+      return res.status(409).json({
+        detail: error.message,
+        code: error.code,
+        expected_methodology_version: EXPECTED_METHODOLOGY_VERSION,
+      });
+    }
+    sendProxyError(res, 502, 'Methodology publication lookup failed', {
+      details: error.payload ?? null,
+    });
   }
 });
 
@@ -1287,7 +1320,10 @@ if (fs.existsSync(distPath)) {
   });
   // SPA fallback -- now only for page navigations.
   app.use((req, res) => {
-    res.sendFile(path.join(distPath, 'index.html'));
+    // Use a root-scoped relative path. An absolute sendFile path is rejected
+    // when this checkout itself lives below a hidden directory (for example
+    // `.claude/worktrees`), even though index.html is not hidden.
+    res.sendFile('index.html', { root: distPath, dotfiles: 'deny' });
   });
 } else {
   // Fallback to simple demo page

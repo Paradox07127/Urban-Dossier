@@ -9,6 +9,7 @@ const baseUrl = process.env.URBAN_DOSSIER_SMOKE_URL || 'http://127.0.0.1:3460';
 const executablePath = process.env.CHROMIUM_PATH || '/snap/bin/chromium';
 const screenshotPath =
   process.env.URBAN_DOSSIER_SMOKE_SCREENSHOT || '/tmp/urban-dossier-chart-smoke.png';
+const methodologyScreenshotPath = '/tmp/urban-dossier-methodology-smoke.png';
 const reportPath = fileURLToPath(new URL('../dist/offline-export-smoke.html', import.meta.url));
 
 const browser = await chromium.launch({
@@ -20,6 +21,7 @@ const externalRequests = [];
 const pageErrors = [];
 const consoleErrors = [];
 let timelineRequests = 0;
+let methodologyRequests = 0;
 
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
@@ -31,6 +33,7 @@ try {
     const url = new URL(route.request().url());
     if (url.hostname === '127.0.0.1' || url.hostname === 'localhost') {
       if (url.pathname === '/api/timeline') timelineRequests += 1;
+      if (url.pathname === '/api/methodology') methodologyRequests += 1;
       await route.continue();
       return;
     }
@@ -262,6 +265,25 @@ try {
   assert.deepEqual(consoleErrors, []);
 
   await page.screenshot({ path: screenshotPath, fullPage: true });
+  console.log('smoke: opening shareable methodology publication');
+  await page.goto(`${baseUrl}/methodology`, {
+    waitUntil: 'domcontentloaded',
+    timeout: 15_000,
+  });
+  await page.getByTestId('methodology-version-verified').waitFor({ timeout: 15_000 });
+  await page.getByText('code = registry = v3.9.0', { exact: true }).waitFor();
+  await page.getByText('Runtime dataset coverage', { exact: true }).waitFor();
+  const methodologyAudit = {
+    metricRows: await page.locator('table tbody tr').count(),
+    datasetRows: await page.locator('section').filter({ hasText: 'Runtime dataset coverage' })
+      .locator('.font-mono').count(),
+    mapCanvases: await page.locator('.maplibregl-canvas').count(),
+  };
+  assert(methodologyAudit.metricRows >= 14);
+  assert(methodologyAudit.datasetRows >= 13);
+  assert.equal(methodologyAudit.mapCanvases, 0);
+  assert.equal(methodologyRequests, 1);
+  await page.screenshot({ path: methodologyScreenshotPath, fullPage: true });
   console.log(
     JSON.stringify(
       {
@@ -288,6 +310,11 @@ try {
           externalRequests: offlineRequests.length,
           filename: exportFilename,
           browserDownloadLink: downloadLink.href.startsWith('blob:'),
+        },
+        methodology: {
+          ...methodologyAudit,
+          requests: methodologyRequests,
+          screenshotPath: methodologyScreenshotPath,
         },
         externalRequests: externalRequests.length,
         screenshotPath,

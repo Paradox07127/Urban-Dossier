@@ -1955,6 +1955,7 @@ class DirectQueryDataProvider(DataProvider):
             "aep_buildings",
         ]
         available_datasets = [dataset for dataset in required if self._dataset_available(dataset)]
+        missing_datasets = [dataset for dataset in required if dataset not in available_datasets]
         overview_ready = False
         available_overview_categories: list[str] = []
         missing_overview_categories = ["overall", *[k for k, v in CATEGORY_CONFIG.items() if v["map_driving"]]]
@@ -1975,6 +1976,8 @@ class DirectQueryDataProvider(DataProvider):
             "ready_baselines_available": self._ready_path("baselines/baselines.json").exists(),
             "available_overview_categories": available_overview_categories,
             "missing_overview_categories": missing_overview_categories,
+            "required_datasets": required,
             "available_datasets": available_datasets,
+            "missing_datasets": missing_datasets,
             "overview_default_weights": OVERVIEW_DEFAULT_WEIGHTS,
         }
