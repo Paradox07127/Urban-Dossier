@@ -2,27 +2,30 @@
  * The one source of truth for score classing, shared by the map layers and
  * the legend so a building's colour and its legend swatch cannot drift apart.
  *
- * Five classed steps, red pole (worst) to blue pole (best) with a neutral
- * near-paper midpoint. Diverging because a 0-100 score is polarity data;
- * blue-red rather than the old green-red because green-red is the classic
- * colour-vision failure pair. Classed rather than continuous because 93% of
+ * Five classed steps, brown pole (worst) to teal pole (best) with a neutral
+ * near-paper midpoint. Diverging because a 0-100 score is polarity data.
+ * Brown-teal is the third pair this ramp has worn, each retired for a named
+ * reason: green-red is the classic colour-vision failure pair, and blue-red
+ * reads as an election map in an American city -- a livability score must not
+ * look like a precinct result. Brown reads as barren and teal as thriving,
+ * with no party wearing either. Classed rather than continuous because 93% of
  * scores bunch between 35 and 65, where a continuous ramp hands adjacent
  * places imperceptible tints; quantile classes guarantee every step is a
  * visible step.
  *
  * Validated with the dataviz palette checker rather than eyeballed:
- * worst adjacent-pair CVD dE 14.7 (target >= 8), worst normal-vision dE 16.5
+ * worst adjacent-pair CVD dE 9.4 (target >= 8), worst normal-vision dE 17.8
  * (floor 15), lightness monotonic per arm. The midpoint's low contrast
  * against the paper basemap invokes the relief rule, satisfied by the
  * always-visible legend and the click-through detail panel.
  */
 
 export const CLASS_COLORS = [
-  '#b23230', // worst fifth
-  '#dc8f80',
+  '#8c5a10', // worst fifth
+  '#cc9c33',
   '#d8d4cc', // typical fifth -- deliberately recedes
-  '#7fa8d9',
-  '#2a78d6', // best fifth
+  '#62b0a4',
+  '#1e7a70', // best fifth
 ] as const;
 
 export type ClassBreaks = [number, number, number, number];

@@ -157,12 +157,19 @@ const TAG_TO_SCORE_FIELD: Record<RenderTag, string> = {
  * Evaluated per feature on the GPU, so the whole choropleth costs one uniform
  * upload rather than a pass over every building in JavaScript.
  */
+// Buildings outside the analysis radius while one is active. Warm pale grey,
+// close kin to the basemap so the out-of-scope city recedes into context;
+// distinct from UD_NO_DATA's cool grey, which keeps meaning "no reading" for
+// buildings inside the circle.
+const UD_OUT_OF_SCOPE = '#ddd8d0';
+
 function buildingScoreColor(
   field: string,
   domain: ColourDomain = FULL_RANGE_DOMAIN,
+  mask: GeoJSON.Polygon | null = null,
 ): maplibregl.ExpressionSpecification {
   const [b1, b2, b3, b4] = classBreaks(domain);
-  return [
+  const classed: maplibregl.ExpressionSpecification = [
     'case',
     ['==', ['get', field], null],
     UD_NO_DATA,
@@ -176,6 +183,18 @@ function buildingScoreColor(
       b4, CLASS_COLORS[4],
     ],
   ];
+  if (!mask) return classed;
+  // While an analysis is active, colour answers "how does the measured area
+  // score" -- so only the measured area gets colour. `within` is evaluated
+  // once per feature at paint-update time, not per frame, so this costs a
+  // point-in-polygon per building on pin placement and nothing afterwards.
+  return ['case', ['!', ['within', mask]], UD_OUT_OF_SCOPE, classed];
+}
+
+/** The analysis circle as a mask polygon, or null when no analysis is up. */
+function maskFor(target: LocalRenderTarget | null | undefined): GeoJSON.Polygon | null {
+  if (!target) return null;
+  return createCirclePolygon([target.center[1], target.center[0]], target.radiusM / 1000);
 }
 
 interface LocalRenderTarget {
@@ -1381,6 +1400,7 @@ function setBuildingScoreTag(
   map: MapLibreMap,
   tag: RenderTag,
   domains: Record<string, ColourDomain> = {},
+  mask: GeoJSON.Polygon | null = null,
 ) {
   if (!map.getLayer('building-scores-fill')) return;
   const field = TAG_TO_SCORE_FIELD[tag] ?? 'overall';
@@ -1388,7 +1408,7 @@ function setBuildingScoreTag(
   map.setPaintProperty(
     'building-scores-fill',
     'fill-color',
-    buildingScoreColor(field, domain),
+    buildingScoreColor(field, domain, mask),
   );
 }
 
@@ -1406,7 +1426,12 @@ function setBuildingRenderer(
   // of the model, and turning one on here is what leaked the flat choropleth
   // into the 3D scene.
   if (sandbox) return;
-  const useBaked = baked && isGlobal;
+  // Baked tiles stay on in local-analysis mode too, since v3.9.x the
+  // within-mask paint handles the difference: inside the circle classed
+  // colours, outside a quiet grey. Hiding the layer entirely -- the old
+  // behaviour -- was why placing a pin drained all colour from the map.
+  const useBaked = baked;
+  void isGlobal;
   if (map.getLayer('building-scores-fill')) {
     map.setLayoutProperty(
       'building-scores-fill',
@@ -1564,7 +1589,8 @@ function updateSandboxPin(map: MapLibreMap, target: LocalRenderTarget | null | u
 
 function setSandboxMode(map: MapLibreMap, on: boolean, tag: RenderTag,
                         domains: Record<string, ColourDomain>,
-                        baked = false, isGlobal = true) {
+                        baked = false, isGlobal = true,
+                        mask: GeoJSON.Polygon | null = null) {
   for (const id of FLAT_MAP_LAYERS) {
     if (map.getLayer(id)) {
       map.setLayoutProperty(id, 'visibility', on ? 'none' : 'visible');
@@ -1611,7 +1637,7 @@ function setSandboxMode(map: MapLibreMap, on: boolean, tag: RenderTag,
   }
 
   if (on) {
-    setSandboxTag(map, tag, domains);
+    setSandboxTag(map, tag, domains, mask);
     map.easeTo({ pitch: 62, bearing: -18, duration: 900 });
     map.dragRotate.enable();
     map.touchZoomRotate.enableRotation();
@@ -1621,12 +1647,13 @@ function setSandboxMode(map: MapLibreMap, on: boolean, tag: RenderTag,
 }
 
 function setSandboxTag(map: MapLibreMap, tag: RenderTag,
-                       domains: Record<string, ColourDomain>) {
+                       domains: Record<string, ColourDomain>,
+                       mask: GeoJSON.Polygon | null = null) {
   const field = TAG_TO_SCORE_FIELD[tag] ?? 'overall';
   const domain = domains[field] ?? FULL_RANGE_DOMAIN;
   for (const id of ['sandbox-massing', 'sandbox-buildings']) {
     if (map.getLayer(id)) {
-      map.setPaintProperty(id, 'fill-extrusion-color', buildingScoreColor(field, domain));
+      map.setPaintProperty(id, 'fill-extrusion-color', buildingScoreColor(field, domain, mask));
     }
   }
 }
@@ -1975,6 +2002,7 @@ export default function Map({
     setSandboxMode(
       map, sandbox, renderTag, colourDomainsRef.current,
       bakedTilesRef.current, activeConfigRef.current.mode === 'global',
+      maskFor(localRenderTargetRef.current),
     );
     setDomMarkersVisible([markersRef, postMarkersRef], !sandbox);
     // Rebuild the point markers for the mode we are entering: they are skipped
@@ -2060,7 +2088,22 @@ export default function Map({
         renderHexOverlay(map, EMPTY_FEATURE_COLLECTION, hexOverlayRef);
         setGlobalVisualizationMode(map, false, sandboxRef.current);
         setBuildingRenderer(map, bakedTilesRef.current, false, sandboxRef.current);
-        renderVisibleBuildings(map, config, localRenderTargetRef.current);
+        if (bakedTilesRef.current) {
+          // Colour only the measured area: classed inside the circle, quiet
+          // grey outside. The JS marker path is not drawn on top of it.
+          setBuildingScoreTag(
+            map, config.tag, colourDomainsRef.current,
+            maskFor(localRenderTargetRef.current),
+          );
+        } else {
+          renderVisibleBuildings(map, config, localRenderTargetRef.current);
+        }
+      }
+      if (sandboxRef.current) {
+        // The model masks too -- it kept its full colouring before, which put
+        // the map and the model in disagreement about what a pin means.
+        setSandboxTag(map, renderTag, colourDomainsRef.current,
+          maskFor(localRenderTargetRef.current));
       }
     });
 
@@ -2245,7 +2288,17 @@ export default function Map({
         renderHexOverlay(map, EMPTY_FEATURE_COLLECTION, hexOverlayRef);
         setGlobalVisualizationMode(map, false, sandboxRef.current);
         setBuildingRenderer(map, bakedTilesRef.current, false, sandboxRef.current);
-        renderVisibleBuildings(map, config, localRenderTarget ?? undefined);
+        if (bakedTilesRef.current) {
+          setBuildingScoreTag(
+            map, config.tag, colourDomainsRef.current,
+            maskFor(localRenderTarget),
+          );
+        } else {
+          renderVisibleBuildings(map, config, localRenderTarget ?? undefined);
+        }
+      }
+      if (sandboxRef.current) {
+        setSandboxTag(map, renderTag, colourDomainsRef.current, maskFor(localRenderTarget));
       }
     };
 

@@ -1,6 +1,7 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const zlib = require('zlib');
 
 const app = express();
 // 3456 stays the deployment default. The override exists so a second instance
@@ -317,6 +318,26 @@ async function backendRequest(routePath, { method = 'GET', body } = {}) {
   return payload;
 }
 
+// Gzip for the bulky JSON bodies. The overview GeoJSON is ~580 KB of
+// coordinates that squeeze below 90 KB; over the LAN that is invisible, over
+// anything slower it is the difference between the choropleth snapping in and
+// crawling in. Applied per-route to the known-heavy payloads rather than as
+// blanket middleware, so tiles (already compressed) and small JSON stay
+// untouched.
+function sendJsonMaybeGzip(req, res, payload) {
+  const body = Buffer.from(JSON.stringify(payload));
+  const accepts = String(req.headers['accept-encoding'] || '');
+  res.set('Content-Type', 'application/json; charset=utf-8');
+  if (body.length > 16384 && /\bgzip\b/.test(accepts)) {
+    return zlib.gzip(body, { level: 6 }, (err, zipped) => {
+      if (err) return res.send(body);
+      res.set('Content-Encoding', 'gzip');
+      res.send(zipped);
+    });
+  }
+  res.send(body);
+}
+
 function sendProxyError(res, status, message, extra = {}) {
   res.status(status).json({
     ok: false,
@@ -546,7 +567,7 @@ app.get('/api/overview/geojson', async (req, res) => {
       );
     }
 
-    res.json({
+    sendJsonMaybeGzip(req, res, {
       type: 'FeatureCollection',
       features,
       metadata: {
@@ -1023,7 +1044,7 @@ function readColourDomains() {
 
 app.get('/api/land-outline', async (req, res) => {
   try {
-    res.json(await backendRequest('/api/land-outline', { method: 'GET' }));
+    sendJsonMaybeGzip(req, res, await backendRequest('/api/land-outline', { method: 'GET' }));
   } catch (error) {
     sendProxyError(res, 502, 'Land outline failed', { details: error.payload ?? null });
   }

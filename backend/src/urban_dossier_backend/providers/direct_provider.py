@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import date
 from functools import lru_cache
 from pathlib import Path
@@ -176,6 +177,10 @@ READY_COLUMN_ALIASES = {
 }
 
 
+# Thread-local DuckDB connections (see DirectQueryDataProvider._connect).
+_THREAD_CONNECTIONS = threading.local()
+
+
 class DirectQueryDataProvider(DataProvider):
     def __init__(self) -> None:
         self.processed_dir = PROCESSED_DIR
@@ -185,11 +190,34 @@ class DirectQueryDataProvider(DataProvider):
         self._use_gpu = gpu_available()
 
     def _connect(self):
+        """One DuckDB connection per thread, reused across requests.
+
+        Every call used to build a fresh in-memory connection, which is cheap
+        to create but forfeits DuckDB's per-connection object cache -- so each
+        request re-parsed the footer of every Parquet file it touched. The
+        server's worker threads are long-lived; giving each its own cached
+        connection lets repeat reads of the score tables skip straight to the
+        row groups. Per-thread rather than shared because DuckDB connections
+        must not be used from two threads at once, and the point-signal path
+        deliberately fans out across threads.
+
+        Everything on these connections is read-only, which is what makes
+        reuse safe with no invalidation story: a data refresh is a file
+        replace plus a service restart, never an in-place mutation.
+        """
         try:
             import duckdb
         except ImportError as exc:  # pragma: no cover
             raise RuntimeError("duckdb is required for direct mode") from exc
-        return duckdb.connect()
+        con = getattr(_THREAD_CONNECTIONS, "con", None)
+        if con is None:
+            con = duckdb.connect()
+            try:
+                con.execute("PRAGMA enable_object_cache=true")
+            except Exception:  # noqa: BLE001 - the pragma is an optimisation, not a need
+                logger.debug("duckdb object cache pragma unavailable")
+            _THREAD_CONNECTIONS.con = con
+        return con
 
     def _parquet_path(self, name: str) -> Path:
         if not self.processed_dir:
@@ -229,11 +257,10 @@ class DirectQueryDataProvider(DataProvider):
         )
 
     def _load_overview_rows(self, path: Path, limit: int = 5000) -> list[dict[str, Any]]:
+        # No close: the connection is the thread's cached one, and closing it
+        # here would evict the object cache the reuse exists to keep.
         con = self._connect()
-        try:
-            rows = self._query_rows(con, f"SELECT * FROM read_parquet('{path.as_posix()}') LIMIT {limit}")
-        finally:
-            con.close()
+        rows = self._query_rows(con, f"SELECT * FROM read_parquet('{path.as_posix()}') LIMIT {limit}")
         return self._attach_cell_boundaries(rows)
 
     @staticmethod
