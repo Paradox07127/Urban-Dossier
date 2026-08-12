@@ -530,6 +530,36 @@ app.get('/api/metrics/:metricId', async (req, res) => {
   }
 });
 
+app.get('/api/presentation/classes', async (req, res) => {
+  const query = new URLSearchParams();
+  if (typeof req.query.x_category === 'string') query.set('x_category', req.query.x_category);
+  if (typeof req.query.y_category === 'string') query.set('y_category', req.query.y_category);
+  const suffix = query.size ? `?${query}` : '';
+  try {
+    res.json(await backendRequest(`/api/presentation/classes${suffix}`));
+  } catch (error) {
+    if (error.status >= 400 && error.status < 500) {
+      return res.status(error.status).json(error.payload ?? { detail: 'Invalid presentation request' });
+    }
+    sendProxyError(res, 502, 'Python backend presentation lookup failed', { details: error.payload ?? null });
+  }
+});
+
+app.get('/api/presentation/bivariate', async (req, res) => {
+  const query = new URLSearchParams();
+  if (typeof req.query.x_category === 'string') query.set('x_category', req.query.x_category);
+  if (typeof req.query.y_category === 'string') query.set('y_category', req.query.y_category);
+  const suffix = query.size ? `?${query}` : '';
+  try {
+    sendJsonMaybeGzip(req, res, await backendRequest(`/api/presentation/bivariate${suffix}`));
+  } catch (error) {
+    if (error.status >= 400 && error.status < 500) {
+      return res.status(error.status).json(error.payload ?? { detail: 'Invalid bivariate request' });
+    }
+    sendProxyError(res, 502, 'Python backend bivariate lookup failed', { details: error.payload ?? null });
+  }
+});
+
 app.post('/api/overview', async (req, res) => {
   try {
     const payload = await backendRequest('/api/overview', {

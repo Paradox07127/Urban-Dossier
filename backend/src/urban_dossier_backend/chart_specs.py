@@ -12,6 +12,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from .metrics import METHODOLOGY_VERSION
+from .presentation import score_color
 
 
 VEGA_LITE_SCHEMA = "https://vega.github.io/schema/vega-lite/v6.json"
@@ -84,6 +85,7 @@ def score_composition_chart(
                 "label": category.replace("_", " ").title(),
                 "score": round(float(score), 2),
                 "coverage": round(float(ratio), 4) if isinstance(ratio, (int, float)) else 1.0,
+                "color": score_color(category, float(score)),
             }
         )
 
@@ -95,7 +97,7 @@ def score_composition_chart(
             "height": max(110, 28 * len(values)),
             "layer": [
                 {
-                    "mark": {"type": "bar", "cornerRadiusEnd": 3, "color": "#315f73"},
+                    "mark": {"type": "bar", "cornerRadiusEnd": 3},
                     "encoding": {
                         "y": {
                             "field": "label",
@@ -113,6 +115,12 @@ def score_composition_chart(
                             "field": "coverage",
                             "type": "quantitative",
                             "scale": {"domain": [0, 1], "range": [0.35, 1]},
+                            "legend": None,
+                        },
+                        "color": {
+                            "field": "color",
+                            "type": "nominal",
+                            "scale": None,
                             "legend": None,
                         },
                         "tooltip": [

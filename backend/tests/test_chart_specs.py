@@ -20,7 +20,7 @@ def _values(chart) -> list[dict]:
 
 def test_score_chart_carries_code_provenance_and_exact_backend_values():
     chart = score_composition_chart(
-        {"overall": 61, "safety": 55.25, "transit": None, "amenities": 72},
+        {"overall": 61, "safety": 55.25, "transit": None, "amenities": 72, "building": 44},
         {
             "overall": {"effective_ratio": 0.75},
             "safety": {"ratio": 0.5},
@@ -30,11 +30,18 @@ def test_score_chart_carries_code_provenance_and_exact_backend_values():
     assert chart.code_ref.endswith("score_composition_chart@1")
     assert chart.methodology_version == METHODOLOGY_VERSION
     assert chart.spec["usermeta"]["code_ref"] == chart.code_ref
-    assert _values(chart) == [
+    values = _values(chart)
+    assert [
+        {key: row[key] for key in ("category", "label", "score", "coverage")}
+        for row in values
+    ] == [
         {"category": "overall", "label": "Overall", "score": 61.0, "coverage": 0.75},
         {"category": "safety", "label": "Safety", "score": 55.25, "coverage": 0.5},
         {"category": "amenities", "label": "Amenities", "score": 72.0, "coverage": 1.0},
+        {"category": "building", "label": "Building", "score": 44.0, "coverage": 1.0},
     ]
+    assert all(row["color"].startswith("#") for row in values)
+    assert chart.spec["layer"][0]["encoding"]["color"]["scale"] is None
     assert "transit" not in {row["category"] for row in _values(chart)}
     json.dumps(chart.model_dump())
 

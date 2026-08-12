@@ -34,6 +34,7 @@ SKILL_PATH = SKILLS_ROOT / "urban_dossier_analyst"
 
 logger = logging.getLogger(__name__)
 from .metrics import METRICS_BY_ID, metric_to_dict, registry_to_dict
+from .presentation import bivariate_geojson, presentation_contract
 from .schemas import DetailPreviewRequest, DetailRequest, OverviewRequest, WatchlistRequest
 from .service import (
     analyze_point,
@@ -144,6 +145,28 @@ def metric_detail(metric_id: str) -> dict:
             content={"detail": f"Unknown metric '{metric_id}'", "known": sorted(METRICS_BY_ID)},
         )
     return metric_to_dict(definition)
+
+
+@app.get("/api/presentation/classes")
+def presentation_classes(
+    x_category: str = "safety",
+    y_category: str = "transit",
+) -> dict:
+    try:
+        return presentation_contract(x_category, y_category)
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+
+@app.get("/api/presentation/bivariate")
+def presentation_bivariate(
+    x_category: str = "safety",
+    y_category: str = "transit",
+) -> dict:
+    try:
+        return bivariate_geojson(x_category, y_category)
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
 
 
 @app.post("/api/overview")

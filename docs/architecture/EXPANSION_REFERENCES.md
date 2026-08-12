@@ -27,14 +27,25 @@ the point estimate. Sensitivity artifacts publish both score and rank ranges.
   supports an explicit schema reference.
 - [vega-embed](https://github.com/vega/vega-embed) is the official
   framework-independent browser embedder.
+- [d3-scale-chromatic](https://github.com/d3/d3-scale-chromatic) publishes the
+  ColorBrewer categorical, diverging, and sequential schemes. The univariate
+  score contract uses the exact five-class BrBG artifact rather than a locally
+  invented ramp.
 - [MapLibre GL JS](https://maplibre.org/maplibre-gl-js/docs/) renders
   data-driven style expressions on the GPU. Its style-layer implementation
   tracks global-state references so a global value can invalidate dependent
   layers without per-feature state mutation.
+- Joshua Stevens' [bivariate choropleth method](https://www.joshuastevens.net/cartography/make-a-bivariate-choropleth-map/)
+  supplies the established 3×3 blue-red matrix used by the combined
+  Safety × Transit view. The repository additionally measures every adjacent
+  matrix cell under three simulated dichromacy modes before publication.
 
 Decision: the backend owns data, class breaks, palette identifiers and
 ChartSpec JSON. React mounts specs but does not derive analytical values.
 MapLibre consumes presentation properties; it does not recompute scores.
+Class breaks are quantiles of the served land-clipped H3 r8 population; ties
+remain ties, so an artifact may publish fewer effective classes. Building
+histograms provide frequency context but never redefine those map classes.
 
 ## Controlled DuckDB analysis
 
@@ -69,4 +80,3 @@ External benchmark claims are candidate-screening evidence only. Production
 selection requires the repository's fixed business evaluation set, including
 expected tool sequence, evidence grounding, refusal/out-of-scope behavior,
 latency and memory. No model switch is valid before EXPANSION_PLAN 4.1.
-

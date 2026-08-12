@@ -187,12 +187,12 @@ export default function MethodologyPanel({ onClose }: { onClose: () => void }) {
               ))}
 
               <p className="text-[11px] leading-relaxed text-muted-foreground">
-                At city overview zoom, colours are fixed 20-point score bands
-                (0–20, …, 80–100). At building zoom, the legend switches to
-                histogram-derived classes for the scored building distribution;
-                coarse buckets and tied values mean those classes are approximate,
-                not a promise that each colour covers exactly one fifth of the
-                city. Full method notes, the correlation audit and the sensitivity
+                Map, chart, and legend colours use the same server-published
+                quantile breaks calculated over land-clipped H3 r8 overview
+                cells. The building histogram remains frequency context only;
+                it does not redefine the colour classes. Tied values may reduce
+                the effective class count instead of inventing distinctions.
+                Full method notes, the correlation audit and the sensitivity
                 analysis live in the repository under{' '}
                 <span className="font-mono">docs/methodology/</span>.
               </p>

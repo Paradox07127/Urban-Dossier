@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import maplibregl, { GeoJSONSource, Map as MapLibreMap } from 'maplibre-gl';
-import { CLASS_COLORS, classBreaks } from '../lib/scoreClasses';
+import { CLASS_COLORS, classBreaks, classColors, type ScoreDomain } from '../lib/scoreClasses';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Box } from 'lucide-react';
-import type { ComparisonDeltaMap, Location } from '../types';
+import type { BivariatePresentation, ComparisonDeltaMap, Location } from '../types';
 
 type RenderTag = 'general' | 'safety' | 'transit' | 'amenities';
 type Coordinate = [number, number];
@@ -35,13 +35,10 @@ const UD_INK = '#0E1218';
  * difference maps -- there is no reason the main ramp should be worse).
  *
  * Classed rather than continuous on purpose: a continuous ramp spends most of
- * its range where 93% of scores bunch (35-65) and adjacent places differ by
- * imperceptible tints. Five quantile classes guarantee every step is a
- * visible step. The steps were validated with the dataviz palette checker,
- * not eyeballed: worst adjacent-pair CVD dE 14.7 (target >= 8), worst
- * normal-vision dE 16.5 (floor 15), lightness monotonic per arm. The
- * midpoint's low surface contrast triggers the relief rule, which the
- * always-visible legend and the click-through detail panel satisfy.
+ * its range where scores bunch and adjacent places differ by imperceptible
+ * tints. The backend publishes quantile edges and the tested palette; this
+ * file only performs a lookup. Accessibility measurements are published in
+ * the same presentation contract consumed by the visible legend.
  */
 const UD_LOW = CLASS_COLORS[0];
 const UD_HIGH = CLASS_COLORS[CLASS_COLORS.length - 1];
@@ -52,13 +49,7 @@ const UD_HIGH = CLASS_COLORS[CLASS_COLORS.length - 1];
 const UD_NO_DATA = '#C6CACE';
 
 /** 2nd/50th/98th percentile per field, as measured by the scoring pass. */
-type ColourDomain = {
-  low: number;
-  mid: number;
-  high: number;
-  /** Twenty five-point buckets across 0-100, for the legend. */
-  histogram?: number[];
-};
+type ColourDomain = ScoreDomain;
 const FULL_RANGE_DOMAIN: ColourDomain = { low: 0, mid: 50, high: 100 };
 
 /* ---------------------------------------------------------------------------
@@ -168,20 +159,15 @@ function buildingScoreColor(
   domain: ColourDomain = FULL_RANGE_DOMAIN,
   mask: GeoJSON.Polygon | null = null,
 ): maplibregl.ExpressionSpecification {
-  const [b1, b2, b3, b4] = classBreaks(domain);
+  const breaks = classBreaks(domain);
+  const colors = classColors(domain);
+  const step: unknown[] = ['step', ['to-number', ['get', field]], colors[0]];
+  breaks.forEach((edge, index) => step.push(edge, colors[index + 1]));
   const classed: maplibregl.ExpressionSpecification = [
     'case',
     ['==', ['get', field], null],
     UD_NO_DATA,
-    [
-      'step',
-      ['to-number', ['get', field]],
-      CLASS_COLORS[0],
-      b1, CLASS_COLORS[1],
-      b2, CLASS_COLORS[2],
-      b3, CLASS_COLORS[3],
-      b4, CLASS_COLORS[4],
-    ],
+    step as unknown as maplibregl.ExpressionSpecification,
   ];
   if (!mask) return classed;
   // While an analysis is active, colour answers "how does the measured area
@@ -223,6 +209,7 @@ interface MapProps {
   isochrone?: GeoJSON.Feature | null;
   /** Backend-computed B-minus-A geometry and diverging presentation contract. */
   comparisonDeltaMap?: ComparisonDeltaMap | null;
+  bivariate?: boolean;
   /** Sandbox on/off. Owned by App so the rail can drive it. */
   sandbox?: boolean;
   /** Fires once the baked tiles and coastline are both present. */
@@ -231,6 +218,7 @@ interface MapProps {
   /** Reports user-driven zoom so the legend follows the visible score layer. */
   onZoomChange?: (zoom: number) => void;
   onColourDomains?: (domains: Record<string, ColourDomain>) => void;
+  onBivariatePresentation?: (presentation: BivariatePresentation | null) => void;
   onMarkerClick: (location: Location) => void;
   onMapClick: (lat: number, lng: number) => void;
 }
@@ -1050,44 +1038,97 @@ async function fetchGlobalRenderConfig(tag: RenderTag): Promise<RenderConfig> {
 /**
  * Is the baked per-building tileset being served?
  *
- * Answered false on any error: the JS renderer is the safe fallback, so an
- * unreachable status endpoint must not leave the map with no buildings at all.
+ * The two requests degrade independently: losing the presentation contract
+ * falls back to fixed score bands, while losing tile status falls back to the
+ * JS building renderer. A palette outage must not hide otherwise valid tiles.
  */
 async function fetchBuildingTileStatus(): Promise<{
   available: boolean;
   domains: Record<string, ColourDomain>;
+  bivariate: BivariatePresentation | null;
 }> {
   try {
-    const resp = await fetch('/api/building-tiles/status');
-    if (!resp.ok) return { available: false, domains: {} };
-    const data = await resp.json();
+    const [statusResult, presentationResult] = await Promise.allSettled([
+      fetch('/api/building-tiles/status'),
+      fetch('/api/presentation/classes?x_category=transit&y_category=safety'),
+    ]);
+    const statusResp = statusResult.status === 'fulfilled' ? statusResult.value : null;
+    const presentationResp =
+      presentationResult.status === 'fulfilled' ? presentationResult.value : null;
+    const data = statusResp?.ok ? await statusResp.json().catch(() => ({})) : {};
+    const presentation = presentationResp?.ok
+      ? await presentationResp.json().catch(() => ({}))
+      : {};
     const raw = data?.colour_domains;
+    const categoryContracts = presentation?.univariate?.categories;
     const domains: Record<string, ColourDomain> = {};
-    if (raw && typeof raw === 'object') {
-      for (const [field, d] of Object.entries(raw as Record<string, unknown>)) {
-        const v = d as Partial<ColourDomain> | null;
-        // Reject anything non-monotonic: a bad domain would make the
-        // interpolation throw and take the whole style down, and falling back
-        // to the full range is merely dull rather than broken.
+    if (categoryContracts && typeof categoryContracts === 'object') {
+      for (const [field, rawContract] of Object.entries(
+        categoryContracts as Record<string, unknown>,
+      )) {
+        const contract = rawContract as {
+          breaks?: unknown;
+          colors?: unknown;
+          population?: unknown;
+          population_n?: unknown;
+        };
+        const breaks = contract.breaks;
+        const colors = contract.colors;
         if (
-          v && typeof v.low === 'number' && typeof v.mid === 'number' &&
-          typeof v.high === 'number' && v.low < v.mid && v.mid < v.high
+          !Array.isArray(breaks) || breaks.length < 1 || breaks.length > 4 ||
+          !breaks.every((value, index) =>
+            typeof value === 'number' && (index === 0 || value > breaks[index - 1])) ||
+          !Array.isArray(colors) || colors.length !== breaks.length + 1 ||
+          !colors.every((color) => typeof color === 'string')
         ) {
-          domains[field] = {
-            low: v.low,
-            mid: v.mid,
-            high: v.high,
-            // Carried through for the legend. Rebuilding the object field by
-            // field silently dropped this, and the only symptom was the legend
-            // quietly falling back to a plain 0-100 gradient bar.
-            histogram: Array.isArray(v.histogram) ? v.histogram : undefined,
-          };
+          continue;
         }
+        const publication = (raw as Record<string, Partial<ColourDomain>> | null)?.[field];
+        domains[field] = {
+          low: typeof publication?.low === 'number' ? publication.low : 0,
+          mid: typeof publication?.mid === 'number' ? publication.mid : 50,
+          high: typeof publication?.high === 'number' ? publication.high : 100,
+          histogram: Array.isArray(publication?.histogram) ? publication.histogram : undefined,
+          breaks: breaks as number[],
+          colors: colors as string[],
+          population: typeof contract.population === 'string' ? contract.population : undefined,
+          populationN: typeof contract.population_n === 'number' ? contract.population_n : undefined,
+        };
       }
     }
-    return { available: data?.available === true, domains };
+    const rawBivariate = presentation?.bivariate;
+    const matrix = rawBivariate?.matrix;
+    const bivariate =
+      rawBivariate?.accessibility?.passes === true &&
+      Array.isArray(matrix) && matrix.length === 3 &&
+      matrix.every(
+        (row: unknown) => Array.isArray(row) && row.length === 3 &&
+          row.every((color) => typeof color === 'string'),
+      ) &&
+      Array.isArray(rawBivariate?.x?.breaks) && rawBivariate.x.breaks.length === 2 &&
+      Array.isArray(rawBivariate?.y?.breaks) && rawBivariate.y.breaks.length === 2
+        ? rawBivariate as BivariatePresentation
+        : null;
+    return {
+      available: data?.available === true,
+      domains,
+      bivariate,
+    };
   } catch {
-    return { available: false, domains: {} };
+    return { available: false, domains: {}, bivariate: null };
+  }
+}
+
+async function fetchBivariateGeoJSON(): Promise<GeoJSON.FeatureCollection> {
+  try {
+    const response = await fetch(
+      '/api/presentation/bivariate?x_category=transit&y_category=safety',
+    );
+    if (!response.ok) return EMPTY_FEATURE_COLLECTION;
+    const payload = await response.json();
+    return payload?.type === 'FeatureCollection' ? payload : EMPTY_FEATURE_COLLECTION;
+  } catch {
+    return EMPTY_FEATURE_COLLECTION;
   }
 }
 
@@ -1488,6 +1529,31 @@ function setBuildingScoreTag(
     'fill-color',
     buildingScoreColor(field, domain, mask),
   );
+}
+
+function setOverviewScoreTag(
+  map: MapLibreMap,
+  tag: RenderTag,
+  domains: Record<string, ColourDomain> = {},
+) {
+  if (!map.getLayer('hex-overlay-fill')) return;
+  const field = TAG_TO_SCORE_FIELD[tag] ?? 'overall';
+  map.setPaintProperty(
+    'hex-overlay-fill',
+    'fill-color',
+    buildingScoreColor('display_score', domains[field] ?? FULL_RANGE_DOMAIN),
+  );
+}
+
+function setBivariateOverview(map: MapLibreMap) {
+  if (map.getLayer('hex-overlay-fill')) {
+    map.setPaintProperty('hex-overlay-fill', 'fill-color', [
+      'coalesce', ['get', 'bivariate_color'], UD_NO_DATA,
+    ]);
+  }
+  for (const layerId of ['building-scores-fill', 'building', 'building-3d']) {
+    if (map.getLayer(layerId)) map.setLayoutProperty(layerId, 'visibility', 'none');
+  }
 }
 
 /**
@@ -2095,10 +2161,12 @@ export default function Map({
   hotspots = [],
   isochrone = null,
   comparisonDeltaMap = null,
+  bivariate = false,
   onZoomChange,
   sandbox = false,
   onSandboxAvailable,
   onColourDomains,
+  onBivariatePresentation,
   onMarkerClick,
   onMapClick,
 }: MapProps) {
@@ -2181,6 +2249,8 @@ export default function Map({
       bakedTilesRef.current = status.available;
       colourDomainsRef.current = status.domains;
       onColourDomains?.(status.domains);
+      onBivariatePresentation?.(status.bivariate);
+      setOverviewScoreTag(map, renderTag, status.domains);
 
       // The sandbox needs both the baked prisms and the coastline to stand
       // them on; without either it is not offered rather than shown broken.
@@ -2203,6 +2273,7 @@ export default function Map({
         : await fetchGlobalRenderConfig(renderTag);
 
       activeConfigRef.current = config;
+      setOverviewScoreTag(map, renderTag, colourDomainsRef.current);
       updateRadiusOverlay(map, localRenderTarget, renderTag);
       updateHotspotOverlay(map, hotspots);
       updatePostMarkers(map, postMarkersRef, config, sandboxRef.current);
@@ -2409,6 +2480,16 @@ export default function Map({
       if (cancelled || !mapRef.current) return;
 
       activeConfigRef.current = config;
+      if (bivariate) {
+        const bivariateGeoJSON = await fetchBivariateGeoJSON();
+        if (cancelled || !mapRef.current) return;
+        updateRadiusOverlay(map, null, renderTag);
+        renderHexOverlay(map, bivariateGeoJSON, hexOverlayRef);
+        setGlobalVisualizationMode(map, true, sandboxRef.current);
+        setBivariateOverview(map);
+        return;
+      }
+      setOverviewScoreTag(map, renderTag, colourDomainsRef.current);
       updateRadiusOverlay(map, localRenderTarget, renderTag);
       updateHotspotOverlay(map, hotspots);
       updatePostMarkers(map, postMarkersRef, config, sandboxRef.current);
@@ -2451,6 +2532,7 @@ export default function Map({
     };
   }, [
     renderTag,
+    bivariate,
     localRenderTarget ? `${localRenderTarget.center[0]},${localRenderTarget.center[1]},${localRenderTarget.radiusM}` : 'global',
     refreshKey,
     hotspots,

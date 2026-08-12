@@ -10,25 +10,20 @@
  * look like a precinct result. Brown reads as barren and teal as thriving,
  * with no party wearing either. Classed rather than continuous because 93% of
  * scores bunch between 35 and 65, where a continuous ramp hands adjacent
- * places imperceptible tints; quantile classes guarantee every step is a
- * visible step.
- *
- * Validated with the dataviz palette checker rather than eyeballed:
- * worst adjacent-pair CVD dE 9.4 (target >= 8), worst normal-vision dE 17.8
- * (floor 15), lightness monotonic per arm. The midpoint's low contrast
- * against the paper basemap invokes the relief rule, satisfied by the
- * always-visible legend and the click-through detail panel.
+ * places imperceptible tints. The backend publishes the quantile edges and
+ * numerical accessibility report; this module only applies that contract.
  */
 
+/** Exact d3-scale-chromatic / ColorBrewer schemeBrBG[5] fallback values. */
 export const CLASS_COLORS = [
-  '#8c5a10', // worst fifth
-  '#cc9c33',
-  '#d8d4cc', // typical fifth -- deliberately recedes
-  '#62b0a4',
-  '#1e7a70', // best fifth
+  '#a6611a', // worst fifth
+  '#dfc27d',
+  '#f5f5f5', // typical fifth -- deliberately recedes
+  '#80cdc1',
+  '#018571', // best fifth
 ] as const;
 
-export type ClassBreaks = [number, number, number, number];
+export type ClassBreaks = number[];
 
 export interface ScoreDomain {
   low: number;
@@ -36,50 +31,31 @@ export interface ScoreDomain {
   high: number;
   /** Twenty five-point buckets across 0-100, from the scoring pass. */
   histogram?: number[];
+  /** Strict quantile edges computed over the served H3 population. */
+  breaks?: number[];
+  /** One colour per class, also owned by the backend contract. */
+  colors?: string[];
+  population?: string;
+  populationN?: number;
 }
 
-/**
- * Equal-population breaks from the server's measured histogram.
- *
- * The histogram is server data (twenty 5-point buckets over every scored
- * building), so the breaks stay server-defined in spirit even though the
- * cumulative walk happens client-side. Falls back to an even split of the
- * served percentile span when no histogram arrived.
- */
+/** Read server-published edges; fixed bands are only a no-contract fallback. */
 export function classBreaks(domain: ScoreDomain): ClassBreaks {
-  const hist = domain.histogram;
-  if (hist && hist.length === 20) {
-    const total = hist.reduce((a, b) => a + b, 0);
-    if (total > 0) {
-      const breaks: number[] = [];
-      let cum = 0;
-      let target = 0.2;
-      for (let i = 0; i < 20 && breaks.length < 4; i += 1) {
-        cum += hist[i];
-        while (breaks.length < 4 && cum / total >= target) {
-          breaks.push((i + 1) * 5);
-          target += 0.2;
-        }
-      }
-      while (breaks.length < 4) breaks.push(100);
-      // Bunched data can land two quantiles in one bucket; nudge duplicates
-      // apart so a MapLibre step expression stays strictly ascending.
-      for (let i = 1; i < 4; i += 1) {
-        if (breaks[i] <= breaks[i - 1]) breaks[i] = breaks[i - 1] + 1;
-      }
-      return breaks as ClassBreaks;
-    }
-  }
-  const span = domain.high - domain.low;
-  return [
-    domain.low + span * 0.2,
-    domain.low + span * 0.4,
-    domain.low + span * 0.6,
-    domain.low + span * 0.8,
-  ];
+  if (
+    domain.breaks && domain.breaks.length >= 1 && domain.breaks.length <= 4 &&
+    domain.breaks.every((value, index, values) =>
+      Number.isFinite(value) && (index === 0 || value > values[index - 1]))
+  ) return domain.breaks;
+  return [20, 40, 60, 80];
 }
 
-/** Which of the five classes a score falls in, 0 = worst. */
+export function classColors(domain?: ScoreDomain): readonly string[] {
+  return domain?.colors?.length === (domain?.breaks?.length ?? -1) + 1
+    ? domain.colors
+    : CLASS_COLORS;
+}
+
+/** Which class a score falls in, 0 = worst. */
 export function classIndex(score: number, breaks: ClassBreaks): number {
   for (let i = 0; i < breaks.length; i += 1) {
     if (score < breaks[i]) return i;
@@ -88,6 +64,10 @@ export function classIndex(score: number, breaks: ClassBreaks): number {
 }
 
 /** The class colour for a score, given the active breaks. */
-export function classColor(score: number, breaks: ClassBreaks): string {
-  return CLASS_COLORS[classIndex(score, breaks)];
+export function classColor(
+  score: number,
+  breaks: ClassBreaks,
+  colors: readonly string[] = CLASS_COLORS,
+): string {
+  return colors[classIndex(score, breaks)];
 }

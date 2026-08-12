@@ -157,6 +157,27 @@ export interface ComparisonDeltaMap {
   };
 }
 
+export interface BivariatePresentation {
+  palette: string;
+  x: {
+    category: string;
+    field: string;
+    breaks: number[];
+  };
+  y: {
+    category: string;
+    field: string;
+    breaks: number[];
+  };
+  matrix: string[][];
+  index: string;
+  accessibility: {
+    passes: boolean;
+    threshold: number;
+    minimum_adjacent_delta_e: Record<string, number>;
+  };
+}
+
 export interface DetailResponse extends Omit<DetailPreviewResponse, 'mode' | 'preview_ready'> {
   mode: 'detail';
   report_summary: string;

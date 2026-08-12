@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { Box, Layers, Search, Shield, TramFront, UtensilsCrossed, X } from 'lucide-react';
-import { CLASS_COLORS, classBreaks, classColor } from '../lib/scoreClasses';
+import {
+  classBreaks,
+  classColor,
+  classColors,
+  type ScoreDomain,
+} from '../lib/scoreClasses';
+import type { BivariatePresentation } from '../types';
 
 export type RenderTag = 'general' | 'safety' | 'transit' | 'amenities';
-export type ColourDomain = {
-  low: number;
-  mid: number;
-  high: number;
-  histogram?: number[];
-};
+export type ColourDomain = ScoreDomain;
 
 interface Props {
   tag: RenderTag;
@@ -16,8 +17,10 @@ interface Props {
   sandbox: boolean;
   sandboxAvailable: boolean;
   onSandboxChange: (on: boolean) => void;
-  overviewBands: boolean;
   domains: Record<string, ColourDomain>;
+  bivariate: boolean;
+  bivariatePresentation?: BivariatePresentation | null;
+  onBivariateChange: (enabled: boolean) => void;
   onSearch: (query: string) => void;
   onResetView: () => void;
   searchError?: string | null;
@@ -62,17 +65,16 @@ const TAG_FIELD: Record<RenderTag, string> = {
  */
 function DistributionStrip({
   domain,
-  overviewBands,
 }: {
   domain: ColourDomain | undefined;
-  overviewBands: boolean;
 }) {
   const hist = domain?.histogram;
-  if (overviewBands || !domain || !hist || hist.length === 0) {
+  const colors = classColors(domain);
+  if (!domain || !hist || hist.length === 0) {
     return (
       <div className="px-3 pb-3 pt-2">
         <div className="flex h-2 w-full gap-[2px]">
-          {CLASS_COLORS.map((colour) => (
+          {colors.map((colour) => (
             <div key={colour} className="flex-1 rounded-[1px]" style={{ background: colour }} />
           ))}
         </div>
@@ -81,7 +83,7 @@ function DistributionStrip({
           <span>100</span>
         </div>
         <div className="mt-0.5 text-center font-mono text-[9px] text-muted-foreground/60">
-          {overviewBands ? '20-point score bands · overview' : '20-point score bands'}
+          fixed bands · presentation contract unavailable
         </div>
       </div>
     );
@@ -116,7 +118,7 @@ function DistributionStrip({
               className="flex-1 rounded-[1px] transition-[height] duration-300"
               style={{
                 height: `${Math.max(count > 0 ? 8 : 2, (count / peak) * 100)}%`,
-                background: count > 0 ? classColor(bucketMid, breaks) : 'var(--ud-rule)',
+                background: count > 0 ? classColor(bucketMid, breaks, colors) : 'var(--ud-rule)',
               }}
             />
           );
@@ -134,7 +136,7 @@ function DistributionStrip({
         <span>{domain.high}</span>
       </div>
       <div className="mt-0.5 text-center font-mono text-[9px] text-muted-foreground/60">
-        histogram-derived classes · 2nd–98th pct ends
+        server quantiles · {domain.population?.replaceAll('_', ' ') ?? 'H3 population'}
       </div>
     </div>
   );
@@ -147,9 +149,11 @@ export default function InstrumentRail({
   sandboxAvailable,
   onSandboxChange,
   domains,
+  bivariate,
+  bivariatePresentation,
+  onBivariateChange,
   onSearch,
   onResetView,
-  overviewBands,
   searchError,
 }: Props) {
   const [searchOpen, setSearchOpen] = useState(false);
@@ -254,9 +258,9 @@ export default function InstrumentRail({
                 key={t}
                 type="button"
                 onClick={() => onTagChange(t)}
-                aria-pressed={tag === t}
+                aria-pressed={!bivariate && tag === t}
                 className={`flex items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-[13px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${
-                  tag === t
+                  !bivariate && tag === t
                     ? 'bg-foreground text-background'
                     : 'text-foreground hover:bg-muted'
                 }`}
@@ -265,13 +269,65 @@ export default function InstrumentRail({
                 {label}
               </button>
             ))}
+            {bivariatePresentation && (
+              <button
+                type="button"
+                onClick={() => onBivariateChange(!bivariate)}
+                aria-pressed={bivariate}
+                aria-label="Safety by Transit bivariate map"
+                className={`mt-1 flex items-center gap-2.5 rounded-md border px-2 py-1.5 text-left text-[13px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${
+                  bivariate
+                    ? 'border-foreground bg-foreground text-background'
+                    : 'border-border text-foreground hover:bg-muted'
+                }`}
+              >
+                <span className="grid h-3.5 w-3.5 grid-cols-2 gap-px overflow-hidden rounded-[2px]">
+                  {bivariatePresentation.matrix.flat()
+                    .filter((_, index) => [0, 2, 6, 8].includes(index))
+                    .map((color, index) => (
+                      <span key={`${color}-${index}`} style={{ backgroundColor: color }} />
+                    ))}
+                </span>
+                Safety × Transit
+              </button>
+            )}
           </div>
         </div>
 
         {/* The legend sits directly under the lens that produces it, so the
             relationship needs no explaining. */}
         <div className="border-t border-border">
-          <DistributionStrip domain={domain} overviewBands={overviewBands} />
+          {bivariate && bivariatePresentation ? (
+            <div className="p-3" aria-label="Bivariate map legend">
+              <div className="mb-2 flex items-baseline justify-between">
+                <span className="ud-label">Transit →</span>
+                <span className="font-mono text-[9px] text-muted-foreground">
+                  {bivariatePresentation.palette}
+                </span>
+              </div>
+              <div className="flex items-end gap-2">
+                <span className="-rotate-90 whitespace-nowrap font-mono text-[9px] text-muted-foreground">
+                  Safety →
+                </span>
+                <div className="grid flex-1 grid-cols-3 gap-1">
+                  {bivariatePresentation.matrix.flat().map((color, index) => (
+                    <span
+                      key={`${color}-${index}`}
+                      className="aspect-square rounded-[2px] border border-black/5"
+                      style={{ backgroundColor: color }}
+                    />
+                  ))}
+                </div>
+              </div>
+              <div className="mt-2 font-mono text-[9px] text-muted-foreground/70">
+                server 3×3 quantiles · CVD ΔE ≥ {Math.min(
+                  ...Object.values(bivariatePresentation.accessibility.minimum_adjacent_delta_e),
+                ).toFixed(1)}
+              </div>
+            </div>
+          ) : (
+            <DistributionStrip domain={domain} />
+          )}
         </div>
       </div>
     </div>

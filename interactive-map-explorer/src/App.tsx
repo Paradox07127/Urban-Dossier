@@ -28,6 +28,7 @@ import type {
   DetailResponse,
   EvidenceEntry,
   AgentStatus,
+  BivariatePresentation,
   PriorityAction,
   RadiusMeters,
   Scores,
@@ -252,6 +253,9 @@ export default function App() {
   const [sandbox, setSandbox] = useState(false);
   const [sandboxAvailable, setSandboxAvailable] = useState(false);
   const [colourDomains, setColourDomains] = useState<Record<string, ColourDomain>>({});
+  const [bivariate, setBivariate] = useState(false);
+  const [bivariatePresentation, setBivariatePresentation] =
+    useState<BivariatePresentation | null>(null);
 
   const reportRef = useRef<HTMLDivElement>(null);
 
@@ -513,6 +517,7 @@ export default function App() {
     handleClose();
     clearComparison();
     setActivePriority(null);
+    setBivariate(false);
     setCenter(NYC_OVERVIEW);
     setZoom(NYC_OVERVIEW_ZOOM);
     setRefreshKey((k) => k + 1);
@@ -571,10 +576,12 @@ export default function App() {
           hotspots={(hotspots as any[]) ?? []}
           isochrone={isochrone}
           comparisonDeltaMap={serverComparison?.delta_map ?? null}
+          bivariate={bivariate}
           sandbox={sandbox}
           onZoomChange={setZoom}
           onSandboxAvailable={setSandboxAvailable}
           onColourDomains={setColourDomains}
+          onBivariatePresentation={setBivariatePresentation}
           onMarkerClick={handleMarkerClick}
           onMapClick={handleMapClick}
         />
@@ -587,6 +594,7 @@ export default function App() {
       <InstrumentRail
         tag={renderTag}
         onTagChange={(t) => {
+          setBivariate(false);
           setActivePriority(t === 'general' ? null : t.charAt(0).toUpperCase() + t.slice(1));
           if (t !== 'general' && !selectedTarget) {
             setCenter(NYC_OVERVIEW);
@@ -597,7 +605,15 @@ export default function App() {
         sandboxAvailable={sandboxAvailable}
         onSandboxChange={setSandbox}
         domains={colourDomains}
-        overviewBands={zoom < 13}
+        bivariate={bivariate}
+        bivariatePresentation={bivariatePresentation}
+        onBivariateChange={(enabled) => {
+          if (enabled) {
+            handleGlobalView();
+            setSandbox(false);
+          }
+          setBivariate(enabled);
+        }}
         onSearch={(q) => { setSearchQuery(q); handleSearch(q); }}
         onResetView={handleGlobalView}
         searchError={error}
