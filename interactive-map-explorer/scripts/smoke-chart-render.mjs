@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { unlinkSync, writeFileSync } from 'node:fs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { chromium } from 'playwright-core';
 
@@ -7,6 +9,7 @@ const baseUrl = process.env.URBAN_DOSSIER_SMOKE_URL || 'http://127.0.0.1:3460';
 const executablePath = process.env.CHROMIUM_PATH || '/snap/bin/chromium';
 const screenshotPath =
   process.env.URBAN_DOSSIER_SMOKE_SCREENSHOT || '/tmp/urban-dossier-chart-smoke.png';
+const reportPath = fileURLToPath(new URL('../dist/offline-export-smoke.html', import.meta.url));
 
 const browser = await chromium.launch({
   executablePath,
@@ -46,6 +49,83 @@ try {
   await page.getByText('Overall score', { exact: true }).waitFor({ timeout: 30_000 });
   await page.getByText(/server quantiles/).waitFor({ timeout: 30_000 });
   await page.locator('.vega-embed svg').first().waitFor({ timeout: 30_000 });
+  console.log('smoke: downloading and opening self-contained report offline');
+  await page.evaluate(() => {
+    window.__udDownloadLinks = [];
+    const originalCreateObjectURL = URL.createObjectURL.bind(URL);
+    URL.createObjectURL = function recordDownloadBlob(value) {
+      window.__udDownloadBlob = value;
+      return originalCreateObjectURL(value);
+    };
+    const originalClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function recordDownloadClick() {
+      window.__udDownloadLinks.push({ download: this.download, href: this.href });
+      return originalClick.call(this);
+    };
+  });
+  const [exportResponse] = await Promise.all([
+    page.waitForResponse((response) => response.url().endsWith('/api/export/html')),
+    page.getByRole('button', { name: 'Download offline HTML report' }).click(),
+  ]);
+  assert.equal(exportResponse.status(), 200);
+  const attachment = exportResponse.headers()['content-disposition'] || '';
+  const exportFilename = attachment.match(/filename="([^"]+)"/)?.[1] || '';
+  assert.match(exportFilename, /^urban-dossier-.+\.html$/);
+  await page.waitForFunction(() => window.__udDownloadLinks?.length === 1);
+  const downloadLink = await page.evaluate(() => window.__udDownloadLinks[0]);
+  assert.equal(downloadLink.download, exportFilename);
+  assert.match(downloadLink.href, /^blob:/);
+  const exportBodyBase64 = await page.evaluate(async () => {
+    const bytes = new Uint8Array(await window.__udDownloadBlob.arrayBuffer());
+    let binary = '';
+    for (let index = 0; index < bytes.length; index += 32_768) {
+      binary += String.fromCharCode(...bytes.subarray(index, index + 32_768));
+    }
+    return btoa(binary);
+  });
+  const exportBody = Buffer.from(exportBodyBase64, 'base64');
+  assert(exportBody.length > 700_000, `export response is unexpectedly small: ${exportBody.length}`);
+  assert.equal(exportBody.subarray(0, 15).toString(), '<!doctype html>');
+  writeFileSync(reportPath, exportBody);
+  const offlineRequests = [];
+  const offlineErrors = [];
+  const offlineConsoleErrors = [];
+  const offlinePage = await browser.newPage({ viewport: { width: 1200, height: 900 } });
+  offlinePage.on('pageerror', (error) => offlineErrors.push(error.message));
+  offlinePage.on('console', (message) => {
+    if (message.type() === 'error') offlineConsoleErrors.push(message.text());
+  });
+  const blockOfflineNetwork = async (route) => {
+    offlineRequests.push(route.request().url());
+    await route.abort('internetdisconnected');
+  };
+  await offlinePage.route('http://**/*', blockOfflineNetwork);
+  await offlinePage.route('https://**/*', blockOfflineNetwork);
+  await offlinePage.goto(pathToFileURL(reportPath).href, {
+    waitUntil: 'domcontentloaded',
+    timeout: 15_000,
+  });
+  await offlinePage.waitForTimeout(1_000);
+  console.log('smoke: offline runtime', await offlinePage.evaluate(() => ({
+    scripts: document.scripts.length,
+    charts: document.querySelectorAll('.chart').length,
+    rendered: document.querySelectorAll('.vega-embed svg').length,
+    renderErrors: Array.from(document.querySelectorAll('.render-error'), (node) => node.textContent),
+    vega: typeof window.vega,
+    vegaLite: typeof window.vegaLite,
+    vegaEmbed: typeof window.vegaEmbed,
+  })));
+  await offlinePage.locator('.vega-embed svg').first().waitFor({ timeout: 30_000 });
+  const exportedCharts = await offlinePage.locator('.vega-embed svg').count();
+  const exportStamp = await offlinePage.locator('[data-testid="generated-at"]').textContent();
+  assert(exportedCharts >= 3, `expected at least 3 exported Vega SVGs, got ${exportedCharts}`);
+  await offlinePage.getByText('methodology v3.9.0', { exact: true }).waitFor();
+  assert.match(exportStamp || '', /^generated \d{4}-\d{2}-\d{2}T/);
+  assert.equal(await offlinePage.locator('.render-error').count(), 0);
+  assert.deepEqual(offlineRequests, []);
+  assert.deepEqual(offlineErrors, []);
+  assert.deepEqual(offlineConsoleErrors, []);
+  await offlinePage.close();
   const presentationCheck = await page.evaluate(async () => {
     const contract = await fetch('/api/presentation/classes').then((response) => response.json());
     return {
@@ -200,6 +280,13 @@ try {
           fillColor: timelineBefore.fillColor,
         },
         deltaMap,
+        offlineExport: {
+          charts: exportedCharts,
+          generatedAt: exportStamp,
+          externalRequests: offlineRequests.length,
+          filename: exportFilename,
+          browserDownloadLink: downloadLink.href.startsWith('blob:'),
+        },
         externalRequests: externalRequests.length,
         screenshotPath,
       },
@@ -214,4 +301,5 @@ try {
   process.exitCode = 1;
 } finally {
   await browser.close();
+  try { unlinkSync(reportPath); } catch {}
 }

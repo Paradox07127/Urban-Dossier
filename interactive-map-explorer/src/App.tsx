@@ -8,6 +8,7 @@ import {
   AlertCircle,
   Bus,
   ChevronRight,
+  Download,
   Globe,
   Loader2,
   Maximize2,
@@ -235,6 +236,7 @@ export default function App() {
   const [methodologyOpen, setMethodologyOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [reportLoading, setReportLoading] = useState(false);
+  const [exportLoading, setExportLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [panelExpanded, setPanelExpanded] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -511,6 +513,47 @@ export default function App() {
       setError(err instanceof Error ? err.message : 'Report request failed.');
     } finally {
       setReportLoading(false);
+    }
+  };
+
+  const handleExportHtml = async () => {
+    if (!preview || !display || !preview.chart_specs) return;
+    setExportLoading(true);
+    setError(null);
+    try {
+      const response = await fetch('/api/export/html', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: display.title,
+          report_mode: activeReportMode || 'snapshot',
+          target: preview.target,
+          scores: preview.scores,
+          score_coverage: preview.score_coverage,
+          chart_specs: preview.chart_specs,
+          evidence_table: preview.evidence_table,
+          data_gaps: preview.data_gaps,
+          report_markdown: finalReport?.report_markdown || '',
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await extractBackendError(response, `Export failed with status ${response.status}`));
+      }
+      const blob = await response.blob();
+      const disposition = response.headers.get('Content-Disposition') || '';
+      const filename = disposition.match(/filename="([^"]+)"/)?.[1] || 'urban-dossier-report.html';
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'HTML export failed.');
+    } finally {
+      setExportLoading(false);
     }
   };
 
@@ -1151,6 +1194,22 @@ export default function App() {
                       {reportCache['organization'] ? 'View Organization' : 'Organization Report'}
                     </Button>
                   </div>
+                  <Button
+                    type="button"
+                    onClick={handleExportHtml}
+                    disabled={exportLoading || loading || !preview?.chart_specs}
+                    variant="outline"
+                    size="sm"
+                    className="w-full rounded-lg h-9 text-xs font-medium"
+                    aria-label="Download offline HTML report"
+                  >
+                    {exportLoading ? (
+                      <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                    ) : (
+                      <Download className="w-3.5 h-3.5 mr-1.5" />
+                    )}
+                    Download Offline HTML
+                  </Button>
                 </div>
 
                 {/* Error */}

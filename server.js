@@ -4,6 +4,10 @@ const fs = require('fs');
 const crypto = require('crypto');
 const zlib = require('zlib');
 const { previewCacheKey } = require('./scripts/api-cache-key');
+const {
+  buildOfflineHtmlReport,
+  ExportValidationError,
+} = require('./scripts/html-report-export');
 const EXPECTED_METHODOLOGY_VERSION = '3.9.0';
 const EXPECTED_BUILDING_SCORING_CONTRACT = 'point-radius-haversine-v1';
 
@@ -907,6 +911,34 @@ app.post('/api/analyze-point', async (req, res) => {
     res.json(payload);
   } catch (error) {
     sendProxyError(res, 502, 'Detail report proxy failed', { details: error.payload ?? null });
+  }
+});
+
+app.post('/api/export/html', (req, res) => {
+  try {
+    const output = buildOfflineHtmlReport(req.body, {
+      methodologyVersion: EXPECTED_METHODOLOGY_VERSION,
+    });
+    const requestedTitle = typeof req.body?.title === 'string' ? req.body.title : 'report';
+    const slug = requestedTitle
+      .normalize('NFKD')
+      .replace(/[^a-zA-Z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 60)
+      .toLowerCase() || 'report';
+    res
+      .status(200)
+      .set({
+        'Content-Type': 'text/html; charset=utf-8',
+        'Content-Disposition': `attachment; filename="urban-dossier-${slug}.html"`,
+      })
+      .send(output);
+  } catch (error) {
+    if (error instanceof ExportValidationError) {
+      return res.status(400).json({ detail: error.message });
+    }
+    console.error(`Offline HTML export failed: ${error.message}`);
+    return res.status(500).json({ detail: 'Offline HTML export failed' });
   }
 });
 

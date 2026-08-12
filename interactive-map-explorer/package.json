@@ -10,6 +10,7 @@
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
     "smoke:charts": "node scripts/smoke-chart-render.mjs",
+    "test:export": "node --test ../scripts/test-html-report-export.js",
     "check:layers": "node scripts/check-layer-order.mjs"
   },
   "dependencies": {
