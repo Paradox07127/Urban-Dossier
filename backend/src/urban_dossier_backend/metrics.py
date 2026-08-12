@@ -60,7 +60,15 @@ from enum import Enum
 #          reference set).
 #        Sensitivity analysis put the average per-cell cost of each change at
 #        ~2.7 points (docs/methodology/sensitivity-analysis.md).
-METHODOLOGY_VERSION = "3.8.0"
+# 3.9.0  rodent re-anchored from complaint-adjacent counts to DOHMH's own
+#        construction: the share of initial inspections finding active rat
+#        signs, EB-shrunk (backend/scripts/preprocess_rodent_rate.py). The
+#        count version co-moved with 311_sanitation at rho 0.897 and with
+#        housing violations at 0.866 -- mostly shared volume; the rate
+#        measures 0.486 and 0.323 against the same partners, so the
+#        construct's two evidence sources are complementary instead of
+#        near-duplicates. Weights unchanged.
+METHODOLOGY_VERSION = "3.9.0"
 
 
 class Direction(str, Enum):
@@ -239,9 +247,13 @@ METRICS: tuple[MetricDefinition, ...] = (
     MetricDefinition(
         id="rodent",
         category="safety",
-        label="Rodent activity",
-        description="Inspections that found active rodent signs.",
-        unit="rodent-positive inspections within 500 m",
+        label="Rodent conditions",
+        description=(
+            "The share of initial DOHMH inspections that found active rat "
+            "signs, over three years, shrunk toward the citywide rate where "
+            "few inspections exist."
+        ),
+        unit="rat-positive share of initial inspections (3 y, EB-shrunk)",
         direction=Direction.LOWER_IS_BETTER,
         spatial_grain=SpatialGrain.H3_R9,
         temporal_grain=TemporalGrain.DAILY,
@@ -249,18 +261,22 @@ METRICS: tuple[MetricDefinition, ...] = (
         weight_in_category=0.125,
         source_dataset="DOHMH Rodent Inspection",
         source_relpath="environment/rodent_inspections.csv",
-        score_table="safety/rodent_scores_h3.parquet",
+        score_table="safety/rodent_rate_scores_h3.parquet",
         indexed_table="safety/rodent_indexed.parquet",
         state_keys=("rodent_positive_500m",),
         overlaps_with=("311_sanitation",),
         notes=(
-            "Inspection outcomes, not complaints: rows whose RESULT mentions "
-            "rats, a failed inspection or active signs. Since v3.8.0 this and "
-            "`311_sanitation` are one construct -- sanitation conditions -- "
-            "with two evidence sources, sharing a single 0.20-weight slot "
-            "(0.125 each after safety's proportional renormalisation). They "
-            "were separately weighted 0.20 + 0.20 before, which stacked one "
-            "phenomenon (measured rho = 0.897) to 40% of the category."
+            "DOHMH's own rat-index construction (it designates Rat Mitigation "
+            "Zones from indexing outcomes, not complaints). Until v3.9.0 this "
+            "was a count of positives, which scaled with inspection volume "
+            "and through it with complaint volume: rho 0.897 against "
+            "`311_sanitation`. The rate conditions that away (0.486 measured) "
+            "at the cost of a disclosed selection effect -- initial "
+            "inspections include complaint-driven ones the public data "
+            "cannot separate. Construction, window and shrinkage prior: "
+            "backend/scripts/preprocess_rodent_rate.py and its manifest. The "
+            "fallback formula still uses the analyse-point positive count; "
+            "it is off the prepared path and marked for retirement."
         ),
     ),
     MetricDefinition(
@@ -288,11 +304,13 @@ METRICS: tuple[MetricDefinition, ...] = (
             "Despite the id, the filter admits RODENT complaints alongside the "
             "two sanitation types, so this metric and `rodent` both count rat "
             "activity -- one as resident reports, one as confirmed "
-            "inspections. Since v3.8.0 the pair shares one 0.20 construct "
-            "slot (0.125 each) -- item 1.3 measured their co-movement at "
-            "rho = 0.897, and complaint data additionally confounds "
-            "conditions with reporting propensity (Walsh 2014), so it does "
-            "not earn independent weight. Separately, "
+            "inspections. The pair shares one 0.20 construct slot (0.125 "
+            "each). Complaint data confounds conditions with reporting "
+            "propensity (Walsh 2014), so it does not earn independent "
+            "weight; since v3.9.0 its partner measures the inspection-"
+            "anchored rate, and the pair's co-movement dropped from 0.897 "
+            "to 0.486 -- two genuinely complementary evidence sources. "
+            "Separately, "
             "the fallback formula scores this with a bare multiplier "
             "(count * 2.5, capped at 55) rather than against a measured "
             "baseline, unlike every other safety sub-metric."

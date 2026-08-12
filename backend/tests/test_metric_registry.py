@@ -60,7 +60,8 @@ LEGACY_CATEGORY_CONFIG = {
             "rodent": {
                 "weight": 0.125,
                 "query_by": "h3",
-                "score_table": "safety/rodent_scores_h3.parquet",
+                # v3.9.0: inspection-anchored rate table replaced the count table.
+                "score_table": "safety/rodent_rate_scores_h3.parquet",
                 "indexed_table": "safety/rodent_indexed.parquet",
             },
             "311_sanitation": {

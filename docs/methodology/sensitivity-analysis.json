@@ -2,7 +2,7 @@
   "generated": "2026-08-11",
   "seed": 20260811,
   "draws": 1000,
-  "cells": 7205,
+  "cells": 7196,
   "metrics": [
     "collision",
     "rodent",
@@ -39,22 +39,22 @@
     ]
   },
   "headline": {
-    "median_interval_width": 34.17,
-    "p95_interval_width": 59.25,
-    "median_interval_width_production_norm": 9.9,
-    "mean_abs_rank_shift": 652.3,
-    "rank_shift_share_of_city": 0.0905,
+    "median_interval_width": 33.08,
+    "p95_interval_width": 57.6,
+    "median_interval_width_production_norm": 10.0,
+    "mean_abs_rank_shift": 596.5,
+    "rank_shift_share_of_city": 0.0829,
     "toggle_effects": {
       "311_sanitation": {
-        "mean_abs_score_delta": 1.09,
-        "p95_abs_score_delta": 2.57
+        "mean_abs_score_delta": 1.19,
+        "p95_abs_score_delta": 2.79
       }
     },
-    "imputation_mean_abs_score_delta": 11.28,
+    "imputation_mean_abs_score_delta": 10.84,
     "normalization_citywide_means": {
-      "percentile": 50.68,
-      "minmax": 44.3,
-      "zscore": 50.15
+      "percentile": 50.55,
+      "minmax": 42.28,
+      "zscore": 50.12
     }
   }
 }

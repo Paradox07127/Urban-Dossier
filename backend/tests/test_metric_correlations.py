@@ -145,14 +145,24 @@ def test_no_duplicated_source_pairs_remain_to_measure():
 
 
 @requires_ready
-def test_the_rodent_sanitation_overlap_is_real_not_just_declared():
+def test_the_rodent_sanitation_overlap_is_declared_measured_and_tamed():
+    """The declared pair must be measured, and must stay below the old sickness.
+
+    The count-era rodent metric co-moved with 311_sanitation at 0.897 --
+    mostly shared volume. v3.9.0's inspection-anchored rate was accepted
+    precisely because it broke that co-movement, so the ceiling here is the
+    acceptance criterion: if this pair climbs back above the 0.7 high-
+    correlation threshold, the construct has regressed to measuring volume
+    twice. The floor only guards against a broken join measuring nothing.
+    """
     report = amc.analyze(READY)
     declared = {
         tuple(sorted(e["pair"])): e["rho"]
         for e in report["declared_relationships"]
         if e["kind"] == "declared_overlap"
     }
-    assert declared[("311_sanitation", "rodent")] >= 0.7
+    rho = declared[("311_sanitation", "rodent")]
+    assert 0.1 <= rho < 0.7, rho
 
 
 @requires_ready
