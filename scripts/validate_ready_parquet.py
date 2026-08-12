@@ -33,6 +33,7 @@ EXPECTED_FILES = {
     "building/housing_violations_quarterly_h3.parquet",
     "building/housing_violations_scores_h3.parquet",
     "location/location_index.parquet",
+    "analysis/sensitivity_cells.parquet",
     "safety/311_quarterly_h3.parquet",
     "safety/311_safety_indexed.parquet",
     "safety/311_scores_h3.parquet",
@@ -45,18 +46,22 @@ EXPECTED_FILES = {
     "safety/fire_scores_zip.parquet",
     "safety/rodent_indexed.parquet",
     "safety/rodent_quarterly_h3.parquet",
-    "safety/rodent_scores_h3.parquet",
+    "safety/rodent_rate_scores_h3.parquet",
     "transit/bike_routes_indexed.parquet",
     "transit/bike_routes_scores_h3.parquet",
     "transit/bus_indexed.parquet",
     "transit/bus_scores_h3.parquet",
-    "transit/collision_transport_indexed.parquet",
-    "transit/collision_transport_quarterly_h3.parquet",
-    "transit/collision_transport_scores_h3.parquet",
     "transit/open_streets_indexed.parquet",
     "transit/open_streets_scores_h3.parquet",
     "transit/subway_indexed.parquet",
     "transit/subway_scores_h3.parquet",
+}
+
+# Valid ready-layer artifacts that are deliberately outside the published
+# scoring registry. They are audited like every other Parquet file but do not
+# make a clean publication fail the exact active-file contract.
+ALLOWED_AUXILIARY_FILES = {
+    "transit/transit_risk_scores_h3.parquet",
 }
 
 
@@ -135,7 +140,8 @@ def validate(root: Path, compression: str, max_row_group_rows: int) -> dict[str,
         )
 
     missing = sorted(EXPECTED_FILES - actual)
-    unexpected = sorted(actual - EXPECTED_FILES)
+    unexpected = sorted(actual - EXPECTED_FILES - ALLOWED_AUXILIARY_FILES)
+    auxiliary = sorted(actual & ALLOWED_AUXILIARY_FILES)
     invalid_count = sum(item["status"] != "ok" for item in files)
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -144,6 +150,7 @@ def validate(root: Path, compression: str, max_row_group_rows: int) -> dict[str,
         "actual_file_count": len(actual),
         "missing_files": missing,
         "unexpected_files": unexpected,
+        "auxiliary_files": auxiliary,
         "partial_files": partials,
         "status": "ok" if not missing and not unexpected and not partials and invalid_count == 0 else "invalid",
         "invalid_file_count": invalid_count,

@@ -226,6 +226,8 @@ interface MapProps {
   /** Fires once the baked tiles and coastline are both present. */
   onSandboxAvailable?: (available: boolean) => void;
   /** Measured colour domains, hoisted so the rail can draw the legend. */
+  /** Reports user-driven zoom so the legend follows the visible score layer. */
+  onZoomChange?: (zoom: number) => void;
   onColourDomains?: (domains: Record<string, ColourDomain>) => void;
   onMarkerClick: (location: Location) => void;
   onMapClick: (lat: number, lng: number) => void;
@@ -435,9 +437,11 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       type: 'fill',
       source: 'hexOverlay',
       paint: {
-        // Classed like the buildings, and with fixed equal-width breaks on
-        // purpose: cell scores are already empirical percentiles, so equal
-        // width IS equal population here, and the hexes need no histogram.
+        // Overview cells use fixed 20-point score bands. Their category and
+        // overall values are weighted composites, not uniformly distributed
+        // percentiles, so these bands make no equal-population claim. The rail
+        // switches to the building histogram only when the building layer is
+        // the visible reading.
         'fill-color': [
           'step', ['get', 'display_score'],
           CLASS_COLORS[0],
@@ -1965,6 +1969,7 @@ export default function Map({
   markers = [],
   hotspots = [],
   isochrone = null,
+  onZoomChange,
   sandbox = false,
   onSandboxAvailable,
   onColourDomains,
@@ -2043,6 +2048,7 @@ export default function Map({
         : { lat: event.lngLat.lat, lng: event.lngLat.lng };
       onMapClick(at.lat, at.lng);
     });
+    map.on('zoomend', () => onZoomChange?.(map.getZoom()));
 
     map.on('load', async () => {
       const status = await fetchBuildingTileStatus();

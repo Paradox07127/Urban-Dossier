@@ -11,12 +11,12 @@ declarations.
 
 Method
 ------
-Frame: the union of H3 r9 cells appearing in any H3-grain score table. A cell
-absent from one table is a place where that phenomenon was never observed --
-raw_count 0, not missing data -- so counts are zero-filled over the frame
-before ranking. An inner join would instead ask "among cells that have both
-rats and complaints, do they co-vary?", which is a different and weaker
-question than "does one signal duplicate the other across the city?".
+Frame: the union of H3 r9 cells appearing in any H3-grain score table.
+Absence is metric-specific and comes from the registry. For event/inventory
+counts it means an observed zero and is filled with 0. For rates such as the
+inspection-anchored rodent metric it means no denominator was observed and
+stays missing. Spearman is then computed pairwise over cells where both raw
+values are defined.
 
 Statistic: Spearman rank correlation, because every raw series here is a
 zero-inflated, heavily right-skewed count and Pearson on such data mostly
@@ -107,18 +107,31 @@ def build_frame(con: duckdb.DuckDBPyConnection, tables: dict[str, Path]) -> list
     return sorted(r[0] for r in con.execute(union).fetchall())
 
 
+def raw_value_matrix(
+    con: duckdb.DuckDBPyConnection,
+    tables: dict[str, Path],
+    frame: list[str],
+    absence_means_zero: dict[str, bool] | None = None,
+) -> np.ndarray:
+    """Metrics x cells raw-value matrix with registry-defined absence semantics."""
+    index = {cell: i for i, cell in enumerate(frame)}
+    policy = absence_means_zero or {name: True for name in tables}
+    matrix = np.full((len(tables), len(frame)), np.nan)
+    for row, (name, path) in enumerate(tables.items()):
+        if policy.get(name, True):
+            matrix[row, :] = 0.0
+        for h3_id, value in con.execute(
+            f"SELECT h3_r9, raw_count FROM read_parquet('{path.as_posix()}')"
+        ).fetchall():
+            matrix[row, index[h3_id]] = np.nan if value is None else float(value)
+    return matrix
+
+
 def zero_filled_counts(
     con: duckdb.DuckDBPyConnection, tables: dict[str, Path], frame: list[str]
 ) -> np.ndarray:
-    """metrics x cells matrix of raw counts, absent cells as genuine zeros."""
-    index = {cell: i for i, cell in enumerate(frame)}
-    matrix = np.zeros((len(tables), len(frame)))
-    for row, path in enumerate(tables.values()):
-        for h3_id, count in con.execute(
-            f"SELECT h3_r9, raw_count FROM read_parquet('{path.as_posix()}')"
-        ).fetchall():
-            matrix[row, index[h3_id]] = float(count or 0)
-    return matrix
+    """Compatibility helper for fixtures whose metrics are all event counts."""
+    return raw_value_matrix(con, tables, frame)
 
 
 def spearman_matrix(matrix: np.ndarray) -> np.ndarray:
@@ -126,7 +139,16 @@ def spearman_matrix(matrix: np.ndarray) -> np.ndarray:
     rho = np.eye(n)
     for i in range(n):
         for j in range(i + 1, n):
-            r = float(stats.spearmanr(matrix[i], matrix[j]).statistic)
+            present = np.isfinite(matrix[i]) & np.isfinite(matrix[j])
+            if int(present.sum()) < 3:
+                r = float("nan")
+            else:
+                a, b = matrix[i, present], matrix[j, present]
+                r = (
+                    float("nan")
+                    if len(set(a)) < 2 or len(set(b)) < 2
+                    else float(stats.spearmanr(a, b).statistic)
+                )
             rho[i, j] = rho[j, i] = r
     return rho
 
@@ -175,8 +197,13 @@ def analyze(ready_root: Path) -> dict:
     h3_tables = h3_metric_tables(ready_root)
     frame = build_frame(con, h3_tables)
     names = list(h3_tables)
-    counts = zero_filled_counts(con, h3_tables, frame)
-    rho = spearman_matrix(counts)
+    values = raw_value_matrix(
+        con,
+        h3_tables,
+        frame,
+        {metric.id: metric.absence_means_zero for metric in METRICS},
+    )
+    rho = spearman_matrix(values)
 
     flagged = flag_pairs(names, rho)
     # The declared relationships, checked whether flagged or not, so the report
@@ -243,7 +270,13 @@ def analyze(ready_root: Path) -> dict:
         "method": {
             "frame": "union of H3 r9 cells across all H3 score tables",
             "frame_cells": len(frame),
-            "fill": "absent cell = raw_count 0 (never observed, not missing)",
+            "absence_policy": {
+                metric.id: (
+                    "zero" if metric.absence_means_zero else "missing"
+                )
+                for metric in METRICS
+                if metric.id in h3_tables
+            },
             "statistic": "spearman",
             "thresholds": {"collinear": COLLINEAR, "high": HIGH},
         },
@@ -265,14 +298,14 @@ def render_markdown(report: dict) -> str:
         "(EXPANSION_PLAN item 1.3).",
         "",
         f"Frame: {report['method']['frame_cells']:,} H3 r9 cells "
-        f"({report['method']['frame']}); absent cells are genuine zeros. "
-        "Statistic: Spearman on zero-filled raw counts. With this many cells "
-        "every p-value rounds to zero, so magnitudes are the finding, not "
-        "significance.",
+        f"({report['method']['frame']}). Count metrics treat absence as zero; "
+        "rate metrics keep absence missing and use pairwise-complete cells. "
+        "Statistic: Spearman on raw values. With this many cells every p-value "
+        "rounds to zero, so magnitudes are the finding, not significance.",
         "",
         "## Declared relationships, measured",
         "",
-        "The metric registry declares two suspect relationships. Both hold:",
+        "The metric registry's declared relationships are measured below:",
         "",
     ]
     for entry in report["declared_relationships"]:
@@ -287,7 +320,7 @@ def render_markdown(report: dict) -> str:
         "",
         "## All pairs at |rho| >= 0.7",
         "",
-        "| pair | rho (counts, zero-filled) | rho (scores, inner join) | inner N | level |",
+        "| pair | rho (raw, metric-aware absence) | rho (scores, inner join) | inner N | level |",
         "| --- | --- | --- | --- | --- |",
     ]
     for entry in report["flagged_pairs"]:
@@ -306,7 +339,7 @@ def render_markdown(report: dict) -> str:
         lines.append(f"- `{a}` vs `{b}`: rho = {entry['rho']:+.3f} (N = {entry['n_zips']} ZIPs)")
     lines += [
         "",
-        "## Full matrix (Spearman, zero-filled counts)",
+        "## Full matrix (Spearman, raw values with metric-aware absence)",
         "",
         "| | " + " | ".join(f"`{n}`" for n in names) + " |",
         "| --- |" + " --- |" * len(names),
@@ -319,31 +352,27 @@ def render_markdown(report: dict) -> str:
         "",
         "## Reading the numbers",
         "",
-        "Everything correlates with everything at rho 0.2-0.6, because every "
-        "metric is an unnormalized count within a radius and therefore "
-        "measures activity density before it measures its own phenomenon. "
-        "That baseline makes the pairs above it stand out more, not less.",
+        "Most count metrics share a positive activity-density baseline: busy, "
+        "densely observed cells contain more of many phenomena. Rate metrics "
+        "do not get synthetic zeros outside their observed denominators, so "
+        "their rows answer a pairwise conditional question instead.",
         "",
-        "The `rodent` / `311_sanitation` / `housing_violations` triangle is "
-        "the substantive finding: resident complaints, confirmed inspections "
-        "and open housing violations are three measurements of one underlying "
-        "condition of the building stock, sitting in two categories under "
-        "three weights. The registry declared the first pair; the "
-        "cross-category legs were not declared anywhere and only the "
-        "measurement found them.",
+        "The inspection-anchored `rodent` rate is no longer highly correlated "
+        "with `311_sanitation` or `housing_violations`; this is the intended "
+        "v3.9 result. The remaining collinear pair is `311_sanitation` / "
+        "`housing_violations`, both count surfaces that still share the "
+        "activity-density baseline and underlying building conditions.",
         "",
-        "## Decision required (not taken here)",
+        "## Decisions and remaining question",
         "",
-        "1. `collision_transport` (rho = 1.000 by construction, 19% of "
-        "`overall` combined with `collision`): drop it and reweight transit, "
-        "or replace it with an actual transit-risk measure. Keeping it as-is "
-        "is a decision to double-count collisions, and should be written down "
-        "as such if taken.",
-        "2. The rodent/sanitation/violations triangle: candidate treatments "
-        "are down-weighting within safety, or merging the two safety metrics "
-        "into one 'sanitation conditions' signal with two evidence sources. "
-        "Any change moves published scores and belongs with item 1.4's "
-        "sensitivity analysis, which can quantify how much.",
+        "1. Resolved in v3.8: `collision_transport` was removed and transit "
+        "was reweighted; the measured replacement remains an unregistered "
+        "candidate.",
+        "2. Resolved in v3.9: rodent changed from positive-inspection counts to "
+        "an inspection failure rate; uninspected cells are missing, not zero.",
+        "3. Remaining: decide whether the `311_sanitation` / "
+        "`housing_violations` collinearity warrants a weight change. Any such "
+        "change belongs in the sensitivity analysis before publication.",
         "",
     ]
     return "\n".join(lines)

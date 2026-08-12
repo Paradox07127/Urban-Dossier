@@ -54,6 +54,18 @@ const PRIORITY_ICONS: Record<string, React.ComponentType<{ className?: string }>
 const RADIUS_OPTIONS: RadiusMeters[] = [200, 500, 1000];
 
 // --- Utils ---
+interface CompareResponse {
+  point_a: DetailResponse;
+  point_b: DetailResponse;
+  deltas: Record<string, number | null>;
+}
+
+function samePoint(
+  a: DetailPreviewResponse['target'],
+  b: DetailPreviewResponse['target'],
+): boolean {
+  return a.latitude === b.latitude && a.longitude === b.longitude;
+}
 
 function formatScore(score: number | null | undefined): string {
   return typeof score === 'number' && !Number.isNaN(score) ? String(Math.round(score)) : '--';
@@ -237,7 +249,7 @@ export default function App() {
   // arithmetic. The subtraction looks identical today; the rule exists so
   // that when deltas grow uncertainty bands or become maps, there is one
   // place computing them. null = not loaded or failed -> no delta chips.
-  const [serverDeltas, setServerDeltas] = useState<Record<string, number | null> | null>(null);
+  const [serverComparison, setServerComparison] = useState<CompareResponse | null>(null);
 
   const [pinnedTitle, setPinnedTitle] = useState<string>('');
   const [panelExpanded, setPanelExpanded] = useState(false);
@@ -270,26 +282,32 @@ export default function App() {
   );
   const priorityOrder = useMemo(() => priorityOrderKey(priorities), [priorities]);
   useEffect(() => {
-    setServerDeltas(null);
+    setServerComparison(null);
     const a = pinnedPreview?.target;
     const b = preview?.target;
-    if (!pinnedPreview || !preview || pinnedPreview === preview) return;
-    if (a?.latitude == null || b?.latitude == null) return;
-    let cancelled = false;
+    if (!a || !b || samePoint(a, b)) return;
+
+    const ac = new AbortController();
     fetch('/api/compare-points', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: ac.signal,
       body: JSON.stringify({
         point_a: { latitude: a.latitude, longitude: a.longitude },
         point_b: { latitude: b.latitude, longitude: b.longitude },
         radius_m: selectedRadiusM,
         priority_order: priorityOrder,
+        time_window_days: 365,
       }),
     })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((data) => { if (!cancelled) setServerDeltas(data?.deltas ?? null); })
-      .catch(() => { if (!cancelled) setServerDeltas(null); });
-    return () => { cancelled = true; };
+      .then((data: CompareResponse) => {
+        if (!ac.signal.aborted) setServerComparison(data);
+      })
+      .catch(() => {
+        if (!ac.signal.aborted) setServerComparison(null);
+      });
+    return () => ac.abort();
   }, [pinnedPreview, preview, selectedRadiusM, priorityOrder]);
 
   // Zoom ref to avoid stale closure in onMapClick
@@ -596,6 +614,7 @@ export default function App() {
           hotspots={(hotspots as any[]) ?? []}
           isochrone={isochrone}
           sandbox={sandbox}
+          onZoomChange={setZoom}
           onSandboxAvailable={setSandboxAvailable}
           onColourDomains={setColourDomains}
           onMarkerClick={handleMarkerClick}
@@ -620,6 +639,7 @@ export default function App() {
         sandboxAvailable={sandboxAvailable}
         onSandboxChange={setSandbox}
         domains={colourDomains}
+        overviewBands={zoom < 13}
         onSearch={(q) => { setSearchQuery(q); handleSearch(q); }}
         onResetView={handleGlobalView}
         searchError={error}
@@ -758,7 +778,7 @@ export default function App() {
 
               <div className="p-5 space-y-5">
                 {/* Compare bar */}
-                {pinnedPreview && preview && pinnedPreview !== preview && (
+                {pinnedPreview && preview && !samePoint(pinnedPreview.target, preview.target) && (
                   <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 space-y-3">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-semibold uppercase tracking-wider text-primary">Compare</span>
@@ -770,8 +790,8 @@ export default function App() {
                       <div className="font-medium text-muted-foreground truncate" title={display?.title}>{display?.title}</div>
                     </div>
                     {(['overall', 'safety', 'transit', 'amenities'] as const).map((cat) => {
-                      const pScore = pinnedPreview.scores?.[cat as keyof Scores];
-                      const cScore = scores?.[cat as keyof Scores];
+                      const pScore = serverComparison?.point_a.scores?.[cat as keyof Scores];
+                      const cScore = serverComparison?.point_b.scores?.[cat as keyof Scores];
                       const pVal = typeof pScore === 'number' ? pScore : null;
                       const cVal = typeof cScore === 'number' ? cScore : null;
                       // Backend-computed; local subtraction is not a fallback,
@@ -779,7 +799,7 @@ export default function App() {
                       // a briefly absent chip. Chip colours are the ramp's own
                       // poles -- green/red is banned here for the same reason
                       // it is banned on the map.
-                      const rawDelta = serverDeltas?.[cat];
+                      const rawDelta = serverComparison?.deltas?.[cat];
                       const diff = typeof rawDelta === 'number' ? Math.round(rawDelta) : null;
                       return (
                         <div key={cat} className="grid grid-cols-3 gap-2 text-center text-sm tabular-nums">

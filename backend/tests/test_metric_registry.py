@@ -372,6 +372,14 @@ def test_registry_payload_reports_the_methodology_version_everywhere():
         assert entry["methodology_version"]
 
 
+
+def test_registry_payload_exposes_metric_specific_absence_semantics():
+    payload = registry_to_dict()
+    policies = {entry["id"]: entry["absence_means_zero"] for entry in payload["metrics"]}
+    assert policies["rodent"] is False
+    assert all(value is True for key, value in policies.items() if key != "rodent")
+
+
 def test_registry_payload_covers_every_metric_and_category():
     payload = registry_to_dict()
     assert {m["id"] for m in payload["metrics"]} == set(METRICS_BY_ID)

@@ -22,6 +22,7 @@ Run:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -29,6 +30,12 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT / "backend" / "src"))
+
+from urban_dossier_backend.metrics import METHODOLOGY_VERSION  # noqa: E402
 
 DEFAULT_BUILDINGS = Path("/mnt/data/urban-dossier-state/maps/buildings")
 DEFAULT_OUT = Path("/mnt/data/urban-dossier-state/maps/output/building-scores.mbtiles")
@@ -67,6 +74,14 @@ DEFAULT_HEIGHT_M = 8.0
 # One World Trade is 541 m. Anything past that is a units error or a typo, of
 # which the extract has ten.
 MAX_PLAUSIBLE_HEIGHT_M = 550.0
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _write_geojsonseq(path: Path, gdf, shapely) -> int:
@@ -161,10 +176,24 @@ def main() -> int:
 
     geo_path = args.buildings_dir / "building_footprints.parquet"
     score_path = args.buildings_dir / "building_scores.parquet"
-    for p in (geo_path, score_path):
+    score_manifest_path = args.buildings_dir / "building_scores.manifest.json"
+    for p in (geo_path, score_path, score_manifest_path):
         if not p.exists():
             print(f"error: {p} not found; run the extract and score passes first", file=sys.stderr)
             return 1
+    score_manifest = json.loads(score_manifest_path.read_text())
+    score_hash = _sha256(score_path)
+    if (
+        score_manifest.get("methodology_version") != METHODOLOGY_VERSION
+        or score_manifest.get("scoring_contract") != "point-radius-haversine-v1"
+        or score_manifest.get("artifact_sha256") != score_hash
+    ):
+        print(
+            "error: building score artifact is stale or unverified; "
+            "re-run score_buildings.py",
+            file=sys.stderr,
+        )
+        return 1
 
     import geopandas as gpd
     import numpy as np
@@ -251,6 +280,10 @@ def main() -> int:
     stats = _tile_stats(args.out)
     manifest = {
         "tileset": str(args.out),
+        "methodology_version": METHODOLOGY_VERSION,
+        "scoring_contract": score_manifest["scoring_contract"],
+        "source_scores_sha256": score_hash,
+        "tileset_sha256": _sha256(args.out),
         "layers": {
             DETAIL_LAYER: {
                 "buildings": int(n_detail),

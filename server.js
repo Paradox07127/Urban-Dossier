@@ -1,7 +1,11 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const zlib = require('zlib');
+const { previewCacheKey } = require('./scripts/api-cache-key');
+const EXPECTED_METHODOLOGY_VERSION = '3.9.0';
+const EXPECTED_BUILDING_SCORING_CONTRACT = 'point-radius-haversine-v1';
 
 const app = express();
 // 3456 stays the deployment default. The override exists so a second instance
@@ -62,11 +66,38 @@ const db = createDatabase(MBTILES_PATH);
 const BUILDING_TILES_PATH =
   process.env.URBAN_DOSSIER_BUILDING_TILES ||
   path.join(__dirname, 'building-scores.mbtiles');
+const BUILDING_SCORES_MANIFEST =
+  process.env.URBAN_DOSSIER_BUILDING_MANIFEST ||
+  '/mnt/data/urban-dossier-state/maps/buildings/building_scores.manifest.json';
+const BUILDING_TILES_MANIFEST =
+  process.env.URBAN_DOSSIER_BUILDING_TILES_MANIFEST ||
+  '/mnt/data/urban-dossier-state/maps/buildings/building_tiles.manifest.json';
 
+function loadBuildingPublication() {
+  try {
+    const scores = JSON.parse(fs.readFileSync(BUILDING_SCORES_MANIFEST, 'utf8'));
+    const tiles = JSON.parse(fs.readFileSync(BUILDING_TILES_MANIFEST, 'utf8'));
+    const valid =
+      scores.methodology_version === EXPECTED_METHODOLOGY_VERSION &&
+      tiles.methodology_version === EXPECTED_METHODOLOGY_VERSION &&
+      scores.scoring_contract === EXPECTED_BUILDING_SCORING_CONTRACT &&
+      tiles.scoring_contract === EXPECTED_BUILDING_SCORING_CONTRACT &&
+      typeof scores.artifact_sha256 === 'string' &&
+      tiles.source_scores_sha256 === scores.artifact_sha256 &&
+      fs.realpathSync(BUILDING_TILES_PATH) === fs.realpathSync(tiles.tileset);
+    return { valid, scores, reason: valid ? null : 'manifest mismatch' };
+  } catch (error) {
+    return { valid: false, scores: null, reason: error.message };
+  }
+}
+
+const buildingPublication = loadBuildingPublication();
 let buildingDb = null;
 try {
-  if (fs.existsSync(BUILDING_TILES_PATH)) {
+  if (fs.existsSync(BUILDING_TILES_PATH) && buildingPublication.valid) {
     buildingDb = createDatabase(BUILDING_TILES_PATH);
+  } else if (fs.existsSync(BUILDING_TILES_PATH)) {
+    console.warn(`  Building score tiles rejected: ${buildingPublication.reason}`);
   }
 } catch (error) {
   console.warn(`  Building score tiles unavailable: ${error.message}`);
@@ -591,6 +622,7 @@ const NTA_GEOJSON_PATH = path.join(__dirname, 'data', 'boundaries', 'nta_2020.ge
 const NTA_SCORES_DIR = path.join(__dirname, 'data', 'cache', 'overview');
 let _ntaBoundaryCache = null;
 const _ntaScoresCache = new Map();
+let _ntaManifestCache = null;
 
 function loadNtaBoundaries() {
   if (_ntaBoundaryCache) return _ntaBoundaryCache;
@@ -613,7 +645,28 @@ function loadNtaScores(tag) {
   const jsonPath = path.join(NTA_SCORES_DIR, `overview_${scoreTag}_nta.json`);
   try {
     const raw = fs.readFileSync(jsonPath, 'utf8');
+    if (!_ntaManifestCache) {
+      _ntaManifestCache = JSON.parse(
+        fs.readFileSync(path.join(NTA_SCORES_DIR, 'overview.manifest.json'), 'utf8'),
+      );
+    }
+    const ntaStamp = _ntaManifestCache.nta;
+    const expectedHash = ntaStamp?.json_sha256?.[scoreTag];
+    const actualHash = crypto.createHash('sha256').update(raw).digest('hex');
+    const valid =
+      _ntaManifestCache.methodology_version === EXPECTED_METHODOLOGY_VERSION &&
+      ntaStamp?.methodology_version === EXPECTED_METHODOLOGY_VERSION &&
+      Number(ntaStamp?.zones?.[scoreTag]) > 0 &&
+      expectedHash === actualHash;
+    if (!valid) {
+      console.warn(`  NTA overview ${scoreTag} rejected: stale or unverified artifact`);
+      return [];
+    }
     const zones = JSON.parse(raw);
+    if (!Array.isArray(zones) || zones.length !== Number(ntaStamp.zones[scoreTag])) {
+      console.warn(`  NTA overview ${scoreTag} rejected: zone count mismatch`);
+      return [];
+    }
     _ntaScoresCache.set(scoreTag, zones);
     return zones;
   } catch { return []; }
@@ -653,7 +706,17 @@ app.get('/api/overview/nta-geojson', (req, res) => {
         geometry: boundary.geometry,
       };
     }).filter(Boolean);
-    res.json({ type: 'FeatureCollection', features, metadata: { tag, zone_count: features.length, scoring_mode: 'absolute', overview_ready: true } });
+    res.json({
+      type: 'FeatureCollection',
+      features,
+      metadata: {
+        tag,
+        zone_count: features.length,
+        scoring_mode: 'absolute',
+        overview_ready: true,
+        methodology_version: EXPECTED_METHODOLOGY_VERSION,
+      },
+    });
   } catch (error) {
     sendProxyError(res, 502, 'NTA overview GeoJSON failed', { details: error?.message ?? null });
   }
@@ -690,15 +753,16 @@ app.get('/api/render/global', async (req, res) => {
 
 // ── Disk-backed response cache for slow backend queries ──
 //
-// Versioned by the backend's methodology version, which this proxy learns
-// from /api/metrics at first use. The cache used to key on coordinates alone
-// with no version and no expiry, so a payload written under one methodology
-// was served forever under every later one -- after the 3.9.0 deploy it was
-// still answering with 3.7.8 analyses that lacked score_uncertainty, and
-// nothing looked wrong. Payloads cached before the version reaches us are
-// simply not read: an unversioned entry is exactly the trap being removed.
-// Files from other versions are swept when the version is learned.
+// Versioned by backend methodology and bounded by a TTL. The key contains
+// every request field that changes the result (including time_window_days and
+// data_mode) and keeps coordinates to sub-metre precision. The TTL is also the
+// invalidation guard for a refreshed data snapshot that intentionally keeps
+// the same methodology version.
 const CACHE_DIR = path.join(__dirname, 'data', 'cache', 'api');
+const configuredCacheTtl = Number(process.env.URBAN_DOSSIER_API_CACHE_TTL_MS || 900000);
+const CACHE_TTL_MS = Number.isFinite(configuredCacheTtl) && configuredCacheTtl >= 0
+  ? configuredCacheTtl
+  : 900000;
 try { fs.mkdirSync(CACHE_DIR, { recursive: true }); } catch {}
 
 let cacheVersion = null;
@@ -720,13 +784,6 @@ async function ensureCacheVersion() {
   return cacheVersion;
 }
 
-function previewCacheKey(body) {
-  const lat = Number(body?.latitude ?? 0).toFixed(4);
-  const lng = Number(body?.longitude ?? 0).toFixed(4);
-  const r = body?.radius_m ?? 500;
-  const p = (body?.priority_order ?? []).join(',');
-  return `${lat}_${lng}_${r}_${p.replace(/,/g, '-')}`;
-}
 
 async function cacheGet(prefix, key) {
   const version = await ensureCacheVersion();
@@ -734,6 +791,11 @@ async function cacheGet(prefix, key) {
   try {
     const fp = path.join(CACHE_DIR, `v${version}_${prefix}_${key}.json`);
     if (!fs.existsSync(fp)) return null;
+    const ageMs = Date.now() - fs.statSync(fp).mtimeMs;
+    if (CACHE_TTL_MS === 0 || ageMs > CACHE_TTL_MS) {
+      try { fs.unlinkSync(fp); } catch {}
+      return null;
+    }
     return JSON.parse(fs.readFileSync(fp, 'utf8'));
   } catch { return null; }
 }
@@ -743,7 +805,9 @@ async function cacheSet(prefix, key, data) {
   if (!version) return;
   try {
     const fp = path.join(CACHE_DIR, `v${version}_${prefix}_${key}.json`);
-    fs.writeFileSync(fp, JSON.stringify(data));
+    const tmp = `${fp}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(data));
+    fs.renameSync(tmp, fp);
   } catch {}
 }
 
@@ -1028,18 +1092,8 @@ app.get('/building-tiles/:z/:x/:y.pbf', (req, res) => {
 // ramp stretched over the full range paints the whole city its midpoint
 // colour. Serving the measured percentiles keeps that decision with the data
 // instead of hardcoding numbers in the client that quietly go stale.
-const BUILDING_SCORES_MANIFEST =
-  process.env.URBAN_DOSSIER_BUILDING_MANIFEST ||
-  '/mnt/data/urban-dossier-state/maps/buildings/building_scores.manifest.json';
-
 function readColourDomains() {
-  try {
-    const raw = fs.readFileSync(BUILDING_SCORES_MANIFEST, 'utf8');
-    const parsed = JSON.parse(raw);
-    return parsed?.colour_domains ?? null;
-  } catch {
-    return null;
-  }
+  return buildingPublication.scores?.colour_domains ?? null;
 }
 
 app.get('/api/land-outline', async (req, res) => {
@@ -1054,6 +1108,9 @@ app.get('/api/building-tiles/status', (req, res) => {
   res.json({
     available: buildingDb != null,
     colour_domains: buildingDb != null ? readColourDomains() : null,
+    methodology_version: buildingDb != null ? EXPECTED_METHODOLOGY_VERSION : null,
+    scoring_contract: buildingDb != null ? EXPECTED_BUILDING_SCORING_CONTRACT : null,
+    unavailable_reason: buildingDb == null ? buildingPublication.reason : null,
   });
 });
 

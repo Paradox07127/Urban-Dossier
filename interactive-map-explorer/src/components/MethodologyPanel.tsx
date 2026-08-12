@@ -21,6 +21,8 @@ interface MetricRow {
   spatial_grain: string;
   temporal_grain: string;
   weight_in_category: number;
+  normalization: string;
+  absence_means_zero: boolean;
   overall_contribution: number;
   source_dataset: string;
   data_vintage: string | null;
@@ -45,6 +47,15 @@ interface Registry {
 const GRAIN_LABEL: Record<string, string> = {
   h3_r9: '≈175 m hex',
   zip: 'ZIP code',
+};
+const NORMALIZATION_LABEL: Record<string, string> = {
+  empirical_percentile: 'empirical percentile of the observed metric',
+  composite_percentile: 'weighted blend of percentile components',
+};
+
+const DIRECTION_LABEL: Record<string, string> = {
+  higher_is_better: 'higher is better',
+  lower_is_better: 'lower is better',
 };
 
 export default function MethodologyPanel({ onClose }: { onClose: () => void }) {
@@ -103,11 +114,13 @@ export default function MethodologyPanel({ onClose }: { onClose: () => void }) {
           {registry && (
             <div className="space-y-6">
               <p className="text-xs leading-relaxed text-muted-foreground">
-                Every number is an empirical percentile within New York City:
-                50 means typical for the city, not &ldquo;half good&rdquo;. Scores are
-                relative to the current data snapshot and carry a 95% interval
-                from a 1,000-draw sensitivity analysis where available. Weights
-                below are the exact ones the composite uses.
+                Raw sub-metric scores are empirical percentiles within New York
+                City. Category and overall scores are weighted averages of those
+                percentiles; they are not percentile ranks themselves, so 50 is
+                the scale midpoint rather than a claim that half the city ranks
+                below it. Point cards label the cell-level sensitivity interval
+                separately from the radius-aggregated headline. Weights below are
+                the exact ones the composite uses.
               </p>
 
               {registry.categories.map((category) => (
@@ -139,6 +152,20 @@ export default function MethodologyPanel({ onClose }: { onClose: () => void }) {
                           <div className="mt-1.5 space-y-1 text-[11px] leading-snug text-muted-foreground">
                             <p>{metric.description}</p>
                             <p className="font-mono">unit: {metric.unit}</p>
+                            <p>
+                              normalization:{' '}
+                              {NORMALIZATION_LABEL[metric.normalization] ?? metric.normalization}
+                            </p>
+                            <p>
+                              direction: {DIRECTION_LABEL[metric.direction] ?? metric.direction}
+                            </p>
+                            <p>temporal grain: {metric.temporal_grain}</p>
+                            <p>
+                              absent cell:{' '}
+                              {metric.absence_means_zero
+                                ? 'observed zero'
+                                : 'missing (no denominator)'}
+                            </p>
                             <p>source: {metric.source_dataset}</p>
                             {metric.data_vintage && (
                               <p className="text-amber-700 dark:text-amber-500">
@@ -160,12 +187,14 @@ export default function MethodologyPanel({ onClose }: { onClose: () => void }) {
               ))}
 
               <p className="text-[11px] leading-relaxed text-muted-foreground">
-                Colour classes on the map are population quintiles of the
-                measured distribution — each of the five colours covers about a
-                fifth of the city — so a colour step is always a real
-                difference in rank, never a tint artefact. Full method notes,
-                the correlation audit and the sensitivity analysis live in the
-                repository under <span className="font-mono">docs/methodology/</span>.
+                At city overview zoom, colours are fixed 20-point score bands
+                (0–20, …, 80–100). At building zoom, the legend switches to
+                histogram-derived classes for the scored building distribution;
+                coarse buckets and tied values mean those classes are approximate,
+                not a promise that each colour covers exactly one fifth of the
+                city. Full method notes, the correlation audit and the sensitivity
+                analysis live in the repository under{' '}
+                <span className="font-mono">docs/methodology/</span>.
               </p>
             </div>
           )}

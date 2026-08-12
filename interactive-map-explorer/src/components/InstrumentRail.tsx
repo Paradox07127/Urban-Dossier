@@ -16,6 +16,7 @@ interface Props {
   sandbox: boolean;
   sandboxAvailable: boolean;
   onSandboxChange: (on: boolean) => void;
+  overviewBands: boolean;
   domains: Record<string, ColourDomain>;
   onSearch: (query: string) => void;
   onResetView: () => void;
@@ -59,9 +60,15 @@ const TAG_FIELD: Record<RenderTag, string> = {
  * first thing you see, and explains at a glance why the ends are labelled with
  * percentiles rather than 0 and 100.
  */
-function DistributionStrip({ domain }: { domain: ColourDomain | undefined }) {
+function DistributionStrip({
+  domain,
+  overviewBands,
+}: {
+  domain: ColourDomain | undefined;
+  overviewBands: boolean;
+}) {
   const hist = domain?.histogram;
-  if (!domain || !hist || hist.length === 0) {
+  if (overviewBands || !domain || !hist || hist.length === 0) {
     return (
       <div className="px-3 pb-3 pt-2">
         <div className="flex h-2 w-full gap-[2px]">
@@ -72,6 +79,9 @@ function DistributionStrip({ domain }: { domain: ColourDomain | undefined }) {
         <div className="mt-1.5 flex justify-between font-mono text-[10px] tabular-nums text-muted-foreground">
           <span>0</span>
           <span>100</span>
+        </div>
+        <div className="mt-0.5 text-center font-mono text-[9px] text-muted-foreground/60">
+          {overviewBands ? '20-point score bands · overview' : '20-point score bands'}
         </div>
       </div>
     );
@@ -116,14 +126,15 @@ function DistributionStrip({ domain }: { domain: ColourDomain | undefined }) {
       {/* The ends are percentiles, not 0 and 100: the ramp is stretched over
           the range the data occupies, and saying otherwise would claim a span
           the colours do not cover. */}
-      {/* The four class edges: each fifth of the city changes colour here. */}
+      {/* Histogram-derived class edges; tied/bucketed values need not contain
+          exactly one fifth of the buildings. */}
       <div className="mt-1.5 flex items-baseline justify-between font-mono text-[10px] tabular-nums text-muted-foreground">
         <span>{domain.low}</span>
         <span className="text-muted-foreground/70">{breaks.join(' · ')}</span>
         <span>{domain.high}</span>
       </div>
       <div className="mt-0.5 text-center font-mono text-[9px] text-muted-foreground/60">
-        quintile classes · 2nd–98th pct ends
+        histogram-derived classes · 2nd–98th pct ends
       </div>
     </div>
   );
@@ -138,6 +149,7 @@ export default function InstrumentRail({
   domains,
   onSearch,
   onResetView,
+  overviewBands,
   searchError,
 }: Props) {
   const [searchOpen, setSearchOpen] = useState(false);
@@ -259,7 +271,7 @@ export default function InstrumentRail({
         {/* The legend sits directly under the lens that produces it, so the
             relationship needs no explaining. */}
         <div className="border-t border-border">
-          <DistributionStrip domain={domain} />
+          <DistributionStrip domain={domain} overviewBands={overviewBands} />
         </div>
       </div>
     </div>

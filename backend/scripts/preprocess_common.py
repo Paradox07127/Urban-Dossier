@@ -181,6 +181,9 @@ class DatasetSpec:
     wkt_col: str | None = None  # for line_vertices datasets
     critical_col: str | None = None  # restaurants only
     entity_col: str | None = None  # distinct physical entity for access counts
+    # Some datasets still publish indexed/trend evidence but no longer own the
+    # score used by the registry (rodent is rebuilt as an inspection rate).
+    publish_score: bool = True
 
 
 SPECS: dict[str, DatasetSpec] = {
@@ -219,6 +222,10 @@ SPECS: dict[str, DatasetSpec] = {
         zip_col="zip",
         borough_col="borough",
         filter_mode="rodent_positive",
+        # v3.9.0 scores the inspection failure rate in
+        # preprocess_rodent_rate.py; this generic positive-count score is
+        # retained nowhere in a clean publication.
+        publish_score=False,
     ),
     "safety_311": DatasetSpec(
         name="safety_311",
@@ -572,7 +579,8 @@ def _process_point_dataset(spec: DatasetSpec, raw_root: Path, ready_root: Path) 
     else:
         grouped["score"] = percentile_score(grouped["raw_count"], spec.access_mode)
 
-    _write_parquet(grouped, ready_root / spec.output_dir / spec.score_name)
+    if spec.publish_score:
+        _write_parquet(grouped, ready_root / spec.output_dir / spec.score_name)
 
     quarterly: pd.DataFrame | None = None
     if spec.trend_name and spec.date_col and spec.date_col in df.columns:
@@ -783,7 +791,8 @@ def rescore_from_indexed(name: str, ready_root: Path | None = None) -> bool:
             grouped["score"] = ((abundance + quality) / 2).round().clip(lower=0, upper=100).astype(int)
         else:
             grouped["score"] = percentile_score(grouped["raw_count"], spec.access_mode)
-        _write_parquet(grouped, ready_root / spec.output_dir / spec.score_name)
+        if spec.publish_score:
+            _write_parquet(grouped, ready_root / spec.output_dir / spec.score_name)
 
         # Trend file is untouched (same counts, same time bins) - only the
         # score file needs regenerating. Rewrite only if the source trend is

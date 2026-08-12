@@ -84,6 +84,30 @@ def test_absent_cells_are_zeros_not_missing(tmp_path, con):
     # which is exactly why the inner join is the wrong primary view.
 
 
+def test_rate_absence_stays_missing_and_uses_pairwise_cells(tmp_path, con):
+    """No inspection denominator is unknown, not a 0% failure rate."""
+    rate = write_table(
+        tmp_path / "rate.parquet",
+        [(cell, value, value * 10) for value, cell in enumerate(CELLS[:10])],
+    )
+    count = write_table(
+        tmp_path / "count.parquet",
+        [(cell, value, value * 10) for value, cell in enumerate(CELLS)],
+    )
+    tables = {"rate": rate, "count": count}
+    frame = amc.build_frame(con, tables)
+    values = amc.raw_value_matrix(
+        con,
+        tables,
+        frame,
+        {"rate": False, "count": True},
+    )
+
+    assert np.isnan(values[0]).sum() == 30
+    assert amc.spearman_matrix(values)[0, 1] == pytest.approx(1.0)
+
+
+
 def test_identical_tables_measure_rho_one(tmp_path, con):
     rows = [(c, i * 3 % 17, 50) for i, c in enumerate(CELLS)]
     a = write_table(tmp_path / "a.parquet", rows)

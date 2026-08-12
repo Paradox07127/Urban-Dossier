@@ -36,8 +36,11 @@ is CPU-only.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
+import sys
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -66,11 +69,56 @@ logger = logging.getLogger(__name__)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT / "backend" / "src"))
+
+from urban_dossier_backend.metrics import METHODOLOGY_VERSION
+
 DEFAULT_NTA_PATH = REPO_ROOT / "data" / "boundaries" / "nta_2020.geojson"
 DEFAULT_OVERVIEW_ROOT = REPO_ROOT / "data" / "cache" / "overview"
 
 TAGS = ("overall", "safety", "transit", "amenities")
 SCORE_COLS = ("overall_score", "safety_score", "transit_score", "amenities_score")
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def stamp_nta_manifest(overview_root: Path, counts: dict[str, int]) -> None:
+    """Bind NTA outputs to the current methodology and their H3 inputs."""
+    manifest_path = overview_root / "overview.manifest.json"
+    if not manifest_path.exists():
+        raise RuntimeError(
+            "overview.manifest.json is missing; run build_overview_tiles.py first"
+        )
+    manifest = json.loads(manifest_path.read_text())
+    stamped_version = manifest.get("methodology_version")
+    if stamped_version != METHODOLOGY_VERSION:
+        raise RuntimeError(
+            f"H3 overview is methodology {stamped_version!r}, code is "
+            f"{METHODOLOGY_VERSION!r}; rebuild H3 overview before NTA"
+        )
+
+    manifest["nta"] = {
+        "methodology_version": METHODOLOGY_VERSION,
+        "generated": date.today().isoformat(),
+        "zones": counts,
+        "source_h3_sha256": {
+            tag: _sha256(overview_root / f"overview_{tag}_h3_r8.parquet")
+            for tag in counts
+        },
+        "json_sha256": {
+            tag: _sha256(overview_root / f"overview_{tag}_nta.json")
+            for tag in counts
+        },
+    }
+    temp_path = manifest_path.with_suffix(".tmp")
+    temp_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    temp_path.replace(manifest_path)
 
 
 def _load_nta_polygons(nta_path: Path) -> list[dict[str, Any]]:
@@ -264,7 +312,9 @@ def main() -> None:
     parser.add_argument("--overview-root", type=Path, default=DEFAULT_OVERVIEW_ROOT)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    build_nta_tiles(args.nta_path, args.overview_root)
+    counts = build_nta_tiles(args.nta_path, args.overview_root)
+    stamp_nta_manifest(args.overview_root, counts)
+    print(json.dumps({"nta_methodology_version_stamped": True, **counts}))
 
 
 if __name__ == "__main__":

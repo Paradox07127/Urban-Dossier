@@ -185,8 +185,18 @@ do
     --ready-root "${URBAN_DOSSIER_READY_STAGING}"
 done
 
+# v3.9 scoring artifact: initial-inspection rat-positive rate with EB shrinkage.
+.venv/bin/python backend/scripts/preprocess_rodent_rate.py \
+  --raw-root "${URBAN_DOSSIER_RAW_DATA_ROOT}" \
+  --ready-root "${URBAN_DOSSIER_READY_STAGING}"
+
 .venv/bin/python backend/scripts/preprocess_common.py baselines \
   --ready-root "${URBAN_DOSSIER_READY_STAGING}"
+
+# Required offline uncertainty artifact consumed by the point API.
+.venv/bin/python backend/scripts/run_sensitivity_analysis.py \
+  --ready-root "${URBAN_DOSSIER_READY_STAGING}" \
+  --out-dir "${URBAN_DOSSIER_STATE_ROOT}/datasets/manifests"
 ```
 
 Normalize and validate the physical Parquet publication:
@@ -201,7 +211,7 @@ Normalize and validate the physical Parquet publication:
 ```
 
 Publication is an atomic directory rename only after `ready-audit.json` reports
-44/44 expected Parquet files, zero invalid files, zero missing/extra files, and
+42/42 expected Parquet files, zero invalid files, zero missing/extra files, and
 zero `.part` files. Retain the previous published directory until the backend
 smoke test passes so rollback is a rename rather than a re-ingest.
 
@@ -212,7 +222,7 @@ These rules are shared by Mac, x86, and DGX Spark:
 | Dataset | Published rule |
 | --- | --- |
 | 311 safety | `RODENT`, `SANITATION CONDITION`, and `UNSANITARY CONDITION` |
-| Rodent | positive/active findings only |
+| Rodent | initial inspections only; 3-year rat-positive rate with empirical-Bayes shrinkage |
 | Street trees | `status = Alive` |
 | LinkNYC | `Installation Status = Live` |
 | Public restrooms | `Status = Operational` |

@@ -7,31 +7,24 @@ or prettier per-building metric -- it replays exactly what
 ``DirectQueryDataProvider._collect_prepared_scores`` does for a point, and
 ``compute_secondary_scores`` does to combine the results.
 
-That algorithm has a property worth stating plainly, because it decides the
-whole shape of this script and of the map:
+The spatial rule that decides the shape of this script and the map is:
 
-    _h3_cells_for_radius(lat, lon, r) = grid_disk(latlng_to_cell(lat, lon, 9), r // 174)
-    sub_score                         = avg(score) over those cells
+    cells = r9 centroids whose haversine distance from the building is <= r
+    sub_score = avg(score) over those cells
 
-``grid_disk`` depends only on *which* r9 cell the point lands in, never on where
-inside the cell it sits, and the aggregation is an unweighted mean. Two
-buildings in the same r9 cell therefore receive identical scores from the
-backend -- not approximately, exactly. Colouring them differently would mean the
-map disagreed with the detail panel, which is the same dishonesty as the
-``positionJitter`` hash this pass replaces, only harder to notice.
+The candidate disk is topological, but the final inclusion test is metric and
+depends on the building's exact coordinate. Two buildings in one r9 cell can
+therefore include different edge cells. The bake must retain that distinction
+or a building colour can disagree with its detail panel.
 
 So:
 
-  * safety / transit / amenities are computed per **r9 cell** and joined onto
-    the buildings that fall in it. This is genuinely 5-6x finer than the r8
-    overlay the map draws today, and it is the truth rather than an
-    interpolation of it.
-  * ``building`` additionally carries a per-BBL violation count, which *is*
-    measured at building grain. That is where real building-to-building
-    variation legitimately comes from.
+  * safety / transit / amenities are computed per building coordinate from
+    the same r9-centroid radius selection as the provider.
+  * ``building`` uses the provider's separately clamped 250 m radius.
 
-Because the score is a function of the cell, this computes it once per occupied
-cell (order 10^4) instead of once per building (order 10^6).
+The broad H3 candidates and their centroids are cached per occupied cell; only
+the final distance filter and aggregation run per building.
 
 Run:
     python backend/scripts/score_buildings.py
@@ -40,23 +33,24 @@ Run:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import math
 import sys
 import time
 from pathlib import Path
 
 import duckdb
 import h3
+import pyarrow as pa
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "backend" / "src"))
 
 from urban_dossier_backend.categories import CATEGORY_CONFIG  # noqa: E402
 from urban_dossier_backend.metrics import METHODOLOGY_VERSION  # noqa: E402
-from urban_dossier_backend.secondary_scoring import (  # noqa: E402
-    _weighted_score,
-    compute_secondary_scores,
-)
+from urban_dossier_backend.secondary_scoring import compute_secondary_scores  # noqa: E402
+from urban_dossier_backend.utils import haversine_m  # noqa: E402
 
 DEFAULT_BUILDINGS = Path("/mnt/data/urban-dossier-state/maps/buildings")
 DEFAULT_READY = Path("/mnt/data/Urban-Dossier/data/ready")
@@ -65,19 +59,48 @@ DEFAULT_READY = Path("/mnt/data/Urban-Dossier/data/ready")
 # category to [100, 250] separately; both are mirrored below.
 DEFAULT_RADIUS_M = 500
 BUILDING_RADIUS_M = 250
-H3_R9_EDGE_M = 174  # what the backend divides by; kept identical on purpose
+H3_R9_EDGE_M = float(h3.average_hexagon_edge_length(9, unit="m"))
 
 
 NTA_PATH = Path("/mnt/data/Urban-Dossier/data/boundaries/nta_2020.geojson")
 # Enough to keep the Hudson and East River piers, not enough to reach the far
 # bank of the Kill van Kull. Verified against known points on both sides.
 CITY_BUFFER_M = 100
+SCORING_CONTRACT = "point-radius-haversine-v1"
 
 
-def _cells_for(cell_r9: str, radius_m: int) -> list[str]:
-    """Mirror of DirectQueryDataProvider._h3_cells_for_radius, cell-in/cell-out."""
-    k = max(1, radius_m // H3_R9_EDGE_M)
-    return list(h3.grid_disk(cell_r9, k))
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _cells_for(
+    latitude: float,
+    longitude: float,
+    cell_r9: str,
+    radius_m: int,
+    candidate_cache: dict[tuple[str, int], list[tuple[str, float, float]]],
+) -> list[str]:
+    """Mirror `DirectQueryDataProvider._h3_cells_for_radius` exactly."""
+    center_spacing_m = H3_R9_EDGE_M * math.sqrt(3)
+    k = max(1, math.ceil(radius_m / center_spacing_m) + 1)
+    key = (cell_r9, k)
+    candidates = candidate_cache.get(key)
+    if candidates is None:
+        candidates = [
+            (candidate, *h3.cell_to_latlng(candidate))
+            for candidate in h3.grid_disk(cell_r9, k)
+        ]
+        candidate_cache[key] = candidates
+    inside = [
+        candidate
+        for candidate, cell_lat, cell_lon in candidates
+        if haversine_m(latitude, longitude, cell_lat, cell_lon) <= radius_m
+    ]
+    return sorted(inside or [cell_r9])
 
 
 def _ids_inside_nyc(con, index_path: Path) -> list[int] | None:
@@ -165,13 +188,25 @@ def main() -> int:
     if missing:
         print(f"  note: {len(missing)} score tables absent, treated as no-data: {missing}")
 
-    # ------------------------------------------------ per-cell computation ---
-    # Cache the k-ring per (cell, radius); the two radii in play are shared by
-    # every dataset in a category.
-    ring_cache: dict[tuple[str, int], list[str]] = {}
-    per_cell: dict[str, dict[str, int | None]] = {}
+    # ----------------------------------------------- per-building computation
+    # Cache the broad H3 candidate ring per occupied cell. The exact distance
+    # filter still uses each building coordinate, matching the live provider.
+    candidate_cache: dict[tuple[str, int], list[tuple[str, float, float]]] = {}
+    building_rows = con.execute(
+        f"SELECT bldg_id, lat, lon, h3_r9 "
+        f"FROM read_parquet('{index_path.as_posix()}') "
+        "WHERE h3_r9 IS NOT NULL"
+    ).fetchall()
+    scored: dict[str, list] = {
+        "bldg_id": [],
+        "safety": [],
+        "transit": [],
+        "amenities": [],
+        "building": [],
+        "overall": [],
+    }
 
-    for i, cell in enumerate(cells):
+    for i, (bldg_id, lat, lon, cell) in enumerate(building_rows):
         prepared: dict[str, dict[str, int | None]] = {}
         for category_id, cfg in CATEGORY_CONFIG.items():
             radius = (
@@ -179,11 +214,13 @@ def main() -> int:
                 if category_id == "building"
                 else args.radius_m
             )
-            key = (cell, radius)
-            ring = ring_cache.get(key)
-            if ring is None:
-                ring = _cells_for(cell, radius)
-                ring_cache[key] = ring
+            ring = _cells_for(
+                float(lat),
+                float(lon),
+                cell,
+                radius,
+                candidate_cache,
+            )
 
             sub_scores: dict[str, int | None] = {}
             for sub_name, sub_cfg in cfg.get("sub_datasets", {}).items():
@@ -206,53 +243,20 @@ def main() -> int:
             if any(v is not None for v in sub_scores.values()):
                 prepared[category_id] = sub_scores
 
-        per_cell[cell] = compute_secondary_scores(
+        scores = compute_secondary_scores(
             current_state={}, baselines={}, prepared_scores=prepared
         )
-        if (i + 1) % 2000 == 0:
-            print(f"  scored {i + 1:,}/{len(cells):,} cells", flush=True)
+        scored["bldg_id"].append(bldg_id)
+        for category_id in ("safety", "transit", "amenities", "building", "overall"):
+            scored[category_id].append(scores.get(category_id))
+        if (i + 1) % 100000 == 0:
+            print(f"  scored {i + 1:,}/{len(building_rows):,} buildings", flush=True)
 
-    print(f"per-cell scoring done in {time.time() - t0:.1f}s", flush=True)
+    con.register("baked_scores", pa.table(scored))
+    print(f"per-building scoring done in {time.time() - t0:.1f}s", flush=True)
 
     # ------------------------------------------------------------- persist ---
     args.buildings_dir.mkdir(parents=True, exist_ok=True)
-    cell_rows = [
-        (
-            cell,
-            s.get("safety"),
-            s.get("transit"),
-            s.get("amenities"),
-            s.get("building"),
-            s.get("overall"),
-        )
-        for cell, s in per_cell.items()
-    ]
-    con.execute(
-        "CREATE TABLE cell_scores (h3_r9 VARCHAR, safety INTEGER, transit INTEGER, "
-        "amenities INTEGER, building INTEGER, overall INTEGER)"
-    )
-    con.executemany("INSERT INTO cell_scores VALUES (?, ?, ?, ?, ?, ?)", cell_rows)
-
-    # Per-BBL violation counts: the one signal that genuinely varies building to
-    # building. Joined to footprints by locating each BBL point inside a
-    # footprint via its r9 cell plus nearest-centroid, which is cheap and good
-    # enough at this grain -- an exact point-in-polygon would need the geometry
-    # column and buys nothing for a colour.
-    viol_path = args.ready_root / "building/housing_violations_indexed.parquet"
-    have_viol = viol_path.exists()
-    if have_viol:
-        con.execute(
-            f"""
-            CREATE TABLE bbl_violations AS
-            SELECT h3_r9, BBL AS bbl, count(*) AS violation_count
-            FROM read_parquet('{viol_path.as_posix()}')
-            WHERE BBL IS NOT NULL AND h3_r9 IS NOT NULL
-            GROUP BY h3_r9, BBL
-            """
-        )
-        n_bbl = con.execute("SELECT count(*) FROM bbl_violations").fetchone()[0]
-        print(f"per-BBL violation rows: {n_bbl:,}")
-
     # Buildings outside the city must not carry a score.
     #
     # The OSM extract is cut to a bounding box, so it includes Bayonne, Newark
@@ -286,14 +290,14 @@ def main() -> int:
                 b.lon,
                 b.h3_r8,
                 b.h3_r9,
-                c.safety,
-                c.transit,
-                c.amenities,
-                c.building,
-                c.overall
+                s.safety,
+                s.transit,
+                s.amenities,
+                s.building,
+                s.overall
             FROM read_parquet('{index_path.as_posix()}') b
             {city_filter}
-            LEFT JOIN cell_scores c USING (h3_r9)
+            LEFT JOIN baked_scores s USING (bldg_id)
         ) TO '{out_path.as_posix()}' (FORMAT PARQUET, COMPRESSION ZSTD)
         """
     )
@@ -372,6 +376,13 @@ def main() -> int:
         # The bake goes stale the moment metrics.py bumps this; consumers and
         # tests compare it rather than guessing from timestamps.
         "methodology_version": METHODOLOGY_VERSION,
+        "scoring_contract": SCORING_CONTRACT,
+        "artifact_sha256": _sha256(out_path),
+        "building_index_sha256": _sha256(index_path),
+        "source_score_sha256": {
+            rel: _sha256(args.ready_root / rel)
+            for rel in sorted(h3_tables)
+        },
         "buildings": int(stats[0]),
         "with_overall_score": int(stats[1]),
         "distinct_overall_values": int(stats[2]),
@@ -388,11 +399,10 @@ def main() -> int:
         "occupied_r9_cells": len(cells),
         "radius_m": args.radius_m,
         "building_radius_m": BUILDING_RADIUS_M,
-        "per_bbl_violations_available": have_viol,
         "grain_note": (
-            "safety/transit/amenities vary at H3 r9 grain because the backend's "
-            "own point query does; buildings sharing a cell share a score by "
-            "construction, not by approximation."
+            "Source values vary at H3 r9 grain, but inclusion in the requested "
+            "metric radius is filtered from each building coordinate exactly "
+            "as in the backend point query."
         ),
         "missing_score_tables": missing,
         "elapsed_s": round(time.time() - t0, 1),

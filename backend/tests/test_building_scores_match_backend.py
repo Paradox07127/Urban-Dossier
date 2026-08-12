@@ -15,6 +15,7 @@ absent, so a checkout that has not run the pipeline still has a green suite.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 import sys
@@ -29,6 +30,7 @@ from urban_dossier_backend.metrics import METHODOLOGY_VERSION
 BUILDINGS_DIR = Path("/mnt/data/urban-dossier-state/maps/buildings")
 SCORES = BUILDINGS_DIR / "building_scores.parquet"
 MANIFEST = BUILDINGS_DIR / "building_scores.manifest.json"
+TILE_MANIFEST = BUILDINGS_DIR / "building_tiles.manifest.json"
 
 
 def _baked_version() -> str | None:
@@ -90,6 +92,19 @@ def test_scores_are_in_range(sample_rows):
                 assert 0 <= value <= 100, f"score out of range: {row}"
 
 
+def test_score_artifact_hash_and_radius_contract_are_current():
+    manifest = json.loads(MANIFEST.read_text())
+    assert manifest["scoring_contract"] == "point-radius-haversine-v1"
+    assert manifest["radius_m"] == 500
+    assert manifest["building_radius_m"] == 250
+    assert manifest["artifact_sha256"] == hashlib.sha256(SCORES.read_bytes()).hexdigest()
+    if TILE_MANIFEST.exists():
+        tile_manifest = json.loads(TILE_MANIFEST.read_text())
+        assert tile_manifest["methodology_version"] == METHODOLOGY_VERSION
+        assert tile_manifest["scoring_contract"] == manifest["scoring_contract"]
+        assert tile_manifest["source_scores_sha256"] == manifest["artifact_sha256"]
+
+
 def test_baked_score_equals_the_provider_score(sample_rows):
     """Replay the provider's own lookup and demand an exact match."""
     from urban_dossier_backend.providers.direct_provider import DirectQueryDataProvider
@@ -137,11 +152,13 @@ def test_baked_score_equals_the_provider_score(sample_rows):
     )
 
 
-def test_buildings_in_one_cell_share_a_score(sample_rows):
-    """The r9 grain is a property of the algorithm, so it must show up here.
+def test_same_cell_can_preserve_real_radius_boundary_variation(sample_rows):
+    """Exact metric buffers may differ inside one H3 cell.
 
-    If this ever fails, someone has introduced per-building variation that the
-    backend cannot reproduce -- which is the jitter bug coming back.
+    This is not the retired coordinate jitter: the live provider filters
+    candidate-cell centroids by distance from the actual building coordinate.
+    Flattening the result to one value per containing cell makes edge buildings
+    disagree with their detail response.
     """
     import duckdb
 
@@ -152,15 +169,15 @@ def test_buildings_in_one_cell_share_a_score(sample_rows):
         FROM read_parquet('{SCORES.as_posix()}')
         WHERE overall IS NOT NULL
         GROUP BY h3_r9
-        HAVING count(*) > 50
+        HAVING count(*) > 50 AND count(DISTINCT overall) > 1
         ORDER BY n DESC
         LIMIT 1
         """
     ).fetchone()
-    assert row is not None, "expected at least one densely built r9 cell"
+    assert row is not None, (
+        "all buildings in each r9 cell were flattened to one score; "
+        "score_buildings.py may have regressed to the old grid_disk bake"
+    )
     _cell, n, distinct_scores = row
     assert n > 50
-    assert distinct_scores == 1, (
-        f"{n} buildings in one r9 cell carry {distinct_scores} different overall "
-        "scores; the backend would report a single value for all of them"
-    )
+    assert distinct_scores > 1

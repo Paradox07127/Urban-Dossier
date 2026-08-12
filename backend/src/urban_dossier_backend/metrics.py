@@ -65,8 +65,9 @@ from enum import Enum
 #        signs, EB-shrunk (backend/scripts/preprocess_rodent_rate.py). The
 #        count version co-moved with 311_sanitation at rho 0.897 and with
 #        housing violations at 0.866 -- mostly shared volume; the rate
-#        measures 0.486 and 0.323 against the same partners, so the
-#        construct's two evidence sources are complementary instead of
+#        measures 0.258 and 0.220 against the same partners under the
+#        registry's metric-aware absence policy, so the construct's evidence
+#        sources are complementary instead of
 #        near-duplicates. Weights unchanged.
 METHODOLOGY_VERSION = "3.9.0"
 
@@ -147,6 +148,10 @@ class MetricDefinition:
     # Ties the registry to the runtime rather than leaving it a parallel
     # document, and lets a test assert the fallback formulas stay in sync.
     state_keys: tuple[str, ...] = ()
+    # Whether a cell absent from the score table is an observed zero or an
+    # unknown value. Count inventories use True; inspection rates require a
+    # denominator and therefore use False.
+    absence_means_zero: bool = True
     methodology_version: str = METHODOLOGY_VERSION
     # Set when this metric's score table is a copy of another metric's, rather
     # than an independent measurement. See ``collision_transport``.
@@ -265,6 +270,7 @@ METRICS: tuple[MetricDefinition, ...] = (
         temporal_grain=TemporalGrain.DAILY,
         normalization=Normalization.EMPIRICAL_PERCENTILE,
         weight_in_category=0.125,
+        absence_means_zero=False,
         data_vintage="rolling 3-year inspection window (see rodent_rate.manifest.json)",
         source_dataset="DOHMH Rodent Inspection",
         source_relpath="environment/rodent_inspections.csv",
@@ -277,8 +283,9 @@ METRICS: tuple[MetricDefinition, ...] = (
             "Zones from indexing outcomes, not complaints). Until v3.9.0 this "
             "was a count of positives, which scaled with inspection volume "
             "and through it with complaint volume: rho 0.897 against "
-            "`311_sanitation`. The rate conditions that away (0.486 measured) "
-            "at the cost of a disclosed selection effect -- initial "
+            "`311_sanitation`. The rate conditions that away (0.258 measured "
+            "with uninspected cells kept missing) at the cost of a disclosed "
+            "selection effect -- initial "
             "inspections include complaint-driven ones the public data "
             "cannot separate. Construction, window and shrinkage prior: "
             "backend/scripts/preprocess_rodent_rate.py and its manifest. The "
@@ -694,6 +701,7 @@ def metric_to_dict(metric: MetricDefinition) -> dict:
         "spatial_grain": metric.spatial_grain.value,
         "temporal_grain": metric.temporal_grain.value,
         "normalization": metric.normalization.value,
+        "absence_means_zero": metric.absence_means_zero,
         "weight_in_category": metric.weight_in_category,
         "overall_contribution": round(overall_contribution(metric.id), 4),
         "source_dataset": metric.source_dataset,

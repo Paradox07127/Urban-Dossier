@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import threading
 from datetime import date
 from functools import lru_cache
@@ -628,12 +629,38 @@ class DirectQueryDataProvider(DataProvider):
         }
 
     def _h3_cells_for_radius(self, latitude: float, longitude: float, radius_m: int) -> list[str]:
-        """Compute nearby H3 cells using h3 library instead of scanning large tables."""
+        """Return r9 cells whose centres are inside the requested radius.
+
+        ``grid_disk`` is a topological neighbourhood, not a metric buffer.  The
+        old code divided metres by the r9 *edge length* and then used that as a
+        grid distance.  Adjacent cell centres are roughly ``sqrt(3)`` edge
+        lengths apart, so a 200 m request included centres almost 500 m away
+        and a 1 km request reached nearly 2 km.  Generate a deliberately broad
+        candidate disk, then apply the same haversine distance predicate used
+        by the point-data path.  The centre cell is retained defensively for a
+        very small radius, although the public API currently starts at 200 m.
+        """
         try:
             import h3
             center = h3.latlng_to_cell(latitude, longitude, 9)
-            k = max(1, radius_m // 174)  # H3 res 9 ~ 174m per cell
-            return list(h3.grid_disk(center, k))
+            edge_m = float(h3.average_hexagon_edge_length(9, unit="m"))
+            center_spacing_m = edge_m * math.sqrt(3)
+            # Add one ring because the selected point can sit near the edge of
+            # its centre cell rather than at the cell centroid.
+            k = max(1, math.ceil(radius_m / center_spacing_m) + 1)
+            cells = h3.grid_disk(center, k)
+            inside = [
+                cell
+                for cell in cells
+                if haversine_m(
+                    latitude,
+                    longitude,
+                    *h3.cell_to_latlng(cell),
+                ) <= radius_m
+            ]
+            if center not in inside:
+                inside.append(center)
+            return sorted(inside)
         except Exception:
             return []
 
@@ -1394,7 +1421,7 @@ class DirectQueryDataProvider(DataProvider):
         }, gaps
 
     def _query_building(self, con: Any, latitude: float, longitude: float, radius_m: int) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
-        building_radius = min(max(radius_m, 100), 300)
+        building_radius = min(max(radius_m, 100), 250)
         metrics = {"open_class_c_250m": 0, "open_class_b_250m": 0, "open_class_a_250m": 0, "aep_count_250m": 0}
         evidence: list[dict[str, Any]] = []
         building_flags: list[dict[str, Any]] = []
@@ -1736,7 +1763,7 @@ class DirectQueryDataProvider(DataProvider):
 
     def get_local_timeseries(self, latitude: float, longitude: float, radius_m: int, time_window_days: int) -> dict[str, Any]:
         con = self._connect()
-        building_radius = min(max(radius_m, 100), 300)
+        building_radius = min(max(radius_m, 100), 250)
 
         # Use H3 grid_disk to compute nearby cells — NO large table scanning
         h3_cells = self._h3_cells_for_radius(latitude, longitude, radius_m)

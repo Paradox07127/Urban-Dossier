@@ -2,8 +2,8 @@
 
 The scores are published as single integers, but they rest on assumptions
 nobody has stress-tested: expert weights, one normalization method, a
-renormalize-over-present missing-data rule, and two metrics the correlation
-report (item 1.3) showed to be duplicated or near-collinear. The OECD/JRC
+renormalize-over-present missing-data rule, and one remaining metric-overlap
+toggle identified by the correlation report (item 1.3). The OECD/JRC
 handbook calls the uncertainty and sensitivity step the line between an
 institutional-grade indicator and an amateur one; this script is that step,
 sized to the sources collected for it.
@@ -17,12 +17,11 @@ Design (each element traceable to a collected source, see
     - sub-metric weights, each multiplied by U(0.75, 1.25) -- COINr's
       documented noisy-weights design with NoiseFactor 0.25;
     - normalization method: the published empirical-percentile scores, or
-      min-max, or z-score (both recomputed from raw counts, direction-aware)
+      min-max, or z-score (both recomputed from raw values, direction-aware)
       -- the handbook's method-substitution test;
-    - inclusion of `collision_transport` (Bernoulli 1/2) -- the duplicated
-      dataset, rho = 1.000 by construction;
-    - inclusion of `311_sanitation` (Bernoulli 1/2) -- one leg of the
-      rodent/sanitation overlap, rho = 0.897 measured;
+    - inclusion of `311_sanitation` (Bernoulli 1/2) -- the remaining
+      configured overlap toggle. The duplicated `collision_transport` metric
+      was removed in v3.8 and is no longer a live assumption;
     - missing-data rule: renormalize over present metrics (production
       behaviour) or impute absent sub-scores with the metric's citywide mean
       -- the handbook's implicit-vs-explicit imputation comparison.
@@ -42,8 +41,10 @@ Scope limits, stated rather than hidden:
   present. Mixing grains would need an allocation rule; item 1.5's plan is
   disclosure, not downscaling.
 * `restaurant_context`'s inspection-quality adjustment exists only in the
-  published percentile scores; the min-max and z branches rebuild from raw
-  counts alone. The report notes this asymmetry.
+  published percentile scores; the min-max and z branches rebuild from the
+  score tables' canonical `raw_count` field. Despite that legacy field name,
+  the rodent table stores its EB-shrunk inspection-positive rate there. The
+  report notes the restaurant asymmetry.
 * Absence from a sparse risk table (e.g. `aep`, 586 cells) is treated as
   missing, matching production. Whether "no AEP building here" should instead
   count as good news is a real open question -- it is surfaced in the report,
@@ -104,7 +105,7 @@ def load_matrices(ready_root: Path) -> tuple[list[str], list[str], np.ndarray, d
 
     n_cells, n_metrics = len(frame), len(metrics)
     published = np.full((n_cells, n_metrics), np.nan)
-    counts = np.full((n_cells, n_metrics), np.nan)
+    raw_values = np.full((n_cells, n_metrics), np.nan)
     for j, metric in enumerate(metrics):
         rows = con.execute(
             f"SELECT h3_r9, score, raw_count FROM read_parquet('{(ready_root / metric.score_table).as_posix()}')"
@@ -112,13 +113,15 @@ def load_matrices(ready_root: Path) -> tuple[list[str], list[str], np.ndarray, d
         for h3_id, score, count in rows:
             i = index[h3_id]
             published[i, j] = float(score)
-            counts[i, j] = float(count or 0)
+            raw_values[i, j] = float(count or 0)
 
-    # Alternative normalizations from raw counts, direction-aware.
-    minmax = np.full_like(counts, np.nan)
-    zscore = np.full_like(counts, np.nan)
+    # Alternative normalizations from each table's canonical raw value,
+    # direction-aware. For rodent v3.9 this field is an EB-shrunk rate despite
+    # the backward-compatible parquet column name `raw_count`.
+    minmax = np.full_like(raw_values, np.nan)
+    zscore = np.full_like(raw_values, np.nan)
     for j, metric in enumerate(metrics):
-        col = counts[:, j]
+        col = raw_values[:, j]
         mask = ~np.isnan(col)
         values = col[mask]
         lo, hi = float(np.min(values)), float(np.max(values))
@@ -219,8 +222,8 @@ def run(
 
         # The full interval spans defensible *methods*; this conditional one
         # holds normalization at the production choice and answers the
-        # narrower question "given our method, how much do weights, the two
-        # flagged metrics and the missing-data rule move a score?".
+        # narrower question "given our method, how much do weights, the
+        # configured overlap toggle and the missing-data rule move a score?".
         pct_draws = draw_norm == NORMALIZATIONS.index("percentile")
         pct_lo = np.nanpercentile(results[pct_draws], INTERVAL[0], axis=0)
         pct_hi = np.nanpercentile(results[pct_draws], INTERVAL[1], axis=0)
@@ -327,8 +330,8 @@ def render_markdown(summary: dict) -> str:
         "",
         "Each draw simultaneously perturbs sub-metric weights (x U(0.75, 1.25)), "
         "switches the normalization (published percentile / min-max / z-score, "
-        "rebuilt from raw counts), toggles the two metrics the correlation "
-        "report flagged, and switches the missing-data rule (renormalize vs "
+        "rebuilt from raw values), toggles the configured overlap metric, "
+        "and switches the missing-data rule (renormalize vs "
         "impute citywide mean). Design constants follow the collected sources: "
         "COINr noisy weights at 0.25, CDC PLACES' 1,000-draw 95% interval, the "
         "OECD/JRC handbook's method-substitution and exclusion tests.",
@@ -344,10 +347,8 @@ def render_markdown(summary: dict) -> str:
         f"- Mean absolute rank shift (median-of-draws vs nominal): "
         f"**{h['mean_abs_rank_shift']:.0f}** places out of {summary['cells']:,} "
         f"({100 * h['rank_shift_share_of_city']:.1f}% of the ranking).",
-        f"- Dropping `collision_transport` moves a cell's score by "
-        f"**{toggles.get('collision_transport', {}).get('mean_abs_score_delta', 'n/a')}** "
-        "points on average "
-        f"(95th percentile {toggles.get('collision_transport', {}).get('p95_abs_score_delta', 'n/a')}).",
+        "- `collision_transport` was removed in v3.8 and is not toggled in "
+        "these draws.",
         f"- Dropping `311_sanitation` moves it by "
         f"**{toggles.get('311_sanitation', {}).get('mean_abs_score_delta', 'n/a')}** "
         f"(95th percentile {toggles.get('311_sanitation', {}).get('p95_abs_score_delta', 'n/a')}).",
@@ -363,11 +364,9 @@ def render_markdown(summary: dict) -> str:
         "`data/ready/analysis/sensitivity_cells.parquet` (untracked, "
         "regenerable with the seed). A published score can now carry its "
         "interval, and a rank claim ('safer than X% of the city') its range -- "
-        "the acceptance criterion for item 1.4. The toggle effects above are "
-        "the quantified cost of the two decisions item 1.3 posed; they turn "
-        "'should we drop the duplicated metric?' into 'dropping it moves "
-        "scores by N points on average', which is a decision a product owner "
-        "can actually take.",
+        "the acceptance criterion for item 1.4. The live toggle effect above "
+        "quantifies the remaining overlap decision before any weight change is "
+        "published.",
         "",
         "## Stated limits",
         "",

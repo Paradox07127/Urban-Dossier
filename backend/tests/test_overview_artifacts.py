@@ -17,8 +17,10 @@ same derivation and demands agreement.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -112,6 +114,36 @@ def test_artifacts_carry_the_current_methodology_version():
         f"{METHODOLOGY_VERSION}; re-run build_overview_tiles.py and "
         "build_overview_nta.py"
     )
+
+
+@requires_artifacts
+def test_nta_artifacts_are_bound_to_current_h3_sources():
+    manifest = json.loads((OVERVIEW_DIR / "overview.manifest.json").read_text())
+    nta = manifest.get("nta")
+    assert nta, "NTA artifacts are unstamped; re-run build_overview_nta.py"
+    assert nta["methodology_version"] == METHODOLOGY_VERSION
+
+    for tag in ("overall", "safety", "transit", "amenities"):
+        h3_path = OVERVIEW_DIR / f"overview_{tag}_h3_r8.parquet"
+        json_path = OVERVIEW_DIR / f"overview_{tag}_nta.json"
+        zones = json.loads(json_path.read_text())
+        assert nta["zones"][tag] == len(zones) > 0
+        assert nta["source_h3_sha256"][tag] == hashlib.sha256(
+            h3_path.read_bytes()
+        ).hexdigest()
+        assert nta["json_sha256"][tag] == hashlib.sha256(
+            json_path.read_bytes()
+        ).hexdigest()
+
+
+def test_node_nta_gate_tracks_the_backend_methodology_version():
+    server_source = (REPO_ROOT / "server.js").read_text()
+    match = re.search(
+        r"const EXPECTED_METHODOLOGY_VERSION = '([^']+)';",
+        server_source,
+    )
+    assert match, "server.js has no explicit NTA methodology gate"
+    assert match.group(1) == METHODOLOGY_VERSION
 
 
 # --- numeric reconciliation --------------------------------------------------
