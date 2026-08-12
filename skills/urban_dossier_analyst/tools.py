@@ -943,6 +943,9 @@ def dispatch_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
     # The payload policy is the last gate before a result becomes model
     # context. Errors above bypass it deliberately: an error string carries no
     # data rows, and the model needs it verbatim to pivot.
-    from .payload_policy import apply_policy, resolve_policy
+    from .payload_policy import apply_policy, audit_record, count_omitted, resolve_policy
 
-    return apply_policy(result, resolve_policy())
+    policy = resolve_policy()
+    filtered = apply_policy(result, policy)
+    audit_record(name, policy, count_omitted(filtered))
+    return filtered

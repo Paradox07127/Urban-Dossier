@@ -547,6 +547,10 @@ export default function App() {
           scores: preview.scores,
           score_coverage: preview.score_coverage,
           score_uncertainty: preview.score_uncertainty,
+          // The generator reads NYCCAS/HVI from metric_scores only; omitting
+          // it made the two context metrics vanish from the downloaded file
+          // while showing fine online. Chromium smoke covers this now.
+          metric_scores: preview.metric_scores,
           chart_specs: preview.chart_specs,
           evidence_table: preview.evidence_table,
           data_gaps: preview.data_gaps,
@@ -888,7 +892,7 @@ export default function App() {
                       const diff = typeof rawDelta === 'number' ? Math.round(rawDelta) : null;
                       const deltaStops = serverComparison?.delta_map?.presentation.stops ?? [];
                       const negativeColor = deltaStops[0]?.color ?? '#e66101';
-                      const positiveColor = deltaStops[deltaStops.length - 1]?.color ?? '#765b8a';
+                      const positiveColor = deltaStops[deltaStops.length - 1]?.color ?? '#5e3c99';
                       return (
                         <div key={cat} className="grid grid-cols-3 gap-2 text-center text-sm tabular-nums">
                           <span className="font-bold" style={scoreTextStyle(pVal)}>{pVal ?? '--'}</span>

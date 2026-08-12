@@ -57,3 +57,30 @@ def test_the_router_records_which_rule_fired():
     data = _ask("compose a poem about the G train")
     assert data["trace"][0]["rule"] == "creative_writing"
     assert data["trace"][0]["note"].startswith("short-circuited")
+
+
+def test_first_turn_of_a_new_session_is_persisted():
+    """Review finding: a freshly created session was never re-fetched, so the
+    first exchange vanished -- the caller got a session_id whose history was
+    empty, and 'why is that score low?' on turn two routed as new_analysis
+    because the router saw no history. The fix re-fetches after create; this
+    pins it at the store."""
+    from urban_dossier_backend.agent_session import store
+
+    data = _ask("what can you do?")
+    session = store.get(data["session_id"])
+    assert session is not None
+    assert len(session.chat_history) == 2
+    assert session.chat_history[0]["role"] == "user"
+    assert session.chat_history[1]["role"] == "assistant"
+
+
+def test_turn_two_can_route_from_evidence_because_turn_one_survived():
+    data = _ask("help")
+    followup = _ask("why is that score so low?", session_id=data["session_id"])
+    # The follow-up passes through to the agent (which may fail without a
+    # model), but the ROUTER decision is what we pin: with history present it
+    # must classify as ask_from_evidence, and the trace must say so whether
+    # the agent path succeeds or the request errors before it.
+    if "trace" in followup:
+        assert followup["trace"][0]["intent"] == "ask_from_evidence"

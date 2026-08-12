@@ -23,8 +23,8 @@ fixed 20-point bands as a local fallback.
 
 ## Palettes and accessibility gate
 
-The single-score palette is the exact five-step BrBG artifact published as
-`schemeBrBG[5]` by d3-scale-chromatic/ColorBrewer; it is copied into the Python
+The single-score palette is the exact five-step PuOr artifact published as
+`schemePuOr[5]` by d3-scale-chromatic/ColorBrewer; it is copied into the Python
 contract so the backend does not depend on a JavaScript runtime. The bivariate
 map uses Joshua Stevens' established blue-red 3×3 matrix. Every
 horizontal and vertical adjacent pair is transformed through 100% protanopia,

@@ -16,12 +16,12 @@ from .providers.direct_provider import DirectQueryDataProvider
 from .utils import to_float
 
 
-# Exact d3-scale-chromatic / ColorBrewer schemeBrBG[5] values. Keeping the
+# Exact d3-scale-chromatic / ColorBrewer schemePuOr[5] values. Keeping the
 # named upstream artifact here lets Python publish the contract without making
 # a JavaScript palette package part of the backend runtime.
 # schemePuOr[5], worst to best. The fourth pair this ramp has worn, each
 # retired for a named reason: green-red failed colour vision, blue-red read
-# as an election map, and BrBG's brown pole read as dirt to actual users.
+# as an election map, and PuOr's brown pole read as dirt to actual users.
 # Orange keeps the warm-means-worse instinct without the mud; deep violet
 # reads considered rather than partisan. Checker-measured on these exact
 # values: worst adjacent CVD dE 17.4, normal-vision 19.5 -- the strongest
@@ -198,7 +198,7 @@ def presentation_contract(x_category: str = "safety", y_category: str = "transit
         "code_ref": "urban_dossier_backend.presentation:presentation_contract@1",
         "methodology_version": METHODOLOGY_VERSION,
         "univariate": {
-            "palette": "d3-scale-chromatic schemeBrBG[5]",
+            "palette": "d3-scale-chromatic schemePuOr[5]",
             "categories": categories,
             "accessibility": palette_cvd_report(
                 SCORE_COLORS,

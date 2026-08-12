@@ -81,3 +81,27 @@ test('rejects stale methodology and external data URLs', () => {
     /external data URL/,
   );
 });
+
+
+test('the frontend export body carries every key the generator reads', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  // The review found NYCCAS/HVI present online and absent offline: the
+  // generator read metric_scores, the frontend never sent it, and this unit
+  // file could not notice because it fed the generator directly. This check
+  // is deliberately textual -- there is no browser harness in this repo --
+  // and pins the request-body contract at its two ends.
+  const app = fs.readFileSync(
+    path.join(__dirname, '..', 'interactive-map-explorer', 'src', 'App.tsx'),
+    'utf8',
+  );
+  const exportBody = app.slice(app.indexOf("fetch('/api/export/html'"));
+  for (const key of ['metric_scores', 'chart_specs', 'score_uncertainty',
+                     'score_coverage', 'evidence_table', 'scores', 'target']) {
+    assert.match(
+      exportBody.slice(0, 1600),
+      new RegExp(`${key}:`),
+      `App.tsx export body is missing ${key}`,
+    );
+  }
+});

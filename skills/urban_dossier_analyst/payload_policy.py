@@ -28,7 +28,10 @@ neither.
 """
 from __future__ import annotations
 
+import json
 import os
+from datetime import datetime, timezone
+from pathlib import Path
 from enum import Enum
 from typing import Any
 
@@ -53,8 +56,51 @@ SAMPLE_KEYS = frozenset(
         "matches",
         "building_flags",
         "evidence_rows",
+        # Review-found leaks: real tools return record lists under these
+        # names, and the allowlist's stated failure mode ("a new sample key
+        # slips through untrimmed, visibly") fired exactly as documented.
+        "results",
+        "evidence_table",
+        "hits",
+        "neighbors",
     }
 )
+
+# Where each filtered call is recorded -- EXPANSION_PLAN 3.3 requires a
+# persisted audit record, not only a stamp inside the payload the model saw.
+# JSONL append, one line per filtered tool call, in the state dir (never the
+# repo). Auditing must never break the tool call it audits, hence the broad
+# swallow.
+AUDIT_PATH = Path(
+    os.environ.get(
+        "URBAN_DOSSIER_PAYLOAD_AUDIT",
+        "/mnt/data/urban-dossier-state/runtime/agent_payload_audit.jsonl",
+    )
+)
+
+
+def audit_record(tool: str, policy: "PayloadPolicy", omitted: int) -> None:
+    try:
+        AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with AUDIT_PATH.open("a") as fh:
+            fh.write(json.dumps({
+                "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "tool": tool,
+                "policy": policy.value,
+                "omitted_records": omitted,
+            }) + "\n")
+    except OSError:  # pragma: no cover - audit failure must not break the call
+        pass
+
+
+def count_omitted(filtered) -> int:
+    if isinstance(filtered, dict):
+        if set(filtered) == {"omitted_records", "reason"}:
+            return int(filtered["omitted_records"])
+        return sum(count_omitted(v) for v in filtered.values())
+    if isinstance(filtered, list):
+        return sum(count_omitted(v) for v in filtered)
+    return 0
 
 
 def resolve_policy(env: dict[str, str] | None = None) -> PayloadPolicy:

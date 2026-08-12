@@ -92,32 +92,39 @@ def tract_cells(geometry) -> list[str]:
 
 def allocate(
     populations: dict[str, tuple[int, int]], tracts
-) -> tuple[dict[str, float], dict[str, str], int]:
+) -> tuple[list[tuple[str, str, float, float]], int]:
     """Split each tract's population equally over its cells.
 
-    Returns (cell -> population, cell -> owning tract, centre-fallback count).
-    Cells keep fractional people on purpose: rounding per cell would break
-    conservation, and a denominator has no need to be an integer.
+    Returns the full contribution edge list -- (cell, tract, population
+    share, MOE share) -- and the centre-fallback count. The first version
+    collapsed provenance to one tract per cell with ``setdefault``, which
+    silently swallowed 55 tracts' identities wherever a fallback donation
+    landed on an occupied cell, and made per-cell MOE columns describe the
+    wrong tract (review finding). Keeping every edge costs a few hundred KB
+    and makes provenance a fact instead of a casualty.
+
+    MOE shares scale with the population share (tract_moe x share/tract_pop),
+    the standard ACS proportion approximation; per-cell MOE aggregates as the
+    root-sum-square of its edges. Cells keep fractional people on purpose:
+    rounding per cell would break conservation.
     """
     import h3
 
-    cell_population: dict[str, float] = {}
-    cell_tract: dict[str, str] = {}
+    edges: list[tuple[str, str, float, float]] = []
     fallbacks = 0
     for _, row in tracts.iterrows():
         fips = row["GEOID"]
-        population, _ = populations.get(fips, (0, 0))
+        population, moe = populations.get(fips, (0, 0))
         cells = tract_cells(row["geometry"])
         if not cells:
             point = row["geometry"].representative_point()
             cells = [h3.latlng_to_cell(point.y, point.x, 9)]
             fallbacks += 1
         share = population / len(cells)
+        moe_share = (moe / len(cells)) if population else 0.0
         for cell in cells:
-            cell_population[cell] = cell_population.get(cell, 0.0) + share
-            # Last writer wins for provenance; only fallback donations overlap.
-            cell_tract.setdefault(cell, fips)
-    return cell_population, cell_tract, fallbacks
+            edges.append((cell, fips, share, moe_share))
+    return edges, fallbacks
 
 
 def main() -> None:
@@ -138,52 +145,108 @@ def main() -> None:
     tracts = tracts[tracts["COUNTYFP"].isin(NYC_COUNTIES)].to_crs(4326)
     print(f"{len(tracts):,} tract polygons")
 
-    cell_population, cell_tract, fallbacks = allocate(populations, tracts)
-    allocated = sum(cell_population.values())
+    edges, fallbacks = allocate(populations, tracts)
+    allocated = sum(share for _, _, share, _ in edges)
     drift = abs(allocated - acs_total)
     if drift > 1e-6 * max(acs_total, 1):
         raise SystemExit(
             f"conservation violated: allocated {allocated:,.2f} vs ACS {acs_total:,}"
         )
 
+    import math
+
     import pandas as pd
 
+    edge_frame = pd.DataFrame(
+        edges, columns=["h3_r9", "tract_geoid", "population_share", "moe_share"]
+    )
+    grouped = edge_frame.groupby("h3_r9")
     frame = pd.DataFrame(
         {
-            "h3_r9": sorted(cell_population),
-            "population": [round(cell_population[c], 3) for c in sorted(cell_population)],
-            "tract_geoid": [cell_tract[c] for c in sorted(cell_population)],
+            # Full precision: rounding to 3 dp cost 0.099 people citywide --
+            # under one person, but "exact" was the published claim, so exact
+            # it is, verified by re-reading the artifact below.
+            "population": grouped["population_share"].sum(),
+            "population_moe": grouped["moe_share"].apply(
+                lambda shares: math.sqrt(float((shares ** 2).sum()))
+            ),
+            "tract_count": grouped["tract_geoid"].nunique(),
+            # The largest contributor, for display; the edge-list artifact is
+            # the authoritative provenance.
+            "primary_tract_geoid": edge_frame.sort_values("population_share")
+            .groupby("h3_r9")["tract_geoid"].last(),
         }
-    )
-    frame["tract_population"] = frame["tract_geoid"].map(lambda f: populations[f][0])
-    frame["tract_moe"] = frame["tract_geoid"].map(lambda f: populations[f][1])
+    ).reset_index()
 
     out_dir = args.ready_root / "context"
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / "population_r9.parquet"
+    prov_out = out_dir / "population_r9_provenance.parquet"
     con = duckdb.connect()
-    con.execute("CREATE OR REPLACE TABLE t AS SELECT * FROM frame")
-    con.execute(f"COPY t TO '{out.as_posix()}' (FORMAT PARQUET, COMPRESSION ZSTD)")
+    for target, table in ((out, "frame"), (prov_out, "edge_frame")):
+        tmp = target.with_suffix(".parquet.tmp")
+        con.execute(f"CREATE OR REPLACE TABLE t AS SELECT * FROM {table}")
+        con.execute(f"COPY t TO '{tmp.as_posix()}' (FORMAT PARQUET, COMPRESSION ZSTD)")
+        tmp.replace(target)  # atomic within the filesystem
+
+    # Trust the artifact, not the intention: re-read what was written.
+    reread_total, reread_rows = con.execute(
+        f"SELECT sum(population), count(*) FROM read_parquet('{out.as_posix()}')"
+    ).fetchone()
+    if abs(reread_total - acs_total) > 1e-6 * acs_total:
+        raise SystemExit(
+            f"artifact re-read total {reread_total:,.4f} != ACS {acs_total:,}"
+        )
+    prov_tracts = con.execute(
+        f"SELECT count(DISTINCT tract_geoid) FROM read_parquet('{prov_out.as_posix()}')"
+    ).fetchone()[0]
+
+    def sha256(path: Path) -> str:
+        import hashlib
+
+        digest = hashlib.sha256()
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     manifest = {
         "methodology_version": METHODOLOGY_VERSION,
         "generated": date.today().isoformat(),
         "source": {
             "population": "ACS 2019-2023 5-year B01003 (table-based summary file)",
+            "population_sha256": sha256(args.acs_dat),
             "geometry": "TIGER/Line 2023 census tracts, NY",
+            "geometry_sha256": sha256(args.tiger_zip),
         },
         "allocation": "equal split over r9 cells by centre containment; "
-                      "representative-point fallback for sub-cell tracts",
+                      "representative-point fallback for sub-cell tracts; "
+                      "full contribution edges in the provenance artifact",
         "tracts": len(populations),
-        "cells": len(frame),
+        "tracts_in_provenance": int(prov_tracts),
+        "cells": int(reread_rows),
         "acs_population": acs_total,
-        "allocated_population": round(allocated, 2),
+        "allocated_population_reread": float(reread_total),
         "centre_fallback_tracts": fallbacks,
+        "artifacts": {
+            out.name: {"sha256": sha256(out), "bytes": out.stat().st_size,
+                        "rows": int(reread_rows)},
+            prov_out.name: {"sha256": sha256(prov_out), "bytes": prov_out.stat().st_size,
+                             "rows": len(edge_frame)},
+        },
+        "schema": {
+            out.name: ["h3_r9", "population", "population_moe", "tract_count",
+                        "primary_tract_geoid"],
+            prov_out.name: ["h3_r9", "tract_geoid", "population_share", "moe_share"],
+        },
         "role": "denominator artifact -- not a scored metric; per-capita "
                 "conversion of any metric is a methodology-version event",
     }
-    (out_dir / "population_r9.manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    print(f"wrote {out}")
+    manifest_path = out_dir / "population_r9.manifest.json"
+    tmp = manifest_path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(manifest, indent=2) + "\n")
+    tmp.replace(manifest_path)
+    print(f"wrote {out} + {prov_out}")
     print(json.dumps(manifest, indent=2))
 
 

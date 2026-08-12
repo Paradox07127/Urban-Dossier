@@ -47,27 +47,63 @@ def test_rank_leaves_nan_cells_unranked():
     assert ranks[0] == 2.0 and ranks[2] == 1.0
 
 
-def test_renormalize_matches_production_semantics():
-    """One present metric out of two -> its score at full strength, exactly
-    what `_weighted_score` does at runtime."""
+# One category holding both metrics; the shape production actually aggregates.
+TWO_METRIC_STRUCTURE = [("safety", 0.4, np.array([0, 1]), np.array([0.6, 0.4]))]
+
+
+def test_category_renorm_then_round_matches_production_semantics():
+    """One present metric out of two -> its score at full strength inside the
+    category, then the category is the only overall contributor. Exactly the
+    `_weighted_score` -> `_clamp` -> category-weighted path, which the old
+    flat one-pass renormalisation did NOT reproduce (review: mean |delta|
+    3.5 points against production)."""
     scores = np.array([[80.0, np.nan]])
-    weights = np.array([0.6, 0.4])
-    out = rsa.composite(scores, weights, None)
+    out = rsa.composite(scores, TWO_METRIC_STRUCTURE, None)
     assert out[0] == pytest.approx(80.0)
+
+
+def test_composite_rounds_per_category_like_production():
+    """77.5 within the category rounds to 78 BEFORE the overall stage --
+    the integer staging the flat formula skipped."""
+    scores = np.array([[75.0, 81.25]])
+    out = rsa.composite(scores, TWO_METRIC_STRUCTURE, None)
+    # 75*0.6 + 81.25*0.4 = 77.5 -> production _clamp rounds (banker's) to 78
+    assert out[0] == pytest.approx(round(77.5))
+
+
+def test_missing_weight_stays_inside_the_category():
+    """Two categories: a metric missing in one must NOT leak its weight to
+    the other category -- the exact defect of the flat renormalisation."""
+    structure = [
+        ("safety", 0.4, np.array([0, 1]), np.array([0.5, 0.5])),
+        ("transit", 0.3, np.array([2]), np.array([1.0])),
+    ]
+    scores = np.array([[100.0, np.nan, 0.0]])
+    out = rsa.composite(scores, structure, None)
+    # safety = 100 (renorm inside category), transit = 0
+    # overall = (0.4*100 + 0.3*0) / 0.7 = 57.14 -> 57
+    assert out[0] == pytest.approx(57.0)
+    # The flat formula would have given (0.4*0.5*100)/(0.4*0.5+0.3) = 40.
 
 
 def test_impute_fills_with_citywide_mean_at_full_weight():
     scores = np.array([[80.0, np.nan]])
-    weights = np.array([0.6, 0.4])
     means = np.array([70.0, 50.0])
-    out = rsa.composite(scores, weights, means)
-    assert out[0] == pytest.approx((80.0 * 0.6 + 50.0 * 0.4) / 1.0)
+    out = rsa.composite(scores, TWO_METRIC_STRUCTURE, means)
+    assert out[0] == pytest.approx(round(80.0 * 0.6 + 50.0 * 0.4))
 
 
 def test_cell_with_nothing_present_is_nan_not_zero():
     scores = np.array([[np.nan, np.nan]])
-    out = rsa.composite(scores, np.array([0.5, 0.5]), None)
+    out = rsa.composite(scores, TWO_METRIC_STRUCTURE, None)
     assert np.isnan(out[0])
+
+
+def test_toggle_zeroes_a_metric_via_multiplier():
+    scores = np.array([[80.0, 20.0]])
+    multiplier = np.array([1.0, 0.0])
+    out = rsa.composite(scores, TWO_METRIC_STRUCTURE, None, multiplier)
+    assert out[0] == pytest.approx(80.0)
 
 
 def test_zip_lookup_repeats_native_zip_without_changing_its_declared_grain(tmp_path):

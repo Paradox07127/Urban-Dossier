@@ -495,6 +495,13 @@ async def ask(request: AskRequest) -> AskResponse | JSONResponse:
         session_id = request.session_id
     else:
         session_id = store.create({"mode": "agent_ask"})
+        # Re-fetch so the persistence below has a live object. Leaving
+        # `session` as None here silently dropped the FIRST turn of every new
+        # conversation: the caller got a session_id back, but asking a
+        # follow-up against it found empty history -- so the intent router
+        # read "why is that score low?" as a fresh analysis instead of an
+        # evidence question. Found by review, pinned by test.
+        session = store.get(session_id)
 
     # Deterministic intent gate -- EXPANSION_PLAN 3.4. Sits BEFORE the skill
     # import on purpose: out_of_scope and meta_help never touch the agent
@@ -623,11 +630,21 @@ async def ask(request: AskRequest) -> AskResponse | JSONResponse:
             session.add_chat("assistant", answer_text)
 
     payload = result if isinstance(result, dict) else {}
+    # The router ran even when it did not short-circuit; its decision belongs
+    # in the trace either way, or the analysis path is unauditable (review
+    # finding: ask_from_evidence vs new_analysis was classified and then
+    # invisible).
+    routed_trace = [{
+        "type": "intent_router",
+        "intent": route.intent.value,
+        "rule": route.rule,
+        "note": "passed through to the agent loop",
+    }] + list(payload.get("trace", []) or [])
     return AskResponse(
         answer=str(payload.get("answer", "")),
         evidence=list(payload.get("evidence", []) or []),
         tools_called=_normalize_tools_called(payload.get("tools_called")),
         iterations=int(payload.get("iterations", 0) or 0),
-        trace=list(payload.get("trace", []) or []),
+        trace=routed_trace,
         session_id=session_id,
     )

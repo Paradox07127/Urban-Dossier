@@ -247,35 +247,70 @@ def load_matrices(ready_root: Path) -> tuple[list[str], list[str], np.ndarray, d
         minmax[mask, j] = scaled
         zscore[mask, j] = z
 
-    weights = np.array(
-        [
-            CATEGORIES_BY_ID[m.category].weight_in_overall * m.weight_in_category
-            for m in metrics
-        ]
-    )
-    return frame, [m.id for m in metrics], weights, {
+    # The two-stage structure production scoring actually uses. A flat
+    # category x metric product with one-pass renormalisation over missing
+    # metrics is NOT equivalent: production renormalises within the category
+    # first (a missing metric's weight goes to its category siblings, not to
+    # the whole board), rounds each category to an integer, then weights
+    # categories. Review measured the flat shortcut at mean |delta| 3.5 and
+    # max 23 points against production -- intervals published off it were
+    # describing a different scoring formula. The build now refuses to write
+    # artifacts unless its nominal matches compute_secondary_scores exactly.
+    structure = []
+    for category in sorted({m.category for m in metrics}):
+        cat_weight = CATEGORIES_BY_ID[category].weight_in_overall
+        if cat_weight <= 0:
+            continue  # zero-overall context categories never reach overall
+        idx = np.array([j for j, m in enumerate(metrics) if m.category == category])
+        sub = np.array([metrics[j].weight_in_category for j in idx])
+        structure.append((category, cat_weight, idx, sub))
+    return frame, [m.id for m in metrics], structure, {
         "percentile": published,
         "minmax": minmax,
         "zscore": zscore,
     }
 
 
-def composite(scores: np.ndarray, weights: np.ndarray, impute_means: np.ndarray | None) -> np.ndarray:
-    """Weighted composite per cell.
+def composite(
+    scores: np.ndarray,
+    structure: list,
+    impute_means: np.ndarray | None,
+    multiplier: np.ndarray | None = None,
+) -> np.ndarray:
+    """The production composite, vectorised: category renorm, round, overall.
 
-    With ``impute_means`` None, weights renormalize over present sub-scores
-    (production behaviour). Otherwise absent sub-scores are filled with the
-    supplied citywide means and full weights apply.
+    Stage for stage the same arithmetic as ``compute_secondary_scores`` /
+    ``_weighted_score``: within each category, weights renormalise over the
+    sub-metrics that are present (or, on the imputation branch, absent scores
+    are filled with citywide means at full weight); the category score is
+    rounded and clamped to an integer exactly as ``_clamp`` does; overall is
+    the category-weighted mean over categories that produced a score, rounded
+    and clamped again. ``multiplier`` carries the draw's weight noise and
+    toggle zeros per metric. The old flat one-pass renormalisation sent a
+    missing metric's weight to the whole board instead of to its category
+    siblings and skipped the integer rounding -- a different formula from the
+    one that scores the product (review: mean |delta| 3.5, max 23 points).
     """
-    if impute_means is not None:
-        filled = np.where(np.isnan(scores), impute_means[None, :], scores)
-        return filled @ weights / weights.sum()
-    present = ~np.isnan(scores)
-    weight_sum = present @ weights
-    weighted = np.nansum(scores * weights[None, :], axis=1)
-    out = np.full(scores.shape[0], np.nan)
-    ok = weight_sum > 0
-    out[ok] = weighted[ok] / weight_sum[ok]
+    n_cells = scores.shape[0]
+    overall_num = np.zeros(n_cells)
+    overall_den = np.zeros(n_cells)
+    for _, cat_weight, idx, sub in structure:
+        eff = sub * (multiplier[idx] if multiplier is not None else 1.0)
+        block = scores[:, idx]
+        if impute_means is not None:
+            block = np.where(np.isnan(block), impute_means[idx][None, :], block)
+        present = ~np.isnan(block) & (eff[None, :] > 0)
+        den = present @ eff
+        num = np.nansum(np.where(present, block, 0.0) * eff[None, :], axis=1)
+        cat_score = np.full(n_cells, np.nan)
+        ok = den > 0
+        cat_score[ok] = np.clip(np.round(num[ok] / den[ok]), 0, 100)
+        has = ~np.isnan(cat_score)
+        overall_num[has] += cat_weight * cat_score[has]
+        overall_den[has] += cat_weight
+    out = np.full(n_cells, np.nan)
+    ok = overall_den > 0
+    out[ok] = np.clip(np.round(overall_num[ok] / overall_den[ok]), 0, 100)
     return out
 
 
@@ -286,14 +321,16 @@ def run(
     cell_output_dir: Path | None = None,
 ) -> tuple[dict, "np.ndarray", list[str]]:
     rng = np.random.default_rng(seed)
-    frame, names, weights, score_sets = load_matrices(ready_root)
+    frame, names, structure, score_sets = load_matrices(ready_root)
     n_cells = len(frame)
+    n_metrics = len(names)
     toggle_idx = {m: names.index(m) for m in TOGGLE_METRICS if m in names}
     citywide_means = {
         norm: np.nanmean(scores, axis=0) for norm, scores in score_sets.items()
     }
 
-    nominal = composite(score_sets["percentile"], weights, None)
+    nominal = composite(score_sets["percentile"], structure, None)
+    reconcile_with_production(frame, names, structure, score_sets["percentile"], nominal)
     nominal_rank = rank_descending(nominal)
 
     results = np.empty((draws, n_cells), dtype=np.float32)
@@ -304,13 +341,12 @@ def run(
     for d in range(draws):
         norm = NORMALIZATIONS[draw_norm[d]]
         scores = score_sets[norm]
-        w = weights * rng.uniform(1 - WEIGHT_NOISE, 1 + WEIGHT_NOISE, size=len(weights))
+        multiplier = rng.uniform(1 - WEIGHT_NOISE, 1 + WEIGHT_NOISE, size=n_metrics)
         for metric, included in draw_toggle.items():
             if not included[d]:
-                w = w.copy()
-                w[toggle_idx[metric]] = 0.0
+                multiplier[toggle_idx[metric]] = 0.0
         means = citywide_means[norm] if draw_impute[d] else None
-        results[d] = composite(scores, w, means)
+        results[d] = composite(scores, structure, means, multiplier)
 
     ranks = np.empty_like(results)
     for d in range(draws):
@@ -394,6 +430,52 @@ def run(
     )
     write_publication_manifest(artifact_path, ready_root, summary)
     return summary, per_cell, frame
+
+
+def reconcile_with_production(
+    frame: list[str],
+    names: list[str],
+    structure: list,
+    percentile_scores: np.ndarray,
+    nominal: np.ndarray,
+    sample: int = 250,
+) -> None:
+    """Refuse to publish intervals about a formula production does not run.
+
+    Feeds a deterministic sample of cells through the real
+    ``compute_secondary_scores`` with the exact sub-scores the matrices hold,
+    and demands the vectorised nominal match to the integer. This is the
+    guarantee the review found missing: the flat aggregation shipped for two
+    releases precisely because nothing forced the two implementations to
+    agree.
+    """
+    from urban_dossier_backend.metrics import METRICS_BY_ID
+    from urban_dossier_backend.secondary_scoring import compute_secondary_scores
+
+    step = max(1, len(frame) // sample)
+    mismatches = []
+    for i in range(0, len(frame), step):
+        prepared: dict[str, dict[str, float]] = {}
+        for j, name in enumerate(names):
+            value = percentile_scores[i, j]
+            if np.isnan(value):
+                continue
+            category = METRICS_BY_ID[name].category
+            prepared.setdefault(category, {})[name] = float(value)
+        if not prepared:
+            continue
+        produced = compute_secondary_scores({}, {}, prepared)["overall"]
+        ours = nominal[i]
+        if produced is None and np.isnan(ours):
+            continue
+        if produced is None or np.isnan(ours) or int(ours) != int(produced):
+            mismatches.append((frame[i], produced, None if np.isnan(ours) else int(ours)))
+    if mismatches:
+        raise SystemExit(
+            f"sensitivity nominal disagrees with production scoring on "
+            f"{len(mismatches)} of ~{sample} sampled cells, e.g. {mismatches[:3]}; "
+            "refusing to publish intervals about a formula production does not run"
+        )
 
 
 def rank_descending(values: np.ndarray) -> np.ndarray:
