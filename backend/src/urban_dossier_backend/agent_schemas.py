@@ -10,9 +10,8 @@ class AgentSessionRequest(BaseModel):
     time_window_days: int = 365
 
 
-class AgentChatRequest(BaseModel):
-    session_id: str
-    message: str = Field(max_length=2000)
+# AgentChatRequest was here, the body of the removed /api/agent/chat. AskRequest
+# is the one way in now.
 
 
 class AgentReportRequest(BaseModel):

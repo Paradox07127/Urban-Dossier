@@ -994,68 +994,14 @@ def generate_poster(payload: dict, template: str = "offline") -> dict:
         _cleanup_files(*temps)
 
 
-def chat_with_context(session, user_message: str) -> str:
-    """Chat about the analysis, using condensed payload as context.
-
-    Tries OpenClaw agent first if AGENT_BACKEND=nemoclaw, falls back to direct vllm.
-    Returns response text, or error message on failure.
-    """
-    # --- NemoClaw path: send chat through OpenClaw agent ---
-    if AGENT_BACKEND == "nemoclaw":
-        context = _build_condensed_context(session.analysis_payload)
-        full_msg = (
-            f"Neighborhood data:\n{context}\n\n"
-            f"User question: {user_message}"
-        )
-        session_id = f"chat-{session.session_id[:8]}"
-        response = _openclaw_agent(full_msg, session_id=session_id, timeout=30)
-        if response:
-            session.add_chat("user", user_message)
-            session.add_chat("assistant", response)
-            return response
-        logger.warning("OpenClaw chat failed, falling back to direct vllm")
-
-    # --- Direct vllm fallback ---
-    try:
-        client = _get_openai_client()
-        model_name = _resolve_model_name(client)
-    except Exception as exc:
-        return f"LLM unavailable: {exc}"
-
-    # Build system prompt from condensed analysis
-    context = _build_condensed_context(session.analysis_payload)
-    system_msg = (
-        "You are a friendly, knowledgeable New Yorker who happens to be a neighborhood data expert. "
-        "You're chatting with someone exploring this area — maybe they're thinking about moving here, "
-        "visiting, or just curious. Talk naturally, like you'd explain a neighborhood to a friend over coffee.\n\n"
-        "Guidelines:\n"
-        "- Lead with insight and meaning, not raw numbers. Say what a score *means* for daily life.\n"
-        "- Weave in specific data to back up your points, but don't just list stats.\n"
-        "- When the user asks a follow-up like 'explain more' or 'tell me more', go deeper — add context, "
-        "comparisons, and practical implications. Don't just repeat the same numbers.\n"
-        "- Connect different data points to paint a fuller picture (e.g. transit + restaurants = walkable lifestyle).\n"
-        "- Be honest about downsides but balanced — every neighborhood has trade-offs.\n"
-        "- If something isn't covered by the data, say so honestly rather than guessing.\n"
-        "- Use 2-4 short paragraphs for substantive questions, 1-2 sentences for simple ones.\n\n"
-        f"=== NEIGHBORHOOD DATA ===\n{context}"
-    )
-
-    # Build messages: system + last 8 chat history entries + new user message
-    messages = [{"role": "system", "content": system_msg}]
-    recent_history = session.chat_history[-8:]
-    for entry in recent_history:
-        messages.append({"role": entry["role"], "content": entry["content"]})
-    messages.append({"role": "user", "content": user_message})
-
-    response = _llm_chat_multi(client, model_name, messages, temperature=0.65, max_tokens=700, enable_thinking=True)
-    if not response:
-        response = "I wasn't able to generate a response. Please try rephrasing your question."
-
-    # Update chat history (use add_chat to enforce MAX_CHAT_HISTORY cap)
-    session.add_chat("user", user_message)
-    session.add_chat("assistant", response)
-
-    return response
+# chat_with_context stood here, backing the removed /api/agent/chat.
+#
+# Worth recording why its loss is a gain rather than a subtraction: after
+# trying the OpenClaw sandbox it fell through to a direct vLLM client on
+# any failure, unconditionally. /api/agent/ask was made fail-closed so a
+# missing or misspelled transport setting cannot route around the sandbox;
+# this function was never covered by that switch and would have kept a
+# second, quieter way out. Removing the endpoint removed the path.
 
 
 def refine_report(session, feedback: str) -> dict:
