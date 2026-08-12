@@ -17,6 +17,7 @@ import {
   Search,
   ShieldCheck,
   Utensils,
+  Wind,
   X,
 } from 'lucide-react';
 
@@ -65,6 +66,13 @@ const RADIUS_OPTIONS: RadiusMeters[] = [200, 500, 1000];
 
 function formatScore(score: number | null | undefined): string {
   return typeof score === 'number' && !Number.isNaN(score) ? String(Math.round(score)) : '--';
+}
+
+function environmentTier(score: number | null | undefined): string {
+  if (typeof score !== 'number' || Number.isNaN(score)) return 'Not available';
+  if (score >= 67) return 'Lower modeled NO';
+  if (score <= 33) return 'Higher modeled NO';
+  return 'Middle modeled NO';
 }
 
 function priorityOrderKey(priorities: string[]): string[] {
@@ -1021,6 +1029,25 @@ export default function App() {
                       </div>
                     );
                   })}
+                  {typeof scores?.environment === 'number' && (
+                    <div
+                      className="col-span-2 rounded-md border px-4 py-3 flex items-center gap-3"
+                      style={scoreGradientStyle(scores.environment)}
+                    >
+                      <Wind className="h-5 w-5 shrink-0 text-muted-foreground" />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-semibold text-foreground">
+                          {environmentTier(scores.environment)}
+                        </div>
+                        <div className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
+                          NYCCAS 2023–24 annual-average model · context only, 0% of overall
+                        </div>
+                      </div>
+                      <div className="text-right font-mono text-[10px] text-muted-foreground">
+                        relative score {formatScore(scores.environment)}/100
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {preview?.chart_specs?.score_composition && (

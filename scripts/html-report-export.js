@@ -129,10 +129,11 @@ function normalisePayload(payload, methodologyVersion) {
       zip: text(target.zip, 20),
     },
     scores: Object.fromEntries(
-      ['overall', 'amenities', 'transit', 'safety', 'building'].map((key) => [key, finiteNumber(scores[key])]),
+      ['overall', 'amenities', 'transit', 'safety', 'building', 'environment']
+        .map((key) => [key, finiteNumber(scores[key])]),
     ),
     score_coverage: Object.fromEntries(
-      ['overall', 'amenities', 'transit', 'safety', 'building'].map((key) => {
+      ['overall', 'amenities', 'transit', 'safety', 'building', 'environment'].map((key) => {
         const item = coverage[key] && typeof coverage[key] === 'object' ? coverage[key] : {};
         return [key, {
           available: finiteNumber(item.available),

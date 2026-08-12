@@ -2,7 +2,7 @@
   "generated": "2026-08-12",
   "seed": 20260811,
   "draws": 1000,
-  "cells": 7196,
+  "cells": 7194,
   "metrics": [
     "collision",
     "rodent",
@@ -17,7 +17,8 @@
     "restaurant_context",
     "facilities",
     "housing_violations",
-    "aep"
+    "aep",
+    "nyccas_no"
   ],
   "design": {
     "weight_noise": 0.25,
@@ -39,22 +40,22 @@
     ]
   },
   "headline": {
-    "median_interval_width": 33.08,
-    "p95_interval_width": 57.6,
-    "median_interval_width_production_norm": 10.0,
-    "mean_abs_rank_shift": 596.5,
-    "rank_shift_share_of_city": 0.0829,
+    "median_interval_width": 33.26,
+    "p95_interval_width": 57.81,
+    "median_interval_width_production_norm": 9.85,
+    "mean_abs_rank_shift": 597.2,
+    "rank_shift_share_of_city": 0.083,
     "toggle_effects": {
       "311_sanitation": {
-        "mean_abs_score_delta": 1.19,
-        "p95_abs_score_delta": 2.79
+        "mean_abs_score_delta": 1.27,
+        "p95_abs_score_delta": 2.98
       }
     },
-    "imputation_mean_abs_score_delta": 10.84,
+    "imputation_mean_abs_score_delta": 10.73,
     "normalization_citywide_means": {
-      "percentile": 50.55,
-      "minmax": 42.28,
-      "zscore": 50.12
+      "percentile": 50.53,
+      "minmax": 42.6,
+      "zscore": 50.13
     }
   }
 }

@@ -180,6 +180,21 @@ LEGACY_CATEGORY_CONFIG = {
             },
         },
     },
+    "environment": {
+        "label": "Environment",
+        "map_driving": False,
+        "detail_rankable": False,
+        "signals": ["nyccas_no"],
+        "weight_in_overall": 0.0,
+        "sub_datasets": {
+            "nyccas_no": {
+                "weight": 1.0,
+                "query_by": "h3",
+                "score_table": "environment/nyccas_no_scores_h3.parquet",
+                "publication_manifest": "environment/nyccas_no.manifest.json",
+            },
+        },
+    },
 }
 
 
@@ -240,6 +255,14 @@ def test_building_carries_no_weight_in_overall():
     move too, and this test should fail loudly when that happens.
     """
     assert CATEGORIES_BY_ID["building"].weight_in_overall == 0.0
+
+
+def test_environment_is_published_without_silently_reweighting_overall():
+    assert CATEGORIES_BY_ID["environment"].weight_in_overall == 0.0
+    metric = METRICS_BY_ID["nyccas_no"]
+    assert metric.publication_manifest == "environment/nyccas_no.manifest.json"
+    assert metric.absence_means_zero is False
+    assert overall_contribution("nyccas_no") == 0.0
 
 
 def test_every_metric_is_documented():
@@ -394,7 +417,12 @@ def test_registry_payload_exposes_metric_specific_absence_semantics():
     payload = registry_to_dict()
     policies = {entry["id"]: entry["absence_means_zero"] for entry in payload["metrics"]}
     assert policies["rodent"] is False
-    assert all(value is True for key, value in policies.items() if key != "rodent")
+    assert policies["nyccas_no"] is False
+    assert all(
+        value is True
+        for key, value in policies.items()
+        if key not in {"rodent", "nyccas_no"}
+    )
 
 
 def test_registry_payload_covers_every_metric_and_category():
@@ -439,6 +467,7 @@ def test_risk_metrics_point_the_right_way():
         "fire_response",
         "housing_violations",
         "aep",
+        "nyccas_no",
     }
     for metric in METRICS:
         expected = (

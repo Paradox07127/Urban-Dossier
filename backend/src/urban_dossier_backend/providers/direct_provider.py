@@ -18,6 +18,7 @@ from ..config import (
     READY_DATA_DIR,
 )
 from ..periods import canonical_quarter, current_quarter, quarter_for_date, quarter_index
+from ..publications import ready_publication_valid
 from ..utils import bbox, compact_records, fast_distance_sq_m, haversine_m, is_within_days, parse_date, quote, to_float, to_int
 from .base import DataProvider
 from .gpu_queries import gpu_emergency_metrics, gpu_fetch_radius_rows, gpu_nearest_overview_cell, is_available as gpu_available, is_fallback
@@ -166,6 +167,7 @@ READY_DATASET_PATHS = {
     "fire_dispatch": "safety/fire_indexed.parquet",
     "housing_violations": "building/housing_violations_indexed.parquet",
     "aep_buildings": "building/aep_indexed.parquet",
+    "nyccas_no": "environment/nyccas_no_scores_h3.parquet",
 }
 
 READY_COLUMN_ALIASES = {
@@ -251,6 +253,12 @@ class DirectQueryDataProvider(DataProvider):
         return None
 
     def _dataset_available(self, name: str) -> bool:
+        if name == "nyccas_no":
+            return ready_publication_valid(
+                self.ready_dir,
+                "environment/nyccas_no_scores_h3.parquet",
+                "environment/nyccas_no.manifest.json",
+            )
         ready_path = READY_DATASET_PATHS.get(name)
         return (
             bool(ready_path and self._ready_exists(ready_path))
@@ -754,6 +762,13 @@ class DirectQueryDataProvider(DataProvider):
                 query_by = sub_cfg.get("query_by")
                 score_table = sub_cfg.get("score_table")
                 if not score_table:
+                    category_scores[sub_name] = None
+                    continue
+                if not ready_publication_valid(
+                    self.ready_dir,
+                    score_table,
+                    sub_cfg.get("publication_manifest"),
+                ):
                     category_scores[sub_name] = None
                     continue
                 if query_by == "zip":
@@ -1953,6 +1968,7 @@ class DirectQueryDataProvider(DataProvider):
             "fire_dispatch",
             "housing_violations",
             "aep_buildings",
+            "nyccas_no",
         ]
         available_datasets = [dataset for dataset in required if self._dataset_available(dataset)]
         missing_datasets = [dataset for dataset in required if dataset not in available_datasets]

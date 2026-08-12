@@ -60,6 +60,28 @@ def test_frame_is_the_union_not_the_intersection(tmp_path, con):
     assert frame == sorted(frame)
 
 
+def test_zero_weight_context_table_cannot_expand_the_analysis_population(tmp_path, con):
+    a = write_table(tmp_path / "a.parquet", [(c, 1, 50) for c in CELLS[:20]])
+    b = write_table(tmp_path / "b.parquet", [(c, 1, 50) for c in CELLS[10:30]])
+    context = write_table(tmp_path / "context.parquet", [(c, 1, 50) for c in CELLS[30:]])
+    tables = {"a": a, "b": b, "context": context}
+
+    frame = amc.build_frame(con, tables, {"a", "b"})
+    assert frame == sorted(CELLS[:30])
+
+    # Loading every metric remains valid: rows unique to the context table
+    # are outside the fixed population and must be ignored, not raise or add
+    # synthetic zero-zero pairs to the existing metrics.
+    values = amc.raw_value_matrix(
+        con,
+        tables,
+        frame,
+        {"a": True, "b": True, "context": False},
+    )
+    assert values.shape == (3, 30)
+    assert np.isnan(values[2]).all()
+
+
 def test_absent_cells_are_zeros_not_missing(tmp_path, con):
     """The semantic core: absence must count against correlation.
 

@@ -200,13 +200,14 @@ FABRICATED_BEFORE = {
 @pytest.mark.parametrize("name", sorted(GOLDEN))
 def test_scores_are_unchanged_by_the_coverage_work(name):
     st, prepared, priority, expected = GOLDEN[name]
+    expected = {**expected, "environment": None}
     assert compute_secondary_scores(st, BASELINES, prepared, user_priority_weights=priority) == expected
 
 
 @pytest.mark.parametrize("name", sorted(SINGLE_SIGNAL))
 def test_single_signal_scores(name):
     st, expected = SINGLE_SIGNAL[name]
-    assert compute_secondary_scores(st, BASELINES, None) == expected
+    assert compute_secondary_scores(st, BASELINES, None) == {**expected, "environment": None}
 
 
 # --- absent inputs must not be read as zero ---------------------------------
@@ -383,7 +384,7 @@ def test_source_distinguishes_prepared_tables_from_fallback_formulas():
 def test_no_data_reports_zero_coverage_rather_than_absent_coverage():
     """A gap must be a reported zero, not a missing key."""
     cov = _coverage("empty")
-    for category in ("safety", "transit", "amenities", "building"):
+    for category in ("safety", "transit", "amenities", "building", "environment"):
         assert cov[category]["ratio"] == 0.0
         assert cov[category]["available"] == 0
         assert cov[category]["present"] == []
@@ -393,7 +394,9 @@ def test_no_data_reports_zero_coverage_rather_than_absent_coverage():
 def test_every_category_reports_coverage_even_when_it_scores_nothing():
     for name in GOLDEN:
         cov = _coverage(name)
-        assert set(cov) == {"safety", "transit", "amenities", "building", "overall"}
+        assert set(cov) == {
+            "safety", "transit", "amenities", "building", "environment", "overall"
+        }
 
 
 def test_building_is_excluded_from_overall_coverage_because_its_weight_is_zero():
@@ -402,6 +405,18 @@ def test_building_is_excluded_from_overall_coverage_because_its_weight_is_zero()
     assert cov["building"]["ratio"] == pytest.approx(1.0)
     assert "building" not in cov["overall"]["categories_used"]
     assert "building" not in cov["overall"]["categories_missing"]
+
+
+def test_prepared_environment_score_is_context_only():
+    scores, coverage = compute_scores_with_coverage(
+        state(**FULL),
+        BASELINES,
+        {**PREPARED_FULL, "environment": {"nyccas_no": 35}},
+    )
+    assert scores["environment"] == 35
+    assert scores["overall"] == GOLDEN["prepared_full"][3]["overall"]
+    assert coverage["environment"]["ratio"] == 1.0
+    assert "environment" not in coverage["overall"]["categories_used"]
 
 
 def test_weakest_category_ratio_surfaces_the_thinnest_contributor():

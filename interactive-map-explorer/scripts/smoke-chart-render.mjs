@@ -52,6 +52,10 @@ try {
   await page.getByText('Overall score', { exact: true }).waitFor({ timeout: 30_000 });
   await page.getByText(/95% range .* · point estimate/).waitFor({ timeout: 30_000 });
   await page.getByText(/server quantiles/).waitFor({ timeout: 30_000 });
+  await page.getByText(/modeled NO/, { exact: false }).waitFor({ timeout: 30_000 });
+  await page.getByText('NYCCAS 2023–24 annual-average model · context only, 0% of overall', {
+    exact: true,
+  }).waitFor({ timeout: 30_000 });
   await page.locator('.vega-embed svg').first().waitFor({ timeout: 30_000 });
   console.log('smoke: downloading and opening self-contained report offline');
   await page.evaluate(() => {
@@ -125,6 +129,7 @@ try {
   assert(exportedCharts >= 3, `expected at least 3 exported Vega SVGs, got ${exportedCharts}`);
   await offlinePage.getByText('methodology v3.9.0', { exact: true }).waitFor();
   await offlinePage.getByText('overall tier', { exact: true }).waitFor();
+  await offlinePage.getByText('environment', { exact: true }).waitFor();
   assert.match(exportStamp || '', /^generated \d{4}-\d{2}-\d{2}T/);
   assert.equal(await offlinePage.locator('.render-error').count(), 0);
   assert.deepEqual(offlineRequests, []);
@@ -279,8 +284,8 @@ try {
       .locator('.font-mono').count(),
     mapCanvases: await page.locator('.maplibregl-canvas').count(),
   };
-  assert(methodologyAudit.metricRows >= 14);
-  assert(methodologyAudit.datasetRows >= 13);
+  assert(methodologyAudit.metricRows >= 18);
+  assert(methodologyAudit.datasetRows >= 14);
   assert.equal(methodologyAudit.mapCanvases, 0);
   assert.equal(methodologyRequests, 1);
   await page.screenshot({ path: methodologyScreenshotPath, fullPage: true });

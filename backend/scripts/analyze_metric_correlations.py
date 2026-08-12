@@ -11,12 +11,15 @@ declarations.
 
 Method
 ------
-Frame: the union of H3 r9 cells appearing in any H3-grain score table.
-Absence is metric-specific and comes from the registry. For event/inventory
-counts it means an observed zero and is filled with 0. For rates such as the
-inspection-anchored rodent metric it means no denominator was observed and
-stays missing. Spearman is then computed pairwise over cells where both raw
-values are defined.
+Frame: the union of H3 r9 cells appearing in positive-overall-weight score
+tables -- the stable public-composite population. Zero-weight context tables
+are measured on their overlap with that frame but cannot expand it and thereby
+change correlations among existing metrics. Absence is metric-specific and
+comes from the registry. For event/inventory counts it means an observed zero
+and is filled with 0. For rates such as the inspection-anchored rodent and
+NYCCAS metrics it means no denominator/model value was observed and stays
+missing. Spearman is then computed pairwise over cells where both raw values
+are defined.
 
 Statistic: Spearman rank correlation, because every raw series here is a
 zero-inflated, heavily right-skewed count and Pearson on such data mostly
@@ -60,10 +63,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "backend" / "src"))
 
 from urban_dossier_backend.metrics import (  # noqa: E402
+    CATEGORIES_BY_ID,
     METRICS,
     duplicated_sources,
     overlapping_pairs,
 )
+from urban_dossier_backend.publications import ready_publication_valid  # noqa: E402
 
 COLLINEAR = 0.9
 HIGH = 0.7
@@ -83,7 +88,11 @@ def h3_metric_tables(ready_root: Path) -> dict[str, Path]:
         if metric.spatial_grain.value != "h3_r9":
             continue
         path = ready_root / metric.score_table
-        if path.exists():
+        if ready_publication_valid(
+            ready_root,
+            metric.score_table,
+            metric.publication_manifest,
+        ):
             out[metric.id] = path
     return out
 
@@ -99,10 +108,21 @@ def zip_metric_tables(ready_root: Path) -> dict[str, Path]:
     return out
 
 
-def build_frame(con: duckdb.DuckDBPyConnection, tables: dict[str, Path]) -> list[str]:
-    """Union of cells across every table, sorted for determinism."""
+def build_frame(
+    con: duckdb.DuckDBPyConnection,
+    tables: dict[str, Path],
+    frame_metric_ids: set[str] | None = None,
+) -> list[str]:
+    """Union of selected table cells, sorted for determinism."""
+    selected = {
+        metric_id: path
+        for metric_id, path in tables.items()
+        if frame_metric_ids is None or metric_id in frame_metric_ids
+    }
+    if not selected:
+        raise ValueError("correlation frame has no published score tables")
     union = " UNION ".join(
-        f"SELECT h3_r9 FROM read_parquet('{p.as_posix()}')" for p in tables.values()
+        f"SELECT h3_r9 FROM read_parquet('{p.as_posix()}')" for p in selected.values()
     )
     return sorted(r[0] for r in con.execute(union).fetchall())
 
@@ -123,7 +143,9 @@ def raw_value_matrix(
         for h3_id, value in con.execute(
             f"SELECT h3_r9, raw_count FROM read_parquet('{path.as_posix()}')"
         ).fetchall():
-            matrix[row, index[h3_id]] = np.nan if value is None else float(value)
+            cell_index = index.get(h3_id)
+            if cell_index is not None:
+                matrix[row, cell_index] = np.nan if value is None else float(value)
     return matrix
 
 
@@ -195,7 +217,12 @@ def flag_pairs(names: list[str], rho: np.ndarray) -> list[dict]:
 def analyze(ready_root: Path) -> dict:
     con = duckdb.connect()
     h3_tables = h3_metric_tables(ready_root)
-    frame = build_frame(con, h3_tables)
+    composite_metric_ids = {
+        metric.id
+        for metric in METRICS
+        if CATEGORIES_BY_ID[metric.category].weight_in_overall > 0
+    }
+    frame = build_frame(con, h3_tables, composite_metric_ids)
     names = list(h3_tables)
     values = raw_value_matrix(
         con,
@@ -268,7 +295,10 @@ def analyze(ready_root: Path) -> dict:
     return {
         "generated": date.today().isoformat(),
         "method": {
-            "frame": "union of H3 r9 cells across all H3 score tables",
+            "frame": (
+                "union of positive-overall H3 r9 score tables "
+                "(stable public-composite population)"
+            ),
             "frame_cells": len(frame),
             "absence_policy": {
                 metric.id: (

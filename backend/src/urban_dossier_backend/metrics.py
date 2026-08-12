@@ -144,6 +144,9 @@ class MetricDefinition:
     source_relpath: str
     score_table: str
     indexed_table: str | None = None
+    # Independently built expansion scores are accepted only when this
+    # manifest validates their exact bytes and methodology version.
+    publication_manifest: str | None = None
     # Keys this metric reads out of the analyse-point ``current_state`` payload.
     # Ties the registry to the runtime rather than leaving it a parallel
     # document, and lets a test assert the fallback formulas stay in sync.
@@ -227,6 +230,19 @@ CATEGORIES: tuple[CategoryDefinition, ...] = (
             "overall, and cannot be raised by user priority either. Whether "
             "this becomes a fourth dimension or an independent risk flag is an "
             "open product decision (PROJECT_PLAN P0-02)."
+        ),
+    ),
+    CategoryDefinition(
+        id="environment",
+        label="Environment",
+        weight_in_overall=0.0,
+        map_driving=False,
+        detail_rankable=False,
+        notes=(
+            "Context-only in v3.9.0: NYCCAS is computed and shown but has "
+            "zero overall weight. Adding environment to the composite needs "
+            "an explicit multi-dimension weighting decision and fresh "
+            "sensitivity publication."
         ),
     ),
 )
@@ -621,6 +637,34 @@ METRICS: tuple[MetricDefinition, ...] = (
         indexed_table="building/aep_indexed.parquet",
         state_keys=("aep_count_250m",),
     ),
+    # ---- environment -------------------------------------------------------
+    MetricDefinition(
+        id="nyccas_no",
+        category="environment",
+        label="Modeled nitric oxide",
+        description=(
+            "NYCCAS land-use-regression annual-average nitric oxide surface, "
+            "looked up at H3 cell centroids without interpolation."
+        ),
+        unit="predicted annual-average NO (ppb)",
+        direction=Direction.LOWER_IS_BETTER,
+        spatial_grain=SpatialGrain.H3_R9,
+        temporal_grain=TemporalGrain.ANNUAL,
+        normalization=Normalization.EMPIRICAL_PERCENTILE,
+        weight_in_category=1.0,
+        source_dataset="NYCCAS Air Pollution Rasters",
+        source_relpath="raw-expansion/nyccas/AnnAvg_1_16_300m.zip",
+        score_table="environment/nyccas_no_scores_h3.parquet",
+        publication_manifest="environment/nyccas_no.manifest.json",
+        absence_means_zero=False,
+        data_vintage="Dec 2023-Dec 2024 modeled annual-average surface",
+        notes=(
+            "A statistical model of neighborhood ambient air quality, not "
+            "short-term or regulatory monitoring. Native pixels are 300 m; "
+            "one land centroid remains missing at official raster nodata. "
+            "Context-only with zero overall weight in v3.9.0."
+        ),
+    ),
 )
 
 
@@ -691,6 +735,8 @@ def build_category_config() -> dict:
             }
             if metric.indexed_table is not None:
                 entry["indexed_table"] = metric.indexed_table
+            if metric.publication_manifest is not None:
+                entry["publication_manifest"] = metric.publication_manifest
             sub_datasets[metric.id] = entry
         config[category.id] = {
             "label": category.label,
@@ -721,6 +767,7 @@ def metric_to_dict(metric: MetricDefinition) -> dict:
         "source_dataset": metric.source_dataset,
         "source_relpath": metric.source_relpath,
         "score_table": metric.score_table,
+        "publication_manifest": metric.publication_manifest,
         "state_keys": list(metric.state_keys),
         "methodology_version": metric.methodology_version,
         "data_vintage": metric.data_vintage,

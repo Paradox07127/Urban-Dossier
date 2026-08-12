@@ -8,6 +8,7 @@ export interface Scores {
   transit: number | null;
   safety: number | null;
   building?: number | null;
+  environment?: number | null;
 }
 
 export interface ChartSpec {

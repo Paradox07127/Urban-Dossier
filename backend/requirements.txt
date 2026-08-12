@@ -12,3 +12,7 @@ httpx>=0.27
 networkx>=3.0
 shapely>=2.0
 pyproj>=3.6
+# NYCCAS publishes a year-16 float32 GeoTIFF inside its complete raster blob.
+# Pillow reads that official TIFF directly; no GDAL runtime or reprojection of
+# the source pixels is needed.
+Pillow>=10.0

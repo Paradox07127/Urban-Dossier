@@ -17,6 +17,8 @@ from .presentation import score_color
 
 
 VEGA_LITE_SCHEMA = "https://vega.github.io/schema/vega-lite/v6.json"
+# Environment is context-only with zero overall weight. It gets its own
+# disclosed UI card and must not appear in a chart titled "composition".
 SCORE_ORDER = ["overall", "safety", "transit", "amenities", "building"]
 TREND_ORDER = ["collision", "rodent", "housing_violations"]
 TREND_LABELS = {

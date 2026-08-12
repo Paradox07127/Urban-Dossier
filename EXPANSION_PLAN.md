@@ -114,6 +114,15 @@ Eurostat EU Quality of Life 采取不聚合的仪表盘路线，只能作为维�
 | 社会经济 | ACS 5-year | ~~Census API `acs/acs5`~~ www2.census.gov 汇总文件 | tract | 年 | 自带 MOE；租金负担、收入。2026-08-11 实测：api.census.gov 已全面强制 API key（无 key 302 至 missing_key.html）；官方 table-based 汇总文件无 key 可用，估计值与 MOE 一致 |
 | 参考 | NYU Furman CoreData | furmancenter.org/coredata | sub-borough / CD | 年 | 粒度过粗，仅作交叉验证参照 |
 
+> 实施记录（2026-08-12）：NYCCAS year-16 NO 已作为首个 1.5 指标完成
+> raw hash 校验、原生栅格 H3 r9 centroid lookup、ready artifact + 3.9.0
+> manifest、注册表、相关性、1000 次敏感性、API、方法论页和详情卡全链路。
+> 7,414 个陆地 centroid 中发布 7,413 个；不插值，缺失不置零。由于它是
+> 约 300m 的年均统计模型而非监管监测，且六维权重尚未决策，当前仅作
+> context，综合分权重为 0。复现与限制见
+> [`docs/methodology/nyccas-no.md`](docs/methodology/nyccas-no.md)。其余七个
+> 快照仍未完成本节发布门，1.5 状态保持 partial。
+
 粒度处理规则（采纳 AARP 先例，披露而非硬插值）：
 
 - 点数据（311 / HPD / 学校 / 销售）直接聚合到 H3 r9；

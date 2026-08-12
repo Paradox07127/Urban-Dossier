@@ -81,6 +81,7 @@ from urban_dossier_backend.metrics import (  # noqa: E402
     Direction,
     METHODOLOGY_VERSION,
 )
+from urban_dossier_backend.publications import ready_publication_valid  # noqa: E402
 
 WEIGHT_NOISE = 0.25          # COINr get_noisy_weights, NoiseFactor 0.25
 INTERVAL = (2.5, 97.5)       # CDC PLACES convention
@@ -106,10 +107,23 @@ def load_matrices(ready_root: Path) -> tuple[list[str], list[str], np.ndarray, d
     """Frame cells, metric ids, nominal weights, and one score matrix per
     normalization. Score matrices are cells x metrics with NaN where absent."""
     con = duckdb.connect()
-    metrics = [m for m in h3_metrics() if (ready_root / m.score_table).exists()]
+    metrics = [
+        metric
+        for metric in h3_metrics()
+        if ready_publication_valid(
+            ready_root,
+            metric.score_table,
+            metric.publication_manifest,
+        )
+    ]
+    positive_weight_metrics = [
+        metric
+        for metric in metrics
+        if CATEGORIES_BY_ID[metric.category].weight_in_overall > 0
+    ]
     union = " UNION ".join(
         f"SELECT h3_r9 FROM read_parquet('{(ready_root / m.score_table).as_posix()}')"
-        for m in metrics
+        for m in positive_weight_metrics
     )
     frame = sorted(r[0] for r in con.execute(union).fetchall())
     index = {c: i for i, c in enumerate(frame)}
@@ -122,7 +136,12 @@ def load_matrices(ready_root: Path) -> tuple[list[str], list[str], np.ndarray, d
             f"SELECT h3_r9, score, raw_count FROM read_parquet('{(ready_root / metric.score_table).as_posix()}')"
         ).fetchall()
         for h3_id, score, count in rows:
-            i = index[h3_id]
+            i = index.get(h3_id)
+            if i is None:
+                # Zero-overall context categories may cover land cells where
+                # no public-composite metric exists. They are audited inputs,
+                # but must not expand the population ranked as `overall`.
+                continue
             published[i, j] = float(score)
             raw_values[i, j] = float(count or 0)
 
@@ -358,7 +377,11 @@ def write_publication_manifest(
     inputs = {}
     for metric in h3_metrics():
         source = ready_root / metric.score_table
-        if source.exists():
+        if ready_publication_valid(
+            ready_root,
+            metric.score_table,
+            metric.publication_manifest,
+        ):
             inputs[metric.id] = {
                 "path": metric.score_table,
                 "sha256": _sha256(source),
