@@ -1,0 +1,66 @@
+{
+  "generated": "2026-08-11",
+  "seed": 20260811,
+  "draws": 1000,
+  "cells": 7205,
+  "metrics": [
+    "collision",
+    "rodent",
+    "311_sanitation",
+    "collision_transport",
+    "subway",
+    "bus",
+    "bike_routes",
+    "open_streets",
+    "trees",
+    "public_toilets",
+    "linknyc",
+    "restaurant_context",
+    "facilities",
+    "housing_violations",
+    "aep"
+  ],
+  "design": {
+    "weight_noise": 0.25,
+    "normalizations": [
+      "percentile",
+      "minmax",
+      "zscore"
+    ],
+    "toggles": [
+      "collision_transport",
+      "311_sanitation"
+    ],
+    "missing_rules": [
+      "renormalize",
+      "impute_citywide_mean"
+    ],
+    "interval_percentiles": [
+      2.5,
+      97.5
+    ]
+  },
+  "headline": {
+    "median_interval_width": 37.61,
+    "p95_interval_width": 55.57,
+    "median_interval_width_production_norm": 12.31,
+    "mean_abs_rank_shift": 639.2,
+    "rank_shift_share_of_city": 0.0887,
+    "toggle_effects": {
+      "collision_transport": {
+        "mean_abs_score_delta": 2.66,
+        "p95_abs_score_delta": 5.14
+      },
+      "311_sanitation": {
+        "mean_abs_score_delta": 2.7,
+        "p95_abs_score_delta": 5.55
+      }
+    },
+    "imputation_mean_abs_score_delta": 10.82,
+    "normalization_citywide_means": {
+      "percentile": 50.74,
+      "minmax": 51.19,
+      "zscore": 50.14
+    }
+  }
+}
