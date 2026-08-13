@@ -13,7 +13,7 @@ profiles instead of assuming one NVIDIA machine.
 
 | Profile | Role | Inference | Data/vector path | Status |
 | --- | --- | --- | --- | --- |
-| `cuda-x86` | Primary production/workstation | Docker vLLM + Nemotron NVFP4 | DuckDB/Parquet; optional cuVS | Validated 2026-08-02 |
+| `cuda-x86` | Primary production/workstation | Docker vLLM + Nemotron NVFP4 | DuckDB/Parquet; optional cuVS | Base stack validated 2026-08-02; vLLM revalidated 2026-08-12 |
 | `dgx-spark` | GB10 deployment | DGX-specific vLLM launcher | RAPIDS/cuVS-capable | Preserved independently |
 | `mac` | Development and UI work | Optional MLX/llama.cpp endpoint | DuckDB + CPU vector index | Development profile |
 | `test` | CI/contract checks | Stub or disabled | Small fixtures | Planned baseline |
@@ -44,7 +44,8 @@ Browser
 Current validated runtime:
 
 - NemoClaw `0.0.100`, OpenShell `0.0.85`, OpenClaw `2026.7.1`;
-- vLLM `0.23.0`, digest-pinned Docker image;
+- vLLM `0.27.1`, digest-pinned Docker image; Nano was regression-tested on
+  this image on 2026-08-12;
 - Node.js 24 and Python 3.12 environment managed with `uv`;
 - FastAPI runs as a user-level systemd service;
 - the production agent uses a minimal workspace, no Skills, and only the
@@ -166,6 +167,15 @@ state and leaves a 1,300,889-token KV cache. Reducing batched tokens to 8192
 lowered measured throughput, so 32768 remains the default. FP8 KV is retained
 for performance, but must be compared with BF16 on a fixed Urban Dossier answer
 quality set before a final production release.
+
+The production model remains Nemotron 3 Nano. Nemotron 3.5 Lightning has
+passed the local C1/C4 performance and qualitative A/B on the same vLLM
+version, but it is still a candidate on `:8002`: the NemoClaw/OpenShell route
+has not been repointed and the OpenMDW-1.1 license review remains open.
+Nemotron 3 Super also fits on the 96 GiB card, but only as an isolated
+single-GPU reference workload, not a co-resident production service. See
+[`MODEL_CANDIDATES.md`](MODEL_CANDIDATES.md) for measured results and the
+remaining promotion gates.
 
 The scripts in `scripts/vllm/` are the separate DGX Spark launch profile. See
 [`scripts/vllm/README.md`](scripts/vllm/README.md) before using them.

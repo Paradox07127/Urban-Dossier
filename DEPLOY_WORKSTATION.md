@@ -8,7 +8,8 @@ between the two profiles.
 Dataset layers, cleaning semantics, manifests, and publication gates are shared
 with Mac and DGX Spark; see [`DATA_ARCHITECTURE.md`](DATA_ARCHITECTURE.md).
 
-Validated 2026-08-02:
+Base stack validated 2026-08-02; inference image and full Nano agent path
+revalidated 2026-08-12:
 
 - x86_64 Linux and RTX PRO 6000 Blackwell Workstation Edition;
 - Docker Engine + NVIDIA Container Toolkit;
@@ -284,6 +285,14 @@ The selected profile leaves 1,300,889 KV-cache tokens and a theoretical 39.7
 concurrent 32K requests. FP8 startup warns that the checkpoint does not provide
 all q/prob scaling factors; run a BF16 quality A/B before final release rather
 than treating the memory benchmark as an accuracy result.
+
+The 2026-08-12 vLLM 0.27.1 upgrade was regression-tested with the incumbent
+Nano model: C1 output throughput was 308.5 tok/s (309 tok/s on the previous
+0.23 baseline), the Gateway smoke test returned `gateway-route-ok`, and the
+five dedicated-agent NemoClaw tests passed. Lightning and Super remain
+explicit candidate services; starting them does not change the production
+model or the sandbox's configured model name. Follow
+[`MODEL_CANDIDATES.md`](MODEL_CANDIDATES.md) before running or promoting one.
 
 Verify:
 

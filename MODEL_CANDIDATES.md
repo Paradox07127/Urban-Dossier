@@ -2,8 +2,9 @@
 
 Decision record for the 2026-08-12 evaluation of two candidate models against
 the production LLM, run side by side on the x86 workstation
-(RTX PRO 6000 Blackwell, 96 GiB). Production serving is unchanged until the
-promotion checklist at the bottom passes.
+(RTX PRO 6000 Blackwell, 96 GiB). The production image has been upgraded to
+vLLM 0.27.1 and revalidated with Nano, but the production model remains Nano
+until the promotion checklist at the bottom passes.
 
 | Role | Model | Port | Weights |
 |---|---|---|---|
@@ -54,7 +55,8 @@ at 4× the weight footprint.
 
 ## What changes operationally with Lightning 3.5
 
-- **Serving stack:** requires vLLM ≥ 0.27.1 (production runs 0.23.0). New
+- **Serving stack:** requires vLLM ≥ 0.27.1 (production now runs 0.27.1).
+  New
   flags: `--mamba-backend flashinfer`, `--mamba-cache-mode align`, built-in
   `nemotron_v3` reasoning parser (the `nano_v3_reasoning_parser.py` plugin is
   obsolete for this model). Tool calling stays `qwen3_coder`.
@@ -74,10 +76,11 @@ at 4× the weight footprint.
 
 The card's stated minimum is 1× B200 (192 GiB) or DGX Spark (128 GiB
 unified). 80.3 GiB of weights on our 96 GiB card leaves ~10 GiB for KV +
-Mamba state at `--gpu-memory-utilization 0.92`, hence the compose defaults of
-32K context and 2 sequences. It cannot run concurrently with any other GPU
-service. Treat it as a quality reference point / offline second-opinion
-model, not a production candidate on this hardware.
+Mamba state at `--gpu-memory-utilization 0.92`. The on-card run completed
+without OOM and measured 356,937 KV-cache tokens, so the compose defaults are
+now 64K context and 4 sequences. It still cannot run concurrently with any
+other GPU service. Treat it as a quality reference point / offline
+second-opinion model, not a production candidate on this hardware.
 
 ## Running the comparison
 
@@ -118,8 +121,14 @@ python3 scripts/vllm/ab_bench.py \
 
 ## Status
 
-- 2026-08-12: weights downloading; compose services and benchmark harness
-  added. Local A/B results to be appended below.
+- 2026-08-12: Nano and Lightning weights are present; both services started
+  successfully and completed the A/B below. Super also completed its isolated
+  on-card run without OOM.
+- The production vLLM image is upgraded and digest-pinned, but the served model
+  and NemoClaw/OpenShell route still point to Nano. Lightning promotion is
+  therefore **not complete**.
+- The embedding service and Super service are optional and stopped in the
+  2026-08-12 review snapshot; Nano `:8000` and Lightning `:8002` were online.
 - Validated image: `vllm/vllm-openai:v0.27.1` =
   `sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967`
   (pull digest to pin at promotion time).

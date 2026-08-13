@@ -14,6 +14,13 @@
 Target: NVIDIA GB10 Grace Blackwell (Acer Veriton GN100), ARM64, 128 GiB unified memory.
 Run-through this list end-to-end after `git pull` on the box. Each section is independently checkable; do not skip ordering.
 
+Current status (reviewed 2026-08-12): the Nemotron launcher provides only
+`demo`, `balanced`, and `long-context` profiles. The Qwen embedding profile
+described below is still unimplemented and has not been validated on ARM64.
+Do not copy the x86 Docker compose service into this checklist or run the
+nonexistent `--profile embedding`; complete that launcher work and its GB10
+smoke test before enabling RAG ingestion on this profile.
+
 ---
 
 ## Phase 0 — Pre-flight
@@ -35,8 +42,11 @@ Run-through this list end-to-end after `git pull` on the box. Each section is in
 
 ### Embedding model (Qwen3-Embedding-4B served by a second vLLM instance)
 - [ ] Download model: `huggingface-cli download Qwen/Qwen3-Embedding-4B`
-- [ ] Start: `bash scripts/vllm/start_vllm.sh --profile embedding &`
-       (this profile to be added to `start_vllm.sh`; binds `:8001`, `--task embed`)
+- [ ] Add a dedicated ARM64 embedding launcher/profile that binds `:8001` and
+      uses vLLM's pooling/embedding runner; `start_vllm.sh` does not currently
+      implement this profile
+- [ ] Start the new profile only after its dry-run output and vLLM version
+      compatibility have been reviewed on GB10
 - [ ] Verify: `curl -s http://localhost:8001/v1/models | jq '.data[].id'` returns `Qwen/Qwen3-Embedding-4B`
 - [ ] Verify dim by sending a test embedding request:
       `curl -s http://localhost:8001/v1/embeddings -H 'Content-Type: application/json' -d '{"model":"Qwen/Qwen3-Embedding-4B","input":"test"}' | jq '.data[0].embedding | length'`
@@ -197,7 +207,9 @@ The following three measurements are required. Capture the raw numbers, paste th
 - [x] Dataset count and the shared 18-source contract are documented in `DATA_ARCHITECTURE.md`
 - [ ] Add a `## Master Agent Skill` section to README pointing to `skills/urban_dossier_analyst/SKILL.md`
 - [ ] Add a `## RAG Pipeline` section pointing to `rag/README.md`
-- [ ] Update `## Quick Start` to include the second vLLM instance (`--profile embedding`) on `:8001`
+- [ ] After the DGX embedding launcher exists and passes its ARM64 smoke test,
+      update Quick Start with the actual command for the second vLLM instance
+      on `:8001`
 - [ ] Capture screenshot of agent ReAct trace, embed in README
 
 ---
