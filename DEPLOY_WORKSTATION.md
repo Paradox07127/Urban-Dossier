@@ -12,7 +12,9 @@ Validated 2026-08-02:
 
 - x86_64 Linux and RTX PRO 6000 Blackwell Workstation Edition;
 - Docker Engine + NVIDIA Container Toolkit;
-- vLLM 0.23.0 in a digest-pinned container;
+- vLLM 0.27.1 in a digest-pinned container (updated 2026-08-12 for the
+  Nemotron 3.5 Lightning candidate; rollback digest for 0.23.0 recorded in
+  `deploy/compose.gpu.yml`);
 - NemoClaw 0.0.100, OpenShell 0.0.85, OpenClaw 2026.7.1;
 - Python 3.12 with `uv`, Node.js 24;
 - repository at `/mnt/data/Urban-Dossier`;
