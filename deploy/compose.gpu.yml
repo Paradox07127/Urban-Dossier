@@ -23,7 +23,10 @@ x-hf-cache: &hf-cache ${URBAN_DOSSIER_STATE_ROOT:-/mnt/data/urban-dossier-state}
 
 services:
   llm:
-    image: vllm/vllm-openai@sha256:6d8429e38e3747723ca07ee1b17972e09bb9c51c4032b266f24fb1cc3b22ed8f
+    # vLLM 0.27.1, validated 2026-08-12 (previous: 0.23.0 @sha256:6d8429e3…).
+    # 0.27.1 is required by the Nemotron 3.5 Lightning candidate; the incumbent
+    # Nano checkpoint was regression-tested on it the same day.
+    image: vllm/vllm-openai@sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967
     profiles: [inference]
     restart: unless-stopped
     # OpenShell rewrites the sandbox's inference.local route to
@@ -118,8 +121,12 @@ services:
       # for A/B runs: 21.6 GiB weights + 1.3 GiB drafter + a few GiB of cache.
       - --gpu-memory-utilization
       - ${LIGHTNING_GPU_MEMORY_UTILIZATION:-0.30}
+      # Measured 2026-08-12 on this card at 0.30: 1,337,288 KV-cache tokens
+      # (40.8x concurrency at 32K).  The hybrid's tiny attention share makes
+      # long context cheap, so serve 128K by default — still ~10x at full
+      # length, and AA-LCR is where this model beats the incumbent hardest.
       - --max-model-len
-      - ${LIGHTNING_MAX_MODEL_LEN:-32768}
+      - ${LIGHTNING_MAX_MODEL_LEN:-131072}
       - --max-num-seqs
       - ${LIGHTNING_MAX_NUM_SEQS:-8}
       - --max-num-batched-tokens
@@ -179,10 +186,13 @@ services:
       # and 2-sequence cap.  Expect OOM to be a real possible outcome.
       - --gpu-memory-utilization
       - ${SUPER_GPU_MEMORY_UTILIZATION:-0.92}
+      # Measured 2026-08-12: weights + non-torch 79.5 GiB, KV cache 5.68 GiB
+      # = 356,937 tokens (10.9x at 32K) — no OOM.  64K context at 4 seqs
+      # still leaves ~2.7x headroom at full length.
       - --max-model-len
-      - ${SUPER_MAX_MODEL_LEN:-32768}
+      - ${SUPER_MAX_MODEL_LEN:-65536}
       - --max-num-seqs
-      - ${SUPER_MAX_NUM_SEQS:-2}
+      - ${SUPER_MAX_NUM_SEQS:-4}
       - --kv-cache-dtype
       - fp8
       # float16 Mamba state per the official recipe: memory-constrained hosts

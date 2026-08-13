@@ -150,4 +150,45 @@ Qualitative, from the captured completions:
 - Lightning thinks longer by default (mean ~1062 vs ~785 completion tokens).
   With `max_tokens` ≤ 1024 it can exhaust the budget inside the think block
   and return empty `content` — the agent path must keep its existing
-  truncation fallback and a ≥4K completion budget.
+  truncation fallback and a ≥4K completion budget. The two 1024-token
+  wrap-up calls in `agent_loop.py` now set `enable_thinking: False`
+  (they only ever want a direct answer); `agent_service.py`'s small-budget
+  calls already did.
+
+## 2026-08-12 Super-120B on-card results (:8003, everything else stopped)
+
+It fits. Weights + non-torch 79.5 GiB, KV cache 5.68 GiB = 356,937 tokens
+(10.9× concurrency at 32K), engine init 127 s, **no OOM**, zero errors.
+
+| Metric | Super 120B | Lightning 3.5 (same harness) |
+|---|---:|---:|
+| C1 output throughput | 124 tok/s | 493 tok/s |
+| C4 output throughput | 200 tok/s | 1222 tok/s |
+| C1 TTFT p95 | 1.0 s | 0.061 s |
+| C4 TTFT p50 | 6.5 s¹ | 0.071 s |
+
+¹ Measured at `max_num_seqs 2`, so C4 queued; defaults now raised to 4.
+
+Qualitatively: same clean reasoning separation, same strict
+evidence-discipline refusals as Lightning, and notably *terser* thinking
+(mean ~348 completion tokens at C1). Usable as a single-stream
+second-opinion / offline batch model; not a serving replacement — Lightning
+gives 4–6× the throughput on this card.
+
+## 2026-08-12 framework updates applied
+
+- Production `llm` service image bumped to
+  `vllm/vllm-openai@sha256:0a51ea5b…` (v0.27.1); previous 0.23.0 digest kept
+  in a comment as the rollback pair (rollback = old digest + Nano, both
+  validated together). `--moe-backend flashinfer_cutlass` confirmed still a
+  valid choice in 0.27.1 via `vllm serve --help`. A full serve regression of
+  Nano-on-0.27.1 was not run (container start was permission-blocked in the
+  session); run one C1 smoke before the next production restart, or promote
+  Lightning at the same time.
+- vLLM 0.27.1 adds `--moe-backend flashinfer_b12x` — "FlashInfer CuteDSL
+  fused MoE for SM12x (RTX Pro 6000 / DGX Spark)". The 0.23 comment about
+  b12x rejecting the Nemotron-H layout may be obsolete; benchmarking it vs
+  `marlin` for Lightning is the obvious next perf experiment.
+- Context defaults retuned from measured KV capacity: Lightning 32K → 128K
+  (1.34M KV tokens at 0.30 leaves ~10× at full length; long context is its
+  headline gain), Super 32K/2 seqs → 64K/4 seqs (357K KV tokens measured).

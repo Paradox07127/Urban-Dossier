@@ -295,6 +295,13 @@ def run_agent(
                         tool_choice="none",
                         temperature=0.2,
                         max_tokens=1024,
+                        # Wrap-up wants a direct answer; with thinking on,
+                        # reasoning models (Nemotron 3.5 measured at ~1K
+                        # thinking tokens) can exhaust this budget inside the
+                        # think block and return empty content.
+                        extra_body={
+                            "chat_template_kwargs": {"enable_thinking": False}
+                        },
                     )
                     final_answer = _message_text(_to_dict(wrapup.choices[0].message))
                 except Exception as exc:  # noqa: BLE001
@@ -404,6 +411,11 @@ def run_agent(
                 tool_choice="none",
                 temperature=0.2,
                 max_tokens=1024,
+                # Same rationale as the truncation wrap-up above: direct
+                # answer only, no think block eating the 1024 budget.
+                extra_body={
+                    "chat_template_kwargs": {"enable_thinking": False}
+                },
             )
             final_answer = _message_text(_to_dict(wrapup.choices[0].message))
         except Exception as exc:  # noqa: BLE001
