@@ -200,3 +200,47 @@ gives 4–6× the throughput on this card.
 - Context defaults retuned from measured KV capacity: Lightning 32K → 128K
   (1.34M KV tokens at 0.30 leaves ~10× at full length; long context is its
   headline gain), Super 32K/2 seqs → 64K/4 seqs (357K KV tokens measured).
+
+## 2026-08-13 business eval (EXPANSION_PLAN 4.1) — first same-code side-by-side
+
+The fixed business evaluation now exists (`evals/agent/model_cases.json` +
+`scripts/vllm/business_eval.py`: the REAL production agent loop pointed at
+each endpoint, tools dispatching against the live backend). Numbers below are
+the post-fix run — after the eval's own day-one catches were fixed
+(/api/search resurrection, strict tool args, range filters), so both models
+ran the same healed tool layer. Report:
+`/mnt/data/urban-dossier-state/evals/business_eval_20260813_final_nano_vs_lightning.json`.
+
+| Metric (20 runnable cases + 2 gated skips) | Nano 3 (current) | Lightning 3.5 |
+|---|---:|---:|
+| Hard-check result | 21 pass / **1 fail** | 20 pass / 2 warn / **0 fail** |
+| Soft warns (derived-number faithfulness) | 0 | 2 |
+| Case wall p50 | 14.9 s | **9.5 s** |
+| Case wall max | 49.6 s | **25.1 s** |
+| Completion tokens, whole set | 83.5k | **41.1k** |
+
+- Nano's fail is `tool-compare-two-places` — it looped `search_address` and
+  never reached `compare_neighborhoods`. Across four runs of that case this
+  session (two pre-fix, two post-fix) Nano failed it twice and Lightning
+  once: comparison-tool selection is flaky on BOTH models at temperature
+  0.2. Single runs must not decide a promotion; run the set N times.
+- Lightning emitted two out-of-contract tool calls (`final_answer`, gated
+  `retrieve_dataset_docs`); the loop's not-released refusal bounced both and
+  it recovered on its own — the guard behaves as designed under a model that
+  probes it.
+- Lightning's two warns are derived figures (differences/averages computed
+  from cited counts), the soft check's designed tolerance zone, not
+  invention.
+- Both models refused the no-data cases (rent, schools, 2027 forecast)
+  cleanly this run.
+
+Business-behavior evidence now points the same way as the throughput A/B:
+Lightning is faster, cheaper, and no less disciplined on this set.
+Promotion still waits on the checklist above: gateway smoke with the sandbox
+repointed (step 3) and the OpenMDW-1.1 license review (step 4, user
+decision).
+
+Operational note: the 128K context retune made the 0.30 GPU fraction
+unbootable for the Lightning service (cache-blocks OOM, crash loop); compose
+default is now 0.38 — 135 s to ready alongside production Nano, 76 GiB
+steady total.
