@@ -69,7 +69,17 @@ from enum import Enum
 #        registry's metric-aware absence policy, so the construct's evidence
 #        sources are complementary instead of
 #        near-duplicates. Weights unchanged.
-METHODOLOGY_VERSION = "3.9.0"
+# 3.10.0 building's status resolved (P0-02, product decision 2026-08-12):
+#        an independent Risk Flag, not a fourth weighted dimension. Weights
+#        and every 0-100 score are unchanged -- the version moves because the
+#        public contract grows a new interpreted surface (absolute,
+#        threshold-based flag levels served beside the scores; spec in
+#        risk_flags.py). Rationale: building's metrics measure housing-stock
+#        distress, which is a warning rather than a wellbeing dimension, and
+#        they entangle with the sanitation construct (rho 0.93 vs housing
+#        violations) -- weighting them into overall would reopen the double
+#        count the 3.8/3.9 line closed.
+METHODOLOGY_VERSION = "3.10.0"
 
 
 class Direction(str, Enum):
@@ -230,10 +240,12 @@ CATEGORIES: tuple[CategoryDefinition, ...] = (
         map_driving=False,
         detail_rankable=False,
         notes=(
-            "Weight 0: building scores are computed and shown but never reach "
-            "overall, and cannot be raised by user priority either. Whether "
-            "this becomes a fourth dimension or an independent risk flag is an "
-            "open product decision (PROJECT_PLAN P0-02)."
+            "Weight 0, permanently, by decision (P0-02 resolved 2026-08-12): "
+            "building is an independent Risk Flag, not a wellbeing dimension. "
+            "The 0-100 category score remains for relative reading; the flag "
+            "in risk_flags.py is the interpreted surface, absolute and "
+            "threshold-based, because a warning must be able to say 'nothing "
+            "here' -- which a citywide percentile cannot."
         ),
     ),
     CategoryDefinition(
@@ -813,6 +825,12 @@ def metric_to_dict(metric: MetricDefinition) -> dict:
     }
 
 
+def _building_risk_flag_spec() -> dict:
+    from .risk_flags import BUILDING_RISK_FLAG_SPEC
+
+    return BUILDING_RISK_FLAG_SPEC
+
+
 def registry_to_dict() -> dict:
     """The whole registry, for `GET /api/metrics`."""
     return {
@@ -840,6 +858,9 @@ def registry_to_dict() -> dict:
             }
             for src, ids in sorted(duplicated_sources().items())
         ],
+        # Interpreted surfaces that are not 0-100 metrics: served here so the
+        # methodology page renders the real contract, not a prose copy of it.
+        "risk_flags": [_building_risk_flag_spec()],
         # Same idea one step weaker: different sources, overlapping subject.
         "overlapping_metrics": [
             {

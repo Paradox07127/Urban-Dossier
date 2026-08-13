@@ -103,7 +103,16 @@ export interface DetailPreviewResponse {
   // Absent when the artifact has not been generated -- absence is disclosed,
   // never faked.
   score_uncertainty?: ScoreUncertainty | null;
+  // P0-02's answer: building risk as an absolute threshold flag beside the
+  // relative scores. `unknown` is absence of data, never absence of risk.
+  building_risk_flag?: BuildingRiskFlag;
   preview_ready: boolean;
+}
+
+export interface BuildingRiskFlag {
+  level: 'serious' | 'elevated' | 'watch' | 'none' | 'unknown';
+  reasons: string[];
+  counts: Record<string, number>;
 }
 
 export interface ScoreCoverage {

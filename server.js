@@ -12,7 +12,7 @@ const {
   buildMethodologyPublication,
   MethodologyPublicationError,
 } = require('./scripts/methodology-publication');
-const EXPECTED_METHODOLOGY_VERSION = '3.9.0';
+const EXPECTED_METHODOLOGY_VERSION = '3.10.0';
 const EXPECTED_BUILDING_SCORING_CONTRACT = 'point-radius-haversine-v1';
 
 const app = express();

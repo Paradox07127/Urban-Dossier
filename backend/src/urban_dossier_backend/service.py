@@ -17,6 +17,7 @@ from .providers.direct_provider import DirectQueryDataProvider
 from .providers.skill_provider import SkillDataProvider
 from .report import generate_action_brief
 from .secondary_scoring import compute_scores_with_coverage
+from .risk_flags import building_risk_flag
 from .uncertainty import score_uncertainty
 from .trend_engine import compute_all_trends
 from .gpu_accel import get_gpu_status
@@ -251,6 +252,9 @@ def _build_detail_payload(
         # artifact has not been generated -- absent uncertainty is disclosed
         # as absent, never faked as a point estimate's confidence.
         "score_uncertainty": uncertainty_payload,
+        # P0-02's answer: building risk as an absolute, threshold-based flag
+        # beside the relative scores. unknown means no data, never "no risk".
+        "building_risk_flag": building_risk_flag(current_state),
         "baselines": baselines,
         "enriched_context": point_payload.get("enriched_context", {}),
     }

@@ -80,6 +80,9 @@ function buildMethodologyPublication(registryValue, coverageValue, expectedVersi
     version_verified: true,
     categories: registry.categories,
     metrics: registry.metrics,
+    // Interpreted non-score surfaces (the building Risk Flag). Passed through
+    // verbatim: the registry is the author, this builder only gates versions.
+    risk_flags: Array.isArray(registry.risk_flags) ? registry.risk_flags : [],
     duplicated_sources: Array.isArray(registry.duplicated_sources)
       ? registry.duplicated_sources
       : [],

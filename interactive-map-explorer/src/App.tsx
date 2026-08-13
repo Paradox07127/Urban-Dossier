@@ -1089,6 +1089,40 @@ export default function App() {
                   <VegaChart chart={preview.chart_specs.score_distribution} />
                 )}
 
+                {/* Building Risk Flag -- P0-02's resolution. Status colours
+                    per the dataviz rules: reserved semantics, shipped with an
+                    icon and a label, never colour alone. `none` renders as a
+                    quiet line and `unknown` says "no data" -- a flag that
+                    only ever appears when something is wrong trains people to
+                    forget it exists. */}
+                {preview?.building_risk_flag && (() => {
+                  const flag = preview.building_risk_flag;
+                  const STYLE: Record<string, { color: string; icon: string; label: string }> = {
+                    serious: { color: '#d03b3b', icon: '⬢', label: 'Serious building risk' },
+                    elevated: { color: '#ec835a', icon: '⬢', label: 'Elevated building risk' },
+                    watch: { color: '#b8860b', icon: '⬡', label: 'Building watch' },
+                    none: { color: 'var(--muted-foreground, #777)', icon: '○', label: 'No building risk signals' },
+                    unknown: { color: 'var(--muted-foreground, #777)', icon: '◌', label: 'Building risk: no data' },
+                  };
+                  const style = STYLE[flag.level] ?? STYLE.unknown;
+                  return (
+                    <div
+                      className="rounded-md border px-4 py-2.5 text-sm"
+                      style={{ borderColor: flag.level === 'none' || flag.level === 'unknown' ? undefined : style.color }}
+                      title={flag.reasons.join('; ')}
+                    >
+                      <span className="font-semibold" style={{ color: style.color }}>
+                        {style.icon} {style.label}
+                      </span>
+                      {flag.level !== 'none' && flag.level !== 'unknown' && (
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {flag.reasons.join(' · ')}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
                 {/* Method footer: version + the door to item 1.6's page. */}
                 <div className="flex items-center justify-between font-mono text-[10px] text-muted-foreground/70">
                   <span>

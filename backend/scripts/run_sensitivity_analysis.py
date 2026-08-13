@@ -540,13 +540,22 @@ def write_publication_manifest(
     """Publish the exact artifact/input snapshot accepted by the API."""
     inputs = {}
     published_zip = False
-    for metric in analysis_metrics():
+    # Scope MUST mirror uncertainty._INPUT_PATHS exactly: every registered
+    # h3/zip metric table that exists on disk, whether or not the composite
+    # consumes it. The writer used to record only publication-gated analysis
+    # inputs, so the day two zero-weight context metrics (nyccas_no,
+    # heat_vulnerability) joined the registry, the loader demanded stamps the
+    # writer never wrote and every interval silently vanished as
+    # "manifest mismatch". Over-recording is conservative-safe: a context
+    # table refresh invalidates intervals it cannot change, which costs one
+    # cheap regeneration; under-recording costs the feature.
+    from urban_dossier_backend.metrics import METRICS as _ALL_METRICS
+
+    for metric in _ALL_METRICS:
+        if metric.spatial_grain.value not in {"h3_r9", "zip"}:
+            continue
         source = ready_root / metric.score_table
-        if ready_publication_valid(
-            ready_root,
-            metric.score_table,
-            metric.publication_manifest,
-        ):
+        if source.exists():
             inputs[metric.id] = {
                 "path": metric.score_table,
                 "sha256": _sha256(source),

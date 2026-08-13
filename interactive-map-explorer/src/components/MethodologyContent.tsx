@@ -33,6 +33,12 @@ export interface MethodologyPublication {
     notes: string | null;
   }>;
   metrics: MetricRow[];
+  risk_flags?: Array<{
+    id: string;
+    label: string;
+    basis: string;
+    levels: Array<{ level: string; rule: string; meaning: string }>;
+  }>;
   dataset_coverage: {
     provider: string;
     provider_ready: boolean;
@@ -198,6 +204,27 @@ export function MethodologyContent({ publication }: { publication: MethodologyPu
           </table>
         </div>
       </section>
+
+      {publication.risk_flags && publication.risk_flags.length > 0 && (
+        <section>
+          <h2 className="ud-display mb-3 text-xl">Risk flags</h2>
+          {publication.risk_flags.map((flag) => (
+            <div key={flag.id} className="rounded-md border border-border px-4 py-3">
+              <div className="text-sm font-semibold text-foreground">{flag.label}</div>
+              <p className="mt-0.5 text-xs text-muted-foreground">{flag.basis}</p>
+              <div className="mt-2 space-y-1 text-xs leading-snug text-muted-foreground">
+                {flag.levels.map((entry) => (
+                  <p key={entry.level}>
+                    <span className="font-mono text-foreground">{entry.level}</span>
+                    {' — '}{entry.meaning}{' '}
+                    <span className="font-mono text-muted-foreground/70">({entry.rule})</span>
+                  </p>
+                ))}
+              </div>
+            </div>
+          ))}
+        </section>
+      )}
 
       <section>
         <div className="mb-3 flex items-end justify-between gap-3">
