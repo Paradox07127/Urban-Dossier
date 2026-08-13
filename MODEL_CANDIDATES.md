@@ -117,3 +117,37 @@ python3 scripts/vllm/ab_bench.py \
 - Validated image: `vllm/vllm-openai:v0.27.1` =
   `sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967`
   (pull digest to pin at promotion time).
+
+## 2026-08-12 local A/B results (Nano :8000 @ 0.45 vs Lightning :8002 @ 0.30)
+
+`ab_bench.py`, 8 prompts, max_tokens 4096, prefix cache warm, both models
+co-resident (steady VRAM ≈ 70 GiB total):
+
+| Metric | Nano 3 (current) | Lightning 3.5 | Delta |
+|---|---:|---:|---:|
+| C1 output throughput | 309 tok/s | 493 tok/s | **+60%** |
+| C4 output throughput | 748 tok/s | 1222 tok/s | **+63%** |
+| C1 TTFT p95 (warm) | 0.060 s | 0.061 s | — |
+| C4 TTFT p95 (warm) | 0.083 s | 0.088 s | — |
+| Cold TTFT p50 (first run) | 1.5 s | 1.4 s | — |
+| Errors | 0 | 0 | — |
+
+The throughput gap is DSpark speculative decoding doing its job at low
+concurrency — and it holds even at C4.
+
+Qualitative, from the captured completions:
+
+- Reasoning/content separation clean on both (vLLM 0.27 renames the response
+  field `reasoning_content` → `reasoning`; `agent_loop.py` already handles
+  both, `ab_bench.py` now does too).
+- Tool calling: both emit identical, correct `score_neighborhood` calls
+  through the `qwen3_coder` parser.
+- **Stricter evidence discipline:** given the production scoring rubric and a
+  question with no evidence table attached, Lightning refuses and says the
+  evidence is missing, where Nano invents a plausible answer. For an
+  evidence-cited dossier product this is the desired behavior, but prompts
+  that *expect* the model to improvise must attach their evidence.
+- Lightning thinks longer by default (mean ~1062 vs ~785 completion tokens).
+  With `max_tokens` ≤ 1024 it can exhaust the budget inside the think block
+  and return empty `content` — the agent path must keep its existing
+  truncation fallback and a ≥4K completion budget.

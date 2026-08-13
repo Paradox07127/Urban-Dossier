@@ -112,7 +112,10 @@ def one_request(base_url: str, model: str, prompt: str, max_tokens: int,
             for choice in event.get("choices", []):
                 delta = choice.get("delta", {})
                 piece = delta.get("content") or ""
-                thinking = delta.get("reasoning_content") or ""
+                # vLLM <=0.23 streams thinking as `reasoning_content`;
+                # 0.27 renamed the field to `reasoning`.
+                thinking = (delta.get("reasoning_content")
+                            or delta.get("reasoning") or "")
                 if (piece or thinking) and ttft is None:
                     ttft = time.monotonic() - start
                 if piece:
