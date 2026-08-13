@@ -18,6 +18,11 @@ Usage:
 The prompt set is Urban-Dossier-flavoured: the same scoring-rubric system
 prompt the backend sends on every /api/analyze-point, plus mixed analytical
 questions, so prefix caching and reasoning behave as they do in production.
+
+Exit code 0 means the run is fit to compare: every endpoint answered, every
+request succeeded, every prompt completed. Exit 1 means it is not, and says
+why on stderr -- the report is still written either way, because partial
+numbers are worth reading even when they are not worth deciding on.
 """
 
 from __future__ import annotations
@@ -167,6 +172,38 @@ def run_level(base_url: str, model: str, concurrency: int, max_tokens: int,
     }
 
 
+def failure_reasons(report: dict, expected_requests: int) -> list[str]:
+    """Everything that makes this run unfit to decide anything. Pure.
+
+    A benchmark that always exits 0 cannot be a gate: an unreachable
+    endpoint would read as "no problems found" to any script that trusts
+    the status code. Three ways a run is untrustworthy, and all three are
+    already visible in the report -- they just were not being counted.
+    """
+    reasons: list[str] = []
+    for name, entry in (report.get("endpoints") or {}).items():
+        if entry.get("error"):
+            reasons.append(f"{name}: endpoint unreachable ({entry['error']})")
+            continue
+        for level in entry.get("levels") or []:
+            errors = level.get("errors") or []
+            if errors:
+                reasons.append(
+                    f"{name} C{level['concurrency']}: {len(errors)} request "
+                    f"error(s), first: {errors[0]}"
+                )
+            # Silent partial results skew every per-second number below.
+            if level.get("requests", 0) < expected_requests:
+                reasons.append(
+                    f"{name} C{level['concurrency']}: only "
+                    f"{level.get('requests', 0)}/{expected_requests} requests "
+                    "completed"
+                )
+    if not report.get("endpoints"):
+        reasons.append("no endpoints were benchmarked")
+    return reasons
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--endpoint", action="append", required=True,
@@ -208,7 +245,14 @@ def main() -> int:
         with open(args.output, "w", encoding="utf-8") as fh:
             json.dump(report, fh, ensure_ascii=False, indent=2)
         print(f"report written to {args.output}")
-    return 0
+
+    # The report is still written on failure -- partial numbers are worth
+    # reading, they are just not worth deciding on. The exit code is what
+    # says so.
+    reasons = failure_reasons(report, len(PROMPTS))
+    for reason in reasons:
+        print(f"FAIL {reason}", file=sys.stderr)
+    return 1 if reasons else 0
 
 
 if __name__ == "__main__":

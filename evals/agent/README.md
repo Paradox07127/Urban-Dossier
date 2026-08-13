@@ -79,8 +79,17 @@ python3 scripts/vllm/business_eval.py --routing-only
 Statuses: `pass` / `warn` (only the soft numeric-faithfulness check
 missed) / `fail` / `skip` (case needs an availability-gated tool that is
 not released — `find_similar_neighborhoods` and `retrieve_dataset_docs`
-today) / `error` (harness or endpoint failure). Exit code is 1 if anything
-failed or errored.
+today) / `error` (harness or endpoint failure).
+
+Exit code 0 means the run is fit to decide something: every endpoint
+answered, every routing case held, at least one case ran per endpoint, and
+nothing failed or errored (`warn` and `skip` do not fail the run — one is
+the soft check's tolerance zone, the other is an honestly-reported gap).
+Anything else exits 1 and prints `FAIL <reason>` lines on stderr. Same
+contract in `scripts/vllm/ab_bench.py`, where a run also fails if any
+request errored or any prompt did not complete — a partial set skews every
+per-second number in the report. Both write their report either way:
+partial numbers are worth reading, just not worth deciding on.
 
 Grading rules of note:
 

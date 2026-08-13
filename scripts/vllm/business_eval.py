@@ -286,6 +286,38 @@ class _UsageTracker:
         return _Client()
 
 
+def failure_reasons(report: dict[str, Any], routing_results: list[dict]) -> list[str]:
+    """Everything that makes this run unfit to decide anything. Pure.
+
+    An UNREACHABLE endpoint records {"error": ...} and no "results" key, so
+    counting only per-case statuses meant a run where every endpoint was
+    down exited 0 -- "no failures found" is exactly the wrong thing to tell
+    a promotion gate that just benchmarked nothing.
+    """
+    reasons: list[str] = []
+    # Routing is model-independent and is copied into every endpoint's
+    # results, so count it once here and skip that category below.
+    for result in routing_results:
+        if result["status"] != "pass":
+            reasons.append(f"routing {result['id']}: {result['failures']}")
+    for name, entry in (report.get("endpoints") or {}).items():
+        if entry.get("error"):
+            reasons.append(f"{name}: endpoint unreachable ({entry['error']})")
+            continue
+        model_results = [
+            r for r in (entry.get("results") or []) if r.get("category") != "routing"
+        ]
+        if not model_results:
+            reasons.append(f"{name}: no cases ran")
+        for result in model_results:
+            if result["status"] in ("fail", "error"):
+                reasons.append(
+                    f"{name} {result['id']}: {result['status']} "
+                    f"{result.get('failures')}"
+                )
+    return reasons
+
+
 def get_model_id(base_url: str) -> str:
     with urllib.request.urlopen(f"{base_url}/v1/models", timeout=30) as resp:
         return json.load(resp)["data"][0]["id"]
@@ -488,12 +520,10 @@ def main() -> int:
         )
         print(f"report written to {out}")
 
-    any_fail = any(
-        r["status"] in ("fail", "error")
-        for entry in report["endpoints"].values()
-        for r in entry.get("results", [])
-    ) or any(r["status"] != "pass" for r in routing_results)
-    return 1 if any_fail else 0
+    reasons = failure_reasons(report, routing_results)
+    for reason in reasons:
+        print(f"FAIL {reason}", file=sys.stderr)
+    return 1 if reasons else 0
 
 
 if __name__ == "__main__":
