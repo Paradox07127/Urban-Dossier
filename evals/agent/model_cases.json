@@ -1,0 +1,252 @@
+{
+  "schema_version": "1.0",
+  "description": "Fixed business evaluation set for the Urban Dossier analyst agent (EXPANSION_PLAN 4.1). Every model-switch, KV-cache, or prompt decision must cite a run of this set. Cases are graded by scripts/vllm/business_eval.py against the REAL production agent loop (prompts, tools, budgets) pointed at any OpenAI-compatible endpoint.",
+  "authored": "2026-08-13",
+  "notes": [
+    "Coordinates 40.7282,-73.9942 = East Village fixture (building flag: elevated as of methodology 3.10.0); 40.8618,-73.8904 = Fordham fixture (flag: watch).",
+    "Cases with requires_tools are skipped (not failed) when the tool is availability-gated off; the report records the skip so coverage loss is visible.",
+    "Routing cases never reach a model; they pin the deterministic intent gate that fronts it."
+  ],
+  "cases": [
+    {
+      "id": "route-creative-writing",
+      "category": "routing",
+      "prompt": "Write me a poem about the Brooklyn Bridge at sunset.",
+      "expect": { "route_intent": "out_of_scope", "route_rule": "creative_writing" }
+    },
+    {
+      "id": "route-other-city",
+      "category": "routing",
+      "prompt": "How is public safety in Boston these days?",
+      "expect": { "route_intent": "out_of_scope", "route_rule": "other_city" }
+    },
+    {
+      "id": "route-meta-data-inventory",
+      "category": "routing",
+      "prompt": "Which data sources are available?",
+      "expect": { "route_intent": "meta_help", "route_rule": "data_inventory" }
+    },
+    {
+      "id": "route-analysis-default",
+      "category": "routing",
+      "prompt": "Is Astoria a good place to raise kids?",
+      "expect": { "route_intent": "new_analysis", "route_rule": "default" }
+    },
+
+    {
+      "id": "tool-score-direct-coords",
+      "category": "tool_call",
+      "prompt": "Give me the neighborhood scores at latitude 40.7282, longitude -73.9942 within 500 meters.",
+      "expect": {
+        "tools_all": ["score_neighborhood"],
+        "args_contain": { "score_neighborhood": { "latitude": 40.7282, "longitude": -73.9942 } },
+        "citation_required": true,
+        "numeric_faithfulness": true
+      }
+    },
+    {
+      "id": "tool-geocode-before-score",
+      "category": "tool_call",
+      "prompt": "How safe is the area around Fordham Plaza in the Bronx?",
+      "expect": {
+        "tools_all": ["search_address"],
+        "tools_any": ["score_neighborhood", "query_dataset"],
+        "order": [["search_address", "score_neighborhood"], ["search_address", "query_dataset"]],
+        "order_mode": "any_present",
+        "citation_required": true
+      }
+    },
+    {
+      "id": "tool-compare-two-places",
+      "category": "tool_call",
+      "prompt": "Compare overall livability near Union Square, Manhattan versus Astoria, Queens.",
+      "expect": {
+        "tools_all": ["search_address", "compare_neighborhoods"],
+        "order": [["search_address", "compare_neighborhoods"]],
+        "citation_required": true
+      }
+    },
+    {
+      "id": "tool-literal-count",
+      "category": "tool_call",
+      "prompt": "Exactly how many collisions were recorded within 500 meters of 40.7282, -73.9942 in the last year? Give me the number.",
+      "expect": {
+        "tools_any": ["query_dataset", "score_neighborhood"],
+        "answer_regex_all": ["\\d"],
+        "citation_required": true,
+        "numeric_faithfulness": true
+      }
+    },
+    {
+      "id": "tool-walking-isochrone",
+      "category": "tool_call",
+      "prompt": "Show me what I can reach on foot within 10 minutes of 40.7282, -73.9942.",
+      "requires_tools": ["walking_isochrone"],
+      "expect": {
+        "tools_all": ["walking_isochrone"],
+        "args_contain": { "walking_isochrone": { "minutes": 10 } }
+      }
+    },
+    {
+      "id": "tool-simulate-toilet",
+      "category": "tool_call",
+      "prompt": "What would change in the amenity picture if the city added a public toilet at 40.7282, -73.9942?",
+      "requires_tools": ["simulate_intervention"],
+      "expect": {
+        "tools_all": ["simulate_intervention"],
+        "args_contain": { "simulate_intervention": { "intervention_type": "toilet" } }
+      }
+    },
+    {
+      "id": "tool-find-similar",
+      "category": "tool_call",
+      "prompt": "Find me a neighborhood that feels like the area around 40.7282, -73.9942.",
+      "requires_tools": ["find_similar_neighborhoods"],
+      "expect": { "tools_all": ["find_similar_neighborhoods"] }
+    },
+    {
+      "id": "tool-dataset-docs-rag",
+      "category": "tool_call",
+      "prompt": "Which dataset tracks street tree health, and what do its condition columns mean?",
+      "requires_tools": ["retrieve_dataset_docs"],
+      "expect": { "tools_all": ["retrieve_dataset_docs"] }
+    },
+
+    {
+      "id": "evidence-citation-format",
+      "category": "evidence",
+      "prompt": "Summarize transit access at 40.7580, -73.9855, near Times Square.",
+      "expect": {
+        "tools_any": ["score_neighborhood", "query_dataset"],
+        "citation_required": true,
+        "evidence_list_required": true,
+        "numeric_faithfulness": true
+      }
+    },
+    {
+      "id": "evidence-refuse-rent",
+      "category": "evidence",
+      "prompt": "What is the median asking rent within 500 meters of 40.7282, -73.9942, and how did it change over the past year?",
+      "expect": {
+        "answer_regex_any": [
+          "(no|not|n't|lack|without|unavailable|cannot|can't|outside|beyond|missing).{0,80}(data|dataset|rent|coverage|available|track)",
+          "(rent|price).{0,60}(no|not|n't|isn't|aren't|unavailable|missing)"
+        ],
+        "answer_forbidden_regex": ["\\$\\s?\\d{3,}", "median (asking )?rent (is|was|of) \\$?\\d"]
+      }
+    },
+    {
+      "id": "evidence-refuse-schools",
+      "category": "evidence",
+      "prompt": "Which elementary school near 40.7282, -73.9942 has the best test scores?",
+      "expect": {
+        "answer_regex_any": [
+          "(no|not|n't|lack|without|unavailable|cannot|can't|outside|beyond|missing).{0,80}(data|dataset|school|coverage|available|track)",
+          "(school|test score).{0,60}(no|not|n't|isn't|aren't|unavailable|missing)"
+        ],
+        "answer_forbidden_regex": ["(P\\.?S\\.?\\s?\\d+|best school (is|would be)) "]
+      }
+    },
+    {
+      "id": "evidence-error-honesty",
+      "category": "evidence",
+      "prompt": "Query the dataset called 'crime_forecast_2027' for projected incidents near 40.7282, -73.9942.",
+      "expect": {
+        "answer_regex_any": [
+          "(no|not|n't|doesn't|does not|unknown|unavailable|missing|cannot|can't).{0,80}(dataset|exist|available|found|such)",
+          "(crime_forecast_2027|forecast).{0,60}(no|not|n't|isn't|unknown|unavailable)"
+        ],
+        "answer_forbidden_regex": ["projected .{0,30}\\d{2,} incidents"]
+      }
+    },
+    {
+      "id": "evidence-no-prediction",
+      "category": "evidence",
+      "prompt": "What will the safety score at 40.7282, -73.9942 be in 2030?",
+      "expect": {
+        "answer_regex_any": [
+          "(cannot|can't|not able|no way|won't|do(es)? not|don't).{0,80}(predict|forecast|future|know)",
+          "(only|historical|current|present).{0,60}(data|score|conditions?)"
+        ]
+      }
+    },
+    {
+      "id": "evidence-building-flag-grounded",
+      "category": "evidence",
+      "prompt": "Are there seriously hazardous buildings within 250 meters of 40.7282, -73.9942?",
+      "expect": {
+        "min_tool_calls": 1,
+        "answer_regex_any": ["class ?c", "hazard", "violation", "building risk"],
+        "citation_required": true,
+        "numeric_faithfulness": true
+      }
+    },
+
+    {
+      "id": "multi-two-point-violations",
+      "category": "multi_step",
+      "prompt": "Which location has more open immediately-hazardous housing violations: 40.7282, -73.9942 or 40.8618, -73.8904? Give both counts.",
+      "expect": {
+        "min_tool_calls": 2,
+        "answer_regex_all": ["\\d"],
+        "citation_required": true,
+        "numeric_faithfulness": true
+      }
+    },
+    {
+      "id": "multi-walk-plus-transit",
+      "category": "multi_step",
+      "prompt": "For 40.7282, -73.9942: how far can I get on foot in 10 minutes, and how good is transit access there?",
+      "requires_tools": ["walking_isochrone"],
+      "expect": {
+        "tools_all": ["walking_isochrone"],
+        "tools_any": ["score_neighborhood", "query_dataset"],
+        "citation_required": true
+      }
+    },
+
+    {
+      "id": "format-json-object",
+      "category": "format",
+      "prompt": "Return ONLY a JSON object with keys 'headline', 'evidence', 'caveat' summarizing the safety situation at 40.7282, -73.9942.",
+      "expect": {
+        "min_tool_calls": 1,
+        "json_answer_keys": ["headline", "evidence", "caveat"]
+      }
+    },
+    {
+      "id": "format-three-sentences",
+      "category": "format",
+      "prompt": "A block in Mott Haven scores 34 on amenities and 71 on transit. In no more than three sentences, advise a resident deciding whether to move there.",
+      "expect": {
+        "max_sentences": 4,
+        "numeric_faithfulness": true
+      }
+    },
+
+    {
+      "id": "robust-out-of-coverage",
+      "category": "robustness",
+      "prompt": "Score the neighborhood at latitude 34.05, longitude -118.24.",
+      "expect": {
+        "answer_regex_any": [
+          "(outside|not (in|within)|only|beyond).{0,60}(new york|nyc|coverage|city|bounds?|range)",
+          "(coordinates?|location).{0,60}(outside|invalid|not supported|out of)"
+        ],
+        "answer_forbidden_regex": ["overall score (is|of) \\d"]
+      }
+    },
+    {
+      "id": "robust-ambiguous-place",
+      "category": "robustness",
+      "prompt": "How is the area around Main Street?",
+      "expect": {
+        "either": {
+          "tools_any": ["search_address"],
+          "answer_regex_any": ["(which|clarif|ambigu|multiple|several|more specific|borough|where exactly)"]
+        },
+        "no_numbers_without_tools": true
+      }
+    }
+  ]
+}

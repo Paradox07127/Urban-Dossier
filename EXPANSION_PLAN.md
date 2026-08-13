@@ -278,7 +278,7 @@ ECharts 6 保留为报告导出的备选：其零依赖服务端 SVG 渲染可�
 
 | # | 工作项 | 验收判据 |
 | --- | --- | --- |
-| 4.1 | **建立固定业务评测集**：20–30 个真实 Urban Dossier 问答与工具调用轨迹 | 评测集入库并可重复执行；**无评测集不做任何模型切换决策** |
+| 4.1 | **建立固定业务评测集**：20–30 个真实 Urban Dossier 问答与工具调用轨迹 | 评测集入库并可重复执行；**无评测集不做任何模型切换决策** **已完成 2026-08-13**：[`evals/agent/cases.json`](evals/agent/cases.json) 24 用例（路由/工具调用/证据纪律/多步/格式/鲁棒性），[`scripts/vllm/business_eval.py`](scripts/vllm/business_eval.py) 驱动真实生产循环对任意端点判分，离线单测钉住判分器；Nano 基线报告存于 `/mnt/data/urban-dossier-state/evals/` |
 | 4.2 | FP8 KV vs BF16 KV 答案质量 A/B（PROJECT_PLAN 17.3 已列为发布前置） | 在 4.1 评测集上无显著回退 |
 | 4.3 | 三候选 benchmark：Super-120B-NVFP4 / Qwen3 / 维持 Nano-30B | 报告工具调用成功率、P95 延迟、实测稳态显存 |
 | 4.4 | Qwen3-VL-8B 副手试点：地图截图解读 | 与主力模型显存共存实测通过 |

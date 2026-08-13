@@ -322,45 +322,69 @@ def search_address_payload(query: str, limit: int = 5) -> dict[str, Any]:
         return {"results": []}
 
     provider = DirectQueryDataProvider()
+    # NOTE: _connect() hands back the thread's cached connection -- never
+    # close it here. This function used to close it in a finally block,
+    # poisoning every later query on the same worker thread.
     con = provider._connect()
     capped_limit = max(1, min(int(limit or 5), 10))
     results: list[dict[str, Any]] = []
-    try:
-        for source_name in ("location_index", "pluto"):
-            source = provider._source_sql(source_name)
-            if not source:
-                continue
-            try:
-                sql = f"""
-                    SELECT address, borough, postcode as zip, latitude, longitude, BBL
-                    FROM {source}
-                    WHERE upper(coalesce(address, '')) LIKE ?
-                      AND latitude IS NOT NULL AND longitude IS NOT NULL
-                    LIMIT {capped_limit}
-                """
-                rows = provider._query_rows(con, sql, [f"%{cleaned_query}%"])
-                for row in rows:
-                    lat = row.get("latitude")
-                    lon = row.get("longitude")
-                    if lat and lon:
-                        results.append(
-                            {
-                                "address": row.get("address", ""),
-                                "borough": row.get("borough", ""),
-                                "zip": row.get("zip", ""),
-                                "latitude": float(lat),
-                                "longitude": float(lon),
-                            }
-                        )
-                if results:
-                    break
-            except Exception:  # noqa: BLE001 - best-effort fallback across sources
-                continue
-    finally:
+    for source_name in ("location_index", "pluto"):
+        # Ready-first for the location index: after the processed/ -> ready/
+        # layout migration the processed dir is empty on fresh deployments,
+        # and /api/search silently returned zero results for every query --
+        # after which the agent guessed coordinates from model memory,
+        # exactly the failure this tool exists to prevent (found 2026-08-13
+        # by the business eval). The column introspection below absorbs the
+        # ready/processed schema differences.
+        source = provider.ready_source_sql(source_name) or provider._source_sql(
+            source_name
+        )
+        if not source:
+            continue
         try:
-            con.close()
-        except Exception:  # noqa: BLE001 - close should never raise upward
-            pass
+            # The ready location index and raw PLUTO disagree on column
+            # names (matched_address vs address, zip vs postcode). Resolve
+            # against the file's real schema instead of assuming one -- the
+            # hardcoded names silently emptied /api/search for every query
+            # when the ready index took over (its Binder error was swallowed
+            # by this loop's best-effort except).
+            columns = {
+                row[0]
+                for row in con.execute(f"DESCRIBE SELECT * FROM {source}").fetchall()
+            }
+            address_col = next(
+                (c for c in ("address", "matched_address") if c in columns), None
+            )
+            zip_col = next((c for c in ("postcode", "zip") if c in columns), None)
+            if not address_col or not {"latitude", "longitude"} <= columns:
+                continue
+            zip_select = f'"{zip_col}" AS zip' if zip_col else "NULL AS zip"
+            sql = f"""
+                SELECT "{address_col}" AS address, borough, {zip_select},
+                       latitude, longitude
+                FROM {source}
+                WHERE upper(coalesce("{address_col}", '')) LIKE ?
+                  AND latitude IS NOT NULL AND longitude IS NOT NULL
+                LIMIT {capped_limit}
+            """
+            rows = provider._query_rows(con, sql, [f"%{cleaned_query}%"])
+            for row in rows:
+                lat = row.get("latitude")
+                lon = row.get("longitude")
+                if lat and lon:
+                    results.append(
+                        {
+                            "address": row.get("address", ""),
+                            "borough": row.get("borough", ""),
+                            "zip": row.get("zip", ""),
+                            "latitude": float(lat),
+                            "longitude": float(lon),
+                        }
+                    )
+            if results:
+                break
+        except Exception:  # noqa: BLE001 - best-effort fallback across sources
+            continue
     return {"results": results}
 
 
@@ -556,6 +580,34 @@ def query_dataset_rows(
                 placeholders = ", ".join(["?"] * len(values))
                 where_parts.append(f"{quoted} IN ({placeholders})")
                 params.extend(values)
+            elif isinstance(value, dict):
+                # Range semantics: the agent naturally reaches for
+                # {"min": a, "max": b} when asked to count within bounds.
+                # Anything else dict-shaped used to fall into the scalar
+                # branch and blow up DuckDB (HTTP 500); reject it with a
+                # structured error the model can act on instead.
+                bounds = {k: v for k, v in value.items() if k in ("min", "max")}
+                if not bounds or set(value) - {"min", "max"} or any(
+                    isinstance(v, (dict, list, tuple, set)) for v in bounds.values()
+                ):
+                    return {
+                        "error": (
+                            f"Unsupported filter value for '{column}': {value!r}. "
+                            "Filters accept a scalar (equality), a list "
+                            "(membership), or {'min': a, 'max': b} (range)."
+                        ),
+                        "retry_hint": "Re-issue with a supported filter shape.",
+                        "dataset_id": normalized,
+                        "columns": columns,
+                        "rows": [],
+                        "total": 0,
+                    }
+                if "min" in bounds:
+                    where_parts.append(f"{quoted} >= ?")
+                    params.append(bounds["min"])
+                if "max" in bounds:
+                    where_parts.append(f"{quoted} <= ?")
+                    params.append(bounds["max"])
             else:
                 where_parts.append(f"{quoted} = ?")
                 params.append(value)

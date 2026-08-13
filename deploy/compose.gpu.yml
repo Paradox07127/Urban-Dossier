@@ -117,10 +117,15 @@ services:
       - ${LIGHTNING_PORT:-8002}
       # No --trust-remote-code: nemotron_h for 3.5 is native in the
       # transformers version this image ships (the HF repo has no custom code).
-      # 0.30 keeps the candidate co-resident with the production llm at 0.45
-      # for A/B runs: 21.6 GiB weights + 1.3 GiB drafter + a few GiB of cache.
+      # 0.38 keeps the candidate co-resident with the production llm at 0.45
+      # for A/B runs. 0.30 was enough when this service ran 32K context (the
+      # 2026-08-12 A/B), but the 128K retune below made the engine's cache
+      # reservation outgrow it: at 0.30 + 128K vLLM 0.27.1 exits with "No
+      # available memory for the cache blocks" and the container crash-loops
+      # (observed 2026-08-13, 23 restarts). 0.38 boots in 135 s alongside the
+      # production llm, 76 GiB total on the 96 GiB card.
       - --gpu-memory-utilization
-      - ${LIGHTNING_GPU_MEMORY_UTILIZATION:-0.30}
+      - ${LIGHTNING_GPU_MEMORY_UTILIZATION:-0.38}
       # Measured 2026-08-12 on this card at 0.30: 1,337,288 KV-cache tokens
       # (40.8x concurrency at 32K).  The hybrid's tiny attention share makes
       # long context cheap, so serve 128K by default — still ~10x at full

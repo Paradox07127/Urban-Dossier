@@ -165,49 +165,63 @@ DEFAULT_PRIORITY_ORDER: list[str] = ["amenities", "transit", "safety"]
 ALLOWED_INTERVENTIONS = Literal["bike_lane", "park", "toilet", "linknyc", "bus_stop"]
 
 
-class ScoreNeighborhoodArgs(BaseModel):
+class _StrictArgs(BaseModel):
+    """Base for every tool arg model: unknown arguments are an error.
+
+    Pydantic's default is to DROP extras silently -- observed in the 4.1
+    business eval as a model passing latitude/longitude/radius_m to
+    query_dataset and believing the result was spatially filtered when the
+    arguments had simply evaporated. dispatch_tool turns the ValidationError
+    into an observation with a retry_hint, so an honest failure the model can
+    correct replaces a silent wrong answer it cannot.
+    """
+
+    model_config = {"extra": "forbid"}
+
+
+class ScoreNeighborhoodArgs(_StrictArgs):
     latitude: float = Field(ge=NYC_LAT_MIN, le=NYC_LAT_MAX)
     longitude: float = Field(ge=NYC_LON_MIN, le=NYC_LON_MAX)
     radius_m: int = Field(default=500, ge=50, le=2000)
 
 
-class CompareNeighborhoodsArgs(BaseModel):
+class CompareNeighborhoodsArgs(_StrictArgs):
     point_a: Point
     point_b: Point
     radius_m: int = Field(default=500, ge=50, le=2000)
 
 
-class QueryDatasetArgs(BaseModel):
+class QueryDatasetArgs(_StrictArgs):
     dataset_id: str = Field(min_length=2, max_length=64)
     filters: dict[str, Any] = Field(default_factory=dict)
     limit: int = Field(default=100, ge=1, le=1000)
 
 
-class FindSimilarNeighborhoodsArgs(BaseModel):
+class FindSimilarNeighborhoodsArgs(_StrictArgs):
     latitude: float = Field(ge=NYC_LAT_MIN, le=NYC_LAT_MAX)
     longitude: float = Field(ge=NYC_LON_MIN, le=NYC_LON_MAX)
     k: int = Field(default=5, ge=1, le=25)
 
 
-class WalkingIsochroneArgs(BaseModel):
+class WalkingIsochroneArgs(_StrictArgs):
     latitude: float = Field(ge=NYC_LAT_MIN, le=NYC_LAT_MAX)
     longitude: float = Field(ge=NYC_LON_MIN, le=NYC_LON_MAX)
     minutes: int = Field(default=10, ge=1, le=60)
 
 
-class SimulateInterventionArgs(BaseModel):
+class SimulateInterventionArgs(_StrictArgs):
     latitude: float = Field(ge=NYC_LAT_MIN, le=NYC_LAT_MAX)
     longitude: float = Field(ge=NYC_LON_MIN, le=NYC_LON_MAX)
     intervention_type: ALLOWED_INTERVENTIONS
     count: int = Field(default=1, ge=1, le=20)
 
 
-class SearchAddressArgs(BaseModel):
+class SearchAddressArgs(_StrictArgs):
     query: str = Field(min_length=3, max_length=200)
     limit: int = Field(default=5, ge=1, le=10)
 
 
-class RetrieveDatasetDocsArgs(BaseModel):
+class RetrieveDatasetDocsArgs(_StrictArgs):
     query: str = Field(min_length=3, max_length=500)
     dataset_filter: list[str] | None = None
     top_k: int = Field(default=5, ge=1, le=20)

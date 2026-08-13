@@ -1,33 +1,117 @@
-# Agent business evaluation
+# Agent business evaluation (EXPANSION_PLAN 4.1)
 
-`business_cases.json` is the versioned release corpus for EXPANSION_PLAN 4.1.
-It contains 24 fixed trajectories across evidence lookup, new analysis, product
-help and out-of-scope handling. Expectations cover tool presence and order,
-forbidden tools, structured evidence and a small number of answer guard terms.
+Two fixed corpora, two runners, one rule: **no model switch, KV-cache
+change, or agent-prompt rewrite is decided without citing a run of this
+directory.** The two halves grade different seams and answer different
+questions — keep both.
 
-Validate the corpus without a model:
+| Corpus | Runner | Seam | Question it answers |
+|---|---|---|---|
+| `business_cases.json` | `scripts/evaluate_agent_business.py` | `/api/agent/ask` (full service: intent gate, agent service, sandbox path) | "Is the deployed service behaving?" |
+| `model_cases.json` | `scripts/vllm/business_eval.py` | `run_agent` directly, endpoint-swappable | "Which MODEL should serve?" (4.2 / 4.3 decisions) |
+
+## Service-level: `evaluate_agent_business.py`
+
+24 fixed trajectories across evidence lookup, new analysis, product help
+and out-of-scope handling. Expectations cover tool presence and order,
+forbidden tools, structured evidence and answer guard terms. Collection is
+separated from grading: a live run writes one JSON object per case, and
+the same artifact can be regraded after scorer changes without spending
+another model run.
 
 ```bash
+# Validate the corpus without a model:
 python scripts/evaluate_agent_business.py --validate-only
-```
 
-Collect and grade a live local service:
-
-```bash
+# Collect and grade a live local service:
 python scripts/evaluate_agent_business.py \
-  --base-url http://127.0.0.1:8001 \
+  --base-url http://127.0.0.1:8090 \
   --output evals/results/agent-business.jsonl
-```
 
-Regrade a captured JSONL artifact deterministically:
-
-```bash
+# Regrade a captured JSONL artifact deterministically:
 python scripts/evaluate_agent_business.py \
   --responses evals/results/agent-business.jsonl \
   --output evals/results/agent-business-replay.jsonl
 ```
 
 The report records the corpus SHA-256, per-check results and pass rates by
-business intent. Cases with `release_gate` intentionally remain in the fixed
-set when an artifact or implementation is unavailable; benchmarks must expose
-those gaps rather than silently dropping the cases.
+business intent. Cases with `release_gate` intentionally remain in the
+fixed set when an artifact or implementation is unavailable; benchmarks
+must expose those gaps rather than silently dropping the cases.
+
+## Model-level: `business_eval.py`
+
+24 cases across six categories, run through the REAL production loop
+(production system prompt, tool schemas, iteration caps, observation
+budgets) pointed at **any OpenAI-compatible endpoint** — the seam the
+service-level runner cannot reach, because the sandbox pins its model.
+Tools dispatch over HTTP loopback to the live backend (`:8090`).
+
+| Category | Cases | What a failure means |
+|---|---|---|
+| `routing` | 4 | the deterministic intent gate drifted (no model involved) |
+| `tool_call` | 8 | wrong tool, wrong arguments, or geocoding skipped |
+| `evidence` | 6 | uncited claims, invented numbers, or fake confidence where data is absent |
+| `multi_step` | 2 | cannot chain two tools into one comparison |
+| `format` | 2 | ignores explicit output-shape instructions |
+| `robustness` | 2 | out-of-coverage and ambiguous inputs handled dishonestly |
+
+The evidence category is the discriminator that mattered in the 2026-08
+Nano/Lightning A/B (`MODEL_CANDIDATES.md`): given a question whose data we
+do not have, the desired behavior is a refusal that names the gap, not a
+plausible invention.
+
+```bash
+# Baseline (production model on :8000):
+python3 scripts/vllm/business_eval.py \
+  --endpoint current=http://127.0.0.1:8000 \
+  --output /mnt/data/urban-dossier-state/evals/business_eval_$(date +%Y%m%d).json
+
+# Candidate comparison:
+python3 scripts/vllm/business_eval.py \
+  --endpoint current=http://127.0.0.1:8000 \
+  --endpoint lightning=http://127.0.0.1:8002
+
+# Gate check without a model (CI-safe):
+python3 scripts/vllm/business_eval.py --routing-only
+```
+
+Statuses: `pass` / `warn` (only the soft numeric-faithfulness check
+missed) / `fail` / `skip` (case needs an availability-gated tool that is
+not released — `find_similar_neighborhoods` and `retrieve_dataset_docs`
+today) / `error` (harness or endpoint failure). Exit code is 1 if anything
+failed or errored.
+
+Grading rules of note:
+
+- **Numeric faithfulness (soft):** every ≥2-digit number in the final
+  answer must appear in the prompt, a tool result, or an evidence entry.
+  Soft because legitimately derived figures (differences, percentages)
+  fail string matching; wholesale failure still means invented numbers.
+- **Typographic normalization:** answers are canonicalized (curly quotes,
+  unicode hyphens) before regex matching — a perfect refusal once failed
+  grading on a U+2019 apostrophe.
+- **Citations:** `citation_required` accepts either the inline
+  `[source via tool]` format the system prompt mandates or a non-empty
+  structured `evidence` list.
+- **Fixtures:** 40.7282,-73.9942 (East Village; building flag `elevated`
+  at methodology 3.10.0) and 40.8618,-73.8904 (Fordham; `watch`). Grading
+  is structural (counts must match the trace), not pinned to today's
+  values, so data refreshes do not rot the cases.
+- **Run-to-run variance is signal:** at temperature 0.2 Nano failed
+  different cases on consecutive baseline runs (compare-tool selection,
+  then nothing). Compare models on the same number of runs.
+
+## Maintenance
+
+- Changing a case, a threshold, or a grader is an eval-set version event:
+  bump `schema_version` in the corpus you changed and note it here.
+  Comparisons are only valid within one version.
+- Offline tests: `backend/tests/test_agent_business_eval.py` pins the
+  service-level corpus and graders;
+  `skills/urban_dossier_analyst/tests/test_business_eval.py` pins the
+  model-level corpus schema and unit-tests every grader against synthetic
+  responses. No model, no backend, no network.
+- Model-level reports land in `/mnt/data/urban-dossier-state/evals/`
+  (state, not git); headline numbers worth keeping go into
+  `MODEL_CANDIDATES.md`.

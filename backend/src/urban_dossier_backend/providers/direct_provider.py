@@ -250,12 +250,31 @@ class DirectQueryDataProvider(DataProvider):
         return self._ready_path(relative_path).exists()
 
     def _source_sql(self, name: str) -> str | None:
+        # NOT ready-first, deliberately: consumers of this resolver wrote
+        # their SQL against the processed/raw schemas (e.g. parks' raw CSV
+        # has ZIPCODE; ready/amenities/parks_indexed.parquet does not), so a
+        # blanket switch to the ready layout breaks them. Callers that can
+        # handle the ready schema resolve it explicitly, column-adaptively
+        # (see service.search_address_payload).
         path = self._parquet_path(name)
         if path.exists():
             return f"read_parquet('{path.as_posix()}')"
         raw = self._raw_csv_path(name)
         if raw and raw.exists():
             return f"read_csv_auto('{raw.as_posix()}', ignore_errors=true)"
+        return None
+
+    def ready_source_sql(self, name: str) -> str | None:
+        """Resolve a registered dataset to its ready/ parquet, if published.
+
+        The ready schema may differ from the processed/raw one -- callers
+        must introspect columns (DESCRIBE) rather than assume names.
+        """
+        ready_rel = READY_DATASET_PATHS.get(name)
+        if ready_rel:
+            ready_path = self._ready_path(ready_rel)
+            if ready_path.exists():
+                return f"read_parquet('{ready_path.as_posix()}')"
         return None
 
     def _dataset_available(self, name: str) -> bool:
