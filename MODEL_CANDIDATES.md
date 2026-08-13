@@ -100,15 +100,21 @@ python3 scripts/vllm/ab_bench.py \
 
 ## Promotion checklist (Lightning → production)
 
-1. `ab_bench.py` shows TTFT/throughput ≥ incumbent at C1 and C4, zero errors.
-2. Quality review of captured completions (JSON validity on the structured
-   case, citation discipline, no reasoning leakage into `content`).
+1. ~~`ab_bench.py` shows TTFT/throughput ≥ incumbent at C1 and C4, zero
+   errors.~~ Done 2026-08-12: +60%/+63%, zero errors.
+2. ~~Quality review of captured completions.~~ Done 2026-08-12: clean
+   separation, correct tool calls, stricter evidence discipline.
 3. Real agent smoke test through the NemoClaw/OpenClaw gateway
-   (`scripts/test_openclaw_gateway.py`) with the sandbox endpoint repointed.
-4. License review of OpenMDW-1.1 for our use.
-5. Pin the v0.27.1 image digest in `deploy/compose.gpu.yml`, move the weights
-   path into `models/llm/`'s mount (or retarget the mount), update
-   `LLM_SERVED_NAME`, and record old digest + rollback path here.
+   (`scripts/test_openclaw_gateway.py`) with the sandbox endpoint repointed
+   to Lightning. The sandbox's inference route pins the model name
+   (currently Nano) and was chosen in the interactive `nemoclaw onboard`
+   wizard — repointing needs either a re-onboard or serving Lightning under
+   the same served-name (discouraged: misleading).
+4. License review of OpenMDW-1.1 for our use (user decision).
+5. ~~Pin the v0.27.1 image digest in `deploy/compose.gpu.yml`.~~ Done
+   2026-08-12, Nano regression passed on it. Remaining: retarget the
+   `models/llm` mount (or path) to the Lightning weights, update
+   `LLM_SERVED_NAME`, record rollback here.
 
 ## Status
 
@@ -181,10 +187,12 @@ gives 4–6× the throughput on this card.
   `vllm/vllm-openai@sha256:0a51ea5b…` (v0.27.1); previous 0.23.0 digest kept
   in a comment as the rollback pair (rollback = old digest + Nano, both
   validated together). `--moe-backend flashinfer_cutlass` confirmed still a
-  valid choice in 0.27.1 via `vllm serve --help`. A full serve regression of
-  Nano-on-0.27.1 was not run (container start was permission-blocked in the
-  session); run one C1 smoke before the next production restart, or promote
-  Lightning at the same time.
+  valid choice in 0.27.1 via `vllm serve --help`. **Nano-on-0.27.1 serve
+  regression passed later the same day**: C1 308.5 tok/s, zero errors
+  (0.23 baseline: 309), and the full agent stack (frontend 3456 → backend
+  8090 → NemoClaw gateway → OpenClaw → vLLM :8000) came back green on it —
+  `test_openclaw_gateway.py` returned `gateway-route-ok` and the 5
+  `test_agent_service_nemoclaw.py` tests passed.
 - vLLM 0.27.1 adds `--moe-backend flashinfer_b12x` — "FlashInfer CuteDSL
   fused MoE for SM12x (RTX Pro 6000 / DGX Spark)". The 0.23 comment about
   b12x rejecting the Nemotron-H layout may be obsolete; benchmarking it vs
