@@ -316,6 +316,32 @@ ways:
   both models"; with three more rounds it is not flaky for Lightning, it is
   consistent. This is a reproducible capability gap on a first-class product
   feature.
+
+  > **Corrected 2026-08-14, after trajectory persistence landed.** Both
+  > sentences above are wrong, and the trace says so on its first use.
+  > Lightning's reasoning on that case is right — *"I need to get
+  > coordinates for both locations, then use compare_neighborhoods. First,
+  > I need to geocode both places"* — and then
+  > `search_address({"query": "Union Square Manhattan"})` returns an empty
+  > result (79 chars), its next thought is *"the search_address returned
+  > empty results, let me try a more specific query"*, and it burns the
+  > iteration budget retrying the geocode. It never gets to choose the
+  > comparison tool at all.
+  >
+  > The defect is in `search_address`, not the model:
+  > `service.py:search_address_payload` matches `upper(address) LIKE
+  > '%<entire query>%'` — one contiguous substring against the address
+  > column, with the borough column never consulted. So `"Union Square"`
+  > returns 3 hits and `"Union Square Manhattan"` returns 0; `"Astoria"`
+  > works and `"Astoria Queens"` does not; `"350 5th Avenue"` finds nothing
+  > because PLUTO stores `350 5 AVENUE`. Appending the borough — the most
+  > natural thing a model or a user does — is what breaks it.
+  >
+  > A second run also produced one pass in five observations, so the case is
+  > high-frequency-failing rather than deterministic. Both the
+  > misattribution and the flakiness are exactly what pass^k and a stored
+  > trajectory exist to prevent, and neither existed when the paragraph
+  > above was written.
 - **Qwen3.8 at its card sampling calls `compare_neighborhoods` correctly**
   and clears the whole set — the only configuration in this comparison with
   zero hard failures.
@@ -343,9 +369,11 @@ candidate that has cleared the business set outright, and it is right about
 `compare_neighborhoods` where Lightning is consistently wrong. Two things
 follow that are worth more than the verdict:
 
-1. Lightning's `compare_neighborhoods` failure is now a known, reproducible
-   defect to fix in the prompt or tool description — not a benchmark
-   artifact to average away.
+1. ~~Lightning's `compare_neighborhoods` failure is now a known,
+   reproducible defect to fix in the prompt or tool description~~ — see the
+   correction above: the failure is `search_address` refusing any query with
+   a borough appended, and no prompt change will fix it. Fixing the geocoder
+   is the real item, and it is a product bug well beyond the eval.
 2. `format-three-sentences` and the temperature finding say our hardcoded
    0.2 is a Nemotron-era assumption. The knob now exists
    (`URBAN_DOSSIER_AGENT_TEMPERATURE`); any future candidate should be run

@@ -16,7 +16,17 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "vllm"))
 
-from business_eval import grade_case, run_routing_case  # noqa: E402
+from business_eval import (  # noqa: E402
+    failure_reasons,
+    grade_case,
+    grade_response,
+    merge_attempts,
+    regrade_responses,
+    run_routing_case,
+    summarize,
+    trace_digest,
+    turns_digest,
+)
 
 CASES = json.loads(
     (REPO_ROOT / "evals" / "agent" / "model_cases.json").read_text(encoding="utf-8")
@@ -252,3 +262,189 @@ def test_tool_args_reject_unknown_arguments():
     )
     assert "error" in result
     assert "retry_hint" in result
+
+
+# --- trajectory persistence and pass^k --------------------------------------
+#
+# These cover the two things the harness could not do before 2026-08-14: say
+# afterwards WHY a case went the way it did, and tell an unreliable case
+# apart from a broken one.
+
+
+def test_trace_digest_keeps_arguments_whole_and_shrinks_results():
+    """Args are the first thing you want back; results are the bulky half."""
+
+    trace = [{
+        "iteration": 0,
+        "tool_name": "query_dataset",
+        "args": {"dataset_id": "collisions", "radius_m": 500},
+        "result": {"rows": ["x" * 5000], "count": 12},
+        "latency_ms": 42,
+    }]
+
+    digest = trace_digest(trace, result_chars=200)
+
+    assert digest[0]["args"] == {"dataset_id": "collisions", "radius_m": 500}
+    assert digest[0]["latency_ms"] == 42
+    preview = digest[0]["result_preview"]
+    assert preview["keys"] == ["count", "rows"]
+    assert preview["chars"] > 5000
+    assert len(preview["result_head"]) == 200
+    assert "result" not in preview
+
+
+def test_trace_digest_surfaces_tool_errors_verbatim():
+    digest = trace_digest([{
+        "iteration": 1, "tool_name": "query_dataset", "args": {},
+        "result": {"error": "unknown_dataset", "retry_hint": "list first"},
+        "latency_ms": 3,
+    }])
+
+    assert digest[0]["result_preview"]["error"] == "unknown_dataset"
+
+
+def test_turns_digest_keeps_the_thinking_and_reports_what_it_clipped():
+    digest = turns_digest(
+        [{"iteration": 0, "kind": "loop", "finish_reason": "tool_calls",
+          "tool_calls": ["score_neighborhood"], "reasoning": "y" * 3000,
+          "content": ""}],
+        text_chars=100,
+    )
+
+    assert digest[0]["reasoning"].endswith("...")
+    assert len(digest[0]["reasoning"]) == 103
+    assert digest[0]["reasoning_chars"] == 3000
+    assert digest[0]["tool_calls"] == ["score_neighborhood"]
+
+
+def _attempt(status, failures=None, wall=1.0):
+    return {
+        "id": "c", "category": "tool_call", "status": status,
+        "failures": failures or [], "soft": {},
+        "metrics": {"wall_s": wall, "completion_tokens": 10},
+    }
+
+
+def test_single_attempt_record_keeps_the_historical_shape():
+    merged = merge_attempts([_attempt("pass")])
+
+    assert merged["status"] == "pass"
+    assert merged["attempts"] == 1
+    assert merged["pass_hat_k"] == 1.0
+    assert "attempt_statuses" not in merged
+
+
+def test_pass_hat_k_is_all_or_nothing_not_an_average():
+    """2-of-3 is the case tau-bench's pass^k exists to catch."""
+
+    merged = merge_attempts(
+        [_attempt("pass"), _attempt("fail", ["tool missing"]), _attempt("pass")]
+    )
+
+    assert merged["status"] == "pass"          # first attempt, as before
+    assert merged["pass_hat_k"] == 0.0         # but not reliably passing
+    assert merged["attempt_statuses"] == ["pass", "fail", "pass"]
+    assert merged["failures_any_attempt"] == ["tool missing"]
+
+
+def test_warn_counts_as_passing_for_pass_hat_k():
+    merged = merge_attempts([_attempt("warn"), _attempt("pass")])
+
+    assert merged["pass_hat_k"] == 1.0
+
+
+def test_summary_pass_hat_k_is_the_fraction_of_always_passing_cases():
+    results = [
+        {**_attempt("pass"), "pass_hat_k": 1.0},
+        {**_attempt("pass"), "pass_hat_k": 0.0},
+        {**_attempt("fail"), "pass_hat_k": 0.0},
+        {"id": "s", "category": "tool_call", "status": "skip", "failures": []},
+    ]
+
+    summary = summarize(results, repeat=3)
+
+    assert summary["repeat"] == 3
+    assert summary["pass_hat_k"] == round(1 / 3, 3)
+    assert summary["pass_rate"] == round(2 / 3, 3)   # unchanged semantics
+
+
+def test_require_pass_k_is_opt_in():
+    report = {"endpoints": {"cand": {"results": [
+        {"id": "c", "category": "tool_call", "status": "pass",
+         "pass_hat_k": 0.0, "attempt_statuses": ["pass", "fail"],
+         "failures_any_attempt": ["tool missing"]},
+    ]}}}
+
+    assert failure_reasons(report, []) == []
+    reasons = failure_reasons(report, [], require_pass_k=True)
+    assert len(reasons) == 1
+    assert "pass^k miss" in reasons[0]
+
+
+def test_regrade_reproduces_the_grade_without_a_model(tmp_path):
+    """A stored response must grade identically on replay -- that is the
+    whole point of keeping it."""
+
+    case = {
+        "id": "replay-me",
+        "category": "tool_call",
+        "prompt": "score it",
+        "expect": {"tools_all": ["score_neighborhood"]},
+    }
+    response = {
+        "answer": "Safety is 35 [score_neighborhood].",
+        "evidence": [{"source": "score_neighborhood", "detail": "ok"}],
+        "tools_called": ["score_neighborhood"],
+        "iterations": 1,
+        "trace": [{"iteration": 0, "tool_name": "score_neighborhood",
+                   "args": {}, "result": {"scores": {"safety": 35}},
+                   "latency_ms": 5}],
+        "turns": [{"iteration": 0, "kind": "loop", "reasoning": "think",
+                   "content": "", "finish_reason": "tool_calls",
+                   "tool_calls": ["score_neighborhood"]}],
+    }
+    live = grade_response(case, response, wall_s=1.23, usage={"llm_calls": 2})
+
+    path = tmp_path / "responses.jsonl"
+    path.write_text(json.dumps({
+        "endpoint": "cand", "model": "m", "attempt": 1, "case_id": "replay-me",
+        "wall_s": 1.23, "usage": {"llm_calls": 2}, "response": response,
+    }) + "\n", encoding="utf-8")
+
+    replayed = regrade_responses(path, {"replay-me": case})
+
+    assert set(replayed) == {"cand"}
+    record = replayed["cand"]["results"][0]
+    assert record["status"] == live["status"] == "pass"
+    assert record["metrics"]["llm_calls"] == 2
+    assert record["trace"] == live["trace"]
+    # The thinking survived the round trip.
+    assert record["turns"][0]["reasoning"] == "think"
+
+
+def test_regrade_groups_repeated_attempts_into_pass_hat_k(tmp_path):
+    case = {
+        "id": "flaky",
+        "category": "tool_call",
+        "prompt": "p",
+        "expect": {"tools_all": ["score_neighborhood"]},
+    }
+    good = {"answer": "a", "evidence": [], "tools_called": ["score_neighborhood"],
+            "iterations": 1, "trace": [], "turns": []}
+    bad = {"answer": "a", "evidence": [], "tools_called": [], "iterations": 1,
+           "trace": [], "turns": []}
+
+    path = tmp_path / "r.jsonl"
+    path.write_text("\n".join(
+        json.dumps({"endpoint": "cand", "model": "m", "attempt": i + 1,
+                    "case_id": "flaky", "wall_s": 1.0, "usage": {},
+                    "response": resp})
+        for i, resp in enumerate([good, bad, good])
+    ) + "\n", encoding="utf-8")
+
+    replayed = regrade_responses(path, {"flaky": case})
+    record = replayed["cand"]["results"][0]
+
+    assert record["attempt_statuses"] == ["pass", "fail", "pass"]
+    assert record["pass_hat_k"] == 0.0
+    assert replayed["cand"]["summary"]["repeat"] == 3

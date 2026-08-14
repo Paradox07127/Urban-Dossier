@@ -41,6 +41,28 @@ class ToolCallTrace(BaseModel):
     latency_ms: int = Field(ge=0)
 
 
+class TurnTrace(BaseModel):
+    """What the model produced on one iteration, before any tool ran.
+
+    ToolCallTrace records what the agent DID; this records what it was
+    thinking when it decided to. Reasoning models put their chain of thought
+    in a separate channel that the loop otherwise only reads as a fallback
+    for a missing answer, so without this the deliberation is never captured
+    anywhere -- and a model-selection decision made from tool names alone
+    cannot explain itself after the fact.
+    """
+
+    iteration: int = Field(ge=0, description="0-based iteration index")
+    reasoning: str = ""
+    content: str = ""
+    finish_reason: str = ""
+    tool_calls: list[str] = Field(default_factory=list)
+    kind: str = Field(
+        default="loop",
+        description="loop | wrapup_truncated | wrapup_max_iterations",
+    )
+
+
 class AgentResponse(BaseModel):
     """The structured payload returned by run_agent.
 
@@ -54,6 +76,9 @@ class AgentResponse(BaseModel):
       iterations:   Number of ReAct iterations consumed (>= 1).
       trace:        Full ToolCallTrace list. Empty when the model answered
                     on iteration 0 with no tool calls.
+      turns:        One TurnTrace per model call, including the wrap-up
+                    calls. This is the deliberation record; `trace` is the
+                    action record.
     """
 
     answer: str
@@ -61,3 +86,4 @@ class AgentResponse(BaseModel):
     tools_called: list[str] = Field(default_factory=list)
     iterations: int = Field(ge=0)
     trace: list[ToolCallTrace] = Field(default_factory=list)
+    turns: list[TurnTrace] = Field(default_factory=list)

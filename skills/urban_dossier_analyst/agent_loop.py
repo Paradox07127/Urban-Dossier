@@ -38,7 +38,7 @@ import time
 from typing import Any, Callable
 
 from .prompts import FINAL_ANSWER_PROMPT, REFLECTION_PROMPT, SYSTEM_PROMPT
-from .schemas import AgentResponse, ToolCallTrace
+from .schemas import AgentResponse, ToolCallTrace, TurnTrace
 from .tools import (
     dispatch_tool,
     get_available_tools,
@@ -61,6 +61,39 @@ _TEMPERATURE = float(os.environ.get("URBAN_DOSSIER_AGENT_TEMPERATURE", "0.2"))
 _WRAPUP_TEMPERATURE = float(
     os.environ.get("URBAN_DOSSIER_AGENT_WRAPUP_TEMPERATURE", "0.2")
 )
+
+
+def _turn(
+    iteration: int,
+    msg_dict: dict[str, Any],
+    finish_reason: Any,
+    tool_calls: list[Any],
+    kind: str,
+) -> TurnTrace:
+    """Capture one model turn: what it thought, said, and decided to call."""
+
+    names: list[str] = []
+    for call in tool_calls or []:
+        fn = (call or {}).get("function") if isinstance(call, dict) else None
+        if isinstance(fn, dict) and fn.get("name"):
+            names.append(str(fn["name"]))
+
+    reasoning = ""
+    for key in ("reasoning", "reasoning_content"):
+        value = msg_dict.get(key)
+        if isinstance(value, str) and value.strip():
+            reasoning = value.strip()
+            break
+
+    raw_content = msg_dict.get("content")
+    return TurnTrace(
+        iteration=iteration,
+        reasoning=reasoning,
+        content=raw_content.strip() if isinstance(raw_content, str) else "",
+        finish_reason=str(finish_reason or ""),
+        tool_calls=names,
+        kind=kind,
+    )
 
 
 def _append_directive(messages: list[Message], text: str) -> None:
@@ -263,6 +296,7 @@ def run_agent(
     messages.append({"role": "user", "content": user_message})
 
     trace: list[ToolCallTrace] = []
+    turns: list[TurnTrace] = []
     tools_called: list[str] = []
     recent_hashes: list[str] = []
     iterations = 0
@@ -301,6 +335,9 @@ def run_agent(
         content = raw_content.strip() if isinstance(raw_content, str) else ""
         fallback_text = _message_text(msg_dict)
         finish_reason = getattr(choice, "finish_reason", None)
+        turns.append(
+            _turn(iteration, msg_dict, finish_reason, tool_calls, kind="loop")
+        )
 
         # The OpenAI SDK requires the assistant message echoed back into
         # history before any tool messages are appended.
@@ -337,7 +374,18 @@ def run_agent(
                             "chat_template_kwargs": {"enable_thinking": False}
                         },
                     )
-                    final_answer = _message_text(_to_dict(wrapup.choices[0].message))
+                    wrap_choice = wrapup.choices[0]
+                    wrap_dict = _to_dict(wrap_choice.message)
+                    turns.append(
+                        _turn(
+                            iteration,
+                            wrap_dict,
+                            getattr(wrap_choice, "finish_reason", None),
+                            [],
+                            kind="wrapup_truncated",
+                        )
+                    )
+                    final_answer = _message_text(wrap_dict)
                 except Exception as exc:  # noqa: BLE001
                     final_answer = (
                         f"Agent loop hit the model's token limit at iteration "
@@ -398,6 +446,7 @@ def run_agent(
                     tools_called=tools_called,
                     iterations=iterations,
                     trace=trace,
+                    turns=turns,
                 ).model_dump()
 
             # Refuse a forged or stale call even if the model emits a tool that
@@ -451,7 +500,18 @@ def run_agent(
                     "chat_template_kwargs": {"enable_thinking": False}
                 },
             )
-            final_answer = _message_text(_to_dict(wrapup.choices[0].message))
+            wrap_choice = wrapup.choices[0]
+            wrap_dict = _to_dict(wrap_choice.message)
+            turns.append(
+                _turn(
+                    iterations,
+                    wrap_dict,
+                    getattr(wrap_choice, "finish_reason", None),
+                    [],
+                    kind="wrapup_max_iterations",
+                )
+            )
+            final_answer = _message_text(wrap_dict)
         except Exception as exc:  # noqa: BLE001
             final_answer = (
                 f"Agent loop hit max_iterations={max_iterations} and the "
@@ -471,4 +531,5 @@ def run_agent(
         tools_called=tools_called,
         iterations=iterations,
         trace=trace,
+        turns=turns,
     ).model_dump()

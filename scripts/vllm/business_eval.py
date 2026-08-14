@@ -286,13 +286,22 @@ class _UsageTracker:
         return _Client()
 
 
-def failure_reasons(report: dict[str, Any], routing_results: list[dict]) -> list[str]:
+def failure_reasons(
+    report: dict[str, Any],
+    routing_results: list[dict],
+    require_pass_k: bool = False,
+) -> list[str]:
     """Everything that makes this run unfit to decide anything. Pure.
 
     An UNREACHABLE endpoint records {"error": ...} and no "results" key, so
     counting only per-case statuses meant a run where every endpoint was
     down exited 0 -- "no failures found" is exactly the wrong thing to tell
     a promotion gate that just benchmarked nothing.
+
+    require_pass_k additionally fails a case that passed some attempts and
+    not others. It is opt-in because an unreliable case and a broken one
+    deserve different responses, and a gate that cannot be green while a
+    known defect is open stops being read.
     """
     reasons: list[str] = []
     # Routing is model-independent and is copied into every endpoint's
@@ -314,6 +323,12 @@ def failure_reasons(report: dict[str, Any], routing_results: list[dict]) -> list
                 reasons.append(
                     f"{name} {result['id']}: {result['status']} "
                     f"{result.get('failures')}"
+                )
+            elif require_pass_k and result.get("pass_hat_k") == 0.0:
+                reasons.append(
+                    f"{name} {result['id']}: pass^k miss "
+                    f"{result.get('attempt_statuses')} "
+                    f"{result.get('failures_any_attempt')}"
                 )
     return reasons
 
@@ -342,21 +357,85 @@ def run_routing_case(case: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def run_model_case(
-    case: dict[str, Any], base_url: str, model: str, max_iterations: int
-) -> dict[str, Any]:
-    from urban_dossier_analyst.agent_loop import run_agent
+TRACE_RESULT_CHARS = 400
+TURN_TEXT_CHARS = 800
 
-    tracker = _UsageTracker()
-    started = time.monotonic()
-    response = run_agent(
-        user_message=case["prompt"],
-        max_iterations=max_iterations,
-        vllm_base_url=f"{base_url}/v1",
-        model=model,
-        client_factory=tracker.factory,
-    )
-    wall = time.monotonic() - started
+
+def trace_digest(
+    trace: list[dict[str, Any]] | None, result_chars: int = TRACE_RESULT_CHARS
+) -> list[dict[str, Any]]:
+    """Compact the ACTION record for the summary report.
+
+    Arguments are kept whole -- they are small, and "what radius did it
+    actually query" is the first question anyone asks of a surprising
+    result. Tool results are the bulky half (a single score_neighborhood
+    payload runs ~59k chars), so they are reduced to their shape plus a
+    head. Full fidelity lives in the --responses JSONL.
+    """
+
+    digest: list[dict[str, Any]] = []
+    for entry in trace or []:
+        result = entry.get("result")
+        if isinstance(result, dict):
+            encoded = json.dumps(result, default=str)
+            preview: dict[str, Any] = {
+                "keys": sorted(result.keys()),
+                "chars": len(encoded),
+            }
+            if "error" in result:
+                preview["error"] = result["error"]
+            if len(encoded) <= result_chars:
+                preview["result"] = result
+            else:
+                preview["result_head"] = encoded[:result_chars]
+        else:
+            preview = {"result": result}
+        digest.append(
+            {
+                "iteration": entry.get("iteration"),
+                "tool_name": entry.get("tool_name"),
+                "args": entry.get("args"),
+                "latency_ms": entry.get("latency_ms"),
+                "result_preview": preview,
+            }
+        )
+    return digest
+
+
+def turns_digest(
+    turns: list[dict[str, Any]] | None, text_chars: int = TURN_TEXT_CHARS
+) -> list[dict[str, Any]]:
+    """Compact the DELIBERATION record: what it was thinking each turn."""
+
+    def _clip(value: Any) -> str:
+        text = value if isinstance(value, str) else ""
+        return text if len(text) <= text_chars else text[:text_chars] + "..."
+
+    return [
+        {
+            "iteration": turn.get("iteration"),
+            "kind": turn.get("kind"),
+            "finish_reason": turn.get("finish_reason"),
+            "tool_calls": turn.get("tool_calls"),
+            "reasoning": _clip(turn.get("reasoning")),
+            "content": _clip(turn.get("content")),
+            "reasoning_chars": len(turn.get("reasoning") or ""),
+        }
+        for turn in turns or []
+    ]
+
+
+def grade_response(
+    case: dict[str, Any], response: dict[str, Any], wall_s: float, usage: dict[str, Any]
+) -> dict[str, Any]:
+    """Build one graded case record from a raw run_agent response.
+
+    Split out from run_model_case so --regrade can produce byte-identical
+    records from a stored response without spending another model run --
+    the same collection/grading separation scripts/evaluate_agent_business.py
+    already uses for the service-level corpus.
+    """
+
     graded = grade_case(case, response)
     tool_errors = sum(
         1
@@ -370,16 +449,175 @@ def run_model_case(
         "failures": graded["failures"],
         "soft": graded["soft"],
         "metrics": {
-            "wall_s": round(wall, 2),
+            "wall_s": round(wall_s, 2),
             "iterations": response.get("iterations"),
-            "llm_calls": tracker.llm_calls,
-            "prompt_tokens": tracker.prompt_tokens,
-            "completion_tokens": tracker.completion_tokens,
+            "llm_calls": usage.get("llm_calls"),
+            "prompt_tokens": usage.get("prompt_tokens"),
+            "completion_tokens": usage.get("completion_tokens"),
             "tools_called": response.get("tools_called"),
             "tool_errors": tool_errors,
         },
         "answer": response.get("answer"),
+        "trace": trace_digest(response.get("trace")),
+        "turns": turns_digest(response.get("turns")),
     }
+
+
+PASSING = ("pass", "warn")
+
+
+def merge_attempts(attempts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Collapse k attempts at one case into a single record. Pure.
+
+    `status` stays the FIRST attempt's, so a --repeat 1 report is identical
+    to what this harness has always produced and a repeated run stays
+    comparable to the single runs in the history.
+
+    `pass_hat_k` is tau-bench's pass^k, not an average: 1.0 only if every
+    one of the k independent attempts passed. Averaging is what let
+    "compare_neighborhoods is flaky" stand for a day as a property of the
+    benchmark when it was a reproducible defect in one model -- a metric
+    that rounds a 2-of-3 up to "mostly fine" cannot tell those apart.
+    """
+
+    if not attempts:
+        return {}
+    primary = dict(attempts[0])
+    if len(attempts) == 1:
+        primary["pass_hat_k"] = 1.0 if primary["status"] in PASSING else 0.0
+        primary["attempts"] = 1
+        return primary
+
+    statuses = [a["status"] for a in attempts]
+    primary["attempts"] = len(attempts)
+    primary["attempt_statuses"] = statuses
+    primary["pass_hat_k"] = (
+        1.0 if all(s in PASSING for s in statuses) else 0.0
+    )
+    # Union of what went wrong across attempts -- a failure seen in any run
+    # is a failure the promotion has to answer for.
+    seen: list[str] = []
+    for attempt in attempts:
+        for failure in attempt.get("failures") or []:
+            if failure not in seen:
+                seen.append(failure)
+    primary["failures_any_attempt"] = seen
+    walls = [
+        a["metrics"]["wall_s"] for a in attempts if (a.get("metrics") or {}).get("wall_s")
+    ]
+    if walls:
+        primary["wall_s_attempts"] = walls
+    return primary
+
+
+def summarize(results: list[dict[str, Any]], repeat: int) -> dict[str, Any]:
+    """Endpoint-level roll-up. Pure, so --regrade produces the same shape."""
+
+    counted = [r for r in results if r["status"] in ("pass", "warn", "fail")]
+    passed = [r for r in counted if r["status"] in PASSING]
+    walls = sorted(r["metrics"]["wall_s"] for r in results if r.get("metrics"))
+    return {
+        "pass": sum(1 for r in results if r["status"] == "pass"),
+        "warn": sum(1 for r in results if r["status"] == "warn"),
+        "fail": sum(1 for r in results if r["status"] == "fail"),
+        "skip": sum(1 for r in results if r["status"] == "skip"),
+        "error": sum(1 for r in results if r["status"] == "error"),
+        "pass_rate": round(len(passed) / len(counted), 3) if counted else None,
+        "wall_p50_s": walls[len(walls) // 2] if walls else None,
+        "wall_max_s": walls[-1] if walls else None,
+        # `or 0`: a replayed record whose usage was never captured must not
+        # take the whole summary down with a None.
+        "completion_tokens_total": sum(
+            (r["metrics"].get("completion_tokens") or 0)
+            for r in results
+            if r.get("metrics")
+        ),
+        "repeat": repeat,
+        # Fraction of cases that passed on EVERY attempt. Equals pass_rate
+        # when repeat=1; diverges from it exactly where the model is
+        # unreliable rather than wrong.
+        "pass_hat_k": (
+            round(
+                sum(1 for r in counted if r.get("pass_hat_k") == 1.0) / len(counted), 3
+            )
+            if counted
+            else None
+        ),
+    }
+
+
+def regrade_responses(
+    path: Path, cases_by_id: dict[str, dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    """Re-grade a stored --responses JSONL with the CURRENT graders.
+
+    The point of keeping the raw responses is that a grader bug found later
+    can be re-run over every past decision without paying for the model
+    time again -- and, more importantly, without the models having drifted
+    underneath the comparison.
+    """
+
+    by_endpoint: dict[str, dict[str, list]] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        entry = json.loads(line)
+        case = cases_by_id.get(entry.get("case_id"))
+        if case is None or "response" not in entry:
+            continue
+        bucket = by_endpoint.setdefault(
+            entry.get("endpoint", "replay"),
+            {"model": entry.get("model", ""), "attempts": {}},
+        )
+        record = grade_response(
+            case, entry["response"], entry.get("wall_s", 0.0), entry.get("usage") or {}
+        )
+        bucket["attempts"].setdefault(case["id"], []).append(record)
+
+    out: dict[str, dict[str, Any]] = {}
+    for endpoint_name, bucket in by_endpoint.items():
+        results = [merge_attempts(a) for a in bucket["attempts"].values()]
+        repeat = max((len(a) for a in bucket["attempts"].values()), default=1)
+        out[endpoint_name] = {
+            "url": "(replayed)",
+            "model": bucket["model"],
+            "summary": summarize(results, repeat),
+            "results": results,
+        }
+    return out
+
+
+def run_model_case(
+    case: dict[str, Any], base_url: str, model: str, max_iterations: int
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Run one case. Returns (graded record, raw record for the JSONL)."""
+
+    from urban_dossier_analyst.agent_loop import run_agent
+
+    tracker = _UsageTracker()
+    started = time.monotonic()
+    response = run_agent(
+        user_message=case["prompt"],
+        max_iterations=max_iterations,
+        vllm_base_url=f"{base_url}/v1",
+        model=model,
+        client_factory=tracker.factory,
+    )
+    wall = time.monotonic() - started
+    usage = {
+        "llm_calls": tracker.llm_calls,
+        "prompt_tokens": tracker.prompt_tokens,
+        "completion_tokens": tracker.completion_tokens,
+    }
+    record = grade_response(case, response, wall, usage)
+    raw = {
+        "case_id": case["id"],
+        "wall_s": round(wall, 2),
+        "usage": usage,
+        "response": response,
+    }
+    return record, raw
 
 
 def main() -> int:
@@ -390,7 +628,31 @@ def main() -> int:
     parser.add_argument("--routing-only", action="store_true")
     parser.add_argument("--max-iterations", type=int, default=8)
     parser.add_argument("--output", default=None)
+    parser.add_argument(
+        "--repeat", type=int, default=1, metavar="K",
+        help="run each case K times per endpoint and report pass^k "
+             "(tau-bench sense: a case counts only if all K attempts pass)",
+    )
+    parser.add_argument(
+        "--require-pass-k", action="store_true",
+        help="make pass^k part of the exit-code contract. Off by default: "
+             "a known-open defect would otherwise redden every run.",
+    )
+    parser.add_argument(
+        "--responses", default=None, metavar="PATH",
+        help="write one JSON object per attempt, full fidelity, to this "
+             "JSONL. Replayable with --regrade after a grader change.",
+    )
+    parser.add_argument(
+        "--regrade", default=None, metavar="PATH",
+        help="grade a previously collected --responses JSONL instead of "
+             "calling any model. Costs no GPU time.",
+    )
     args = parser.parse_args()
+    if args.repeat < 1:
+        parser.error("--repeat must be >= 1")
+    if args.regrade and args.endpoint:
+        parser.error("--regrade replays a stored run; it takes no --endpoint")
 
     spec = json.loads(Path(args.cases).read_text(encoding="utf-8"))
     cases = spec["cases"]
@@ -433,6 +695,24 @@ def main() -> int:
         print(f"[routing] {result['id']}: {result['status']}"
               + (f"  {result['failures']}" if result["failures"] else ""))
 
+    if args.regrade:
+        by_id = {c["id"]: c for c in model_cases}
+        for endpoint_name, endpoint_report in regrade_responses(
+            Path(args.regrade), by_id
+        ).items():
+            endpoint_report["results"] = (
+                list(routing_results) + endpoint_report["results"]
+            )
+            report["endpoints"][endpoint_name] = endpoint_report
+            print(f"[{endpoint_name}] regraded {json.dumps(endpoint_report['summary'])}")
+        return _finish(report, routing_results, args)
+
+    responses_fh = None
+    if args.responses:
+        responses_path = Path(args.responses)
+        responses_path.parent.mkdir(parents=True, exist_ok=True)
+        responses_fh = responses_path.open("w", encoding="utf-8")
+
     endpoints = args.endpoint or (
         [] if args.routing_only else ["current=http://127.0.0.1:8000"]
     )
@@ -463,42 +743,46 @@ def main() -> int:
                 )
                 print(f"[{name}] {case['id']}: skip (needs {missing})")
                 continue
-            try:
-                result = run_model_case(case, url, model, args.max_iterations)
-            except Exception as exc:  # noqa: BLE001 - harness must survive
-                result = {
-                    "id": case["id"],
-                    "category": case["category"],
-                    "status": "error",
-                    "failures": [f"{type(exc).__name__}: {exc}"],
-                }
-            results.append(result)
-            metrics = result.get("metrics") or {}
-            print(
-                f"[{name}] {result['id']}: {result['status']}"
-                f"  ({metrics.get('wall_s', '-')}s,"
-                f" tools={metrics.get('tools_called', [])})"
-                + (f"  {result['failures']}" if result.get("failures") else "")
-            )
+            attempts: list[dict[str, Any]] = []
+            for attempt in range(1, args.repeat + 1):
+                try:
+                    record, raw = run_model_case(
+                        case, url, model, args.max_iterations
+                    )
+                except Exception as exc:  # noqa: BLE001 - harness must survive
+                    record = {
+                        "id": case["id"],
+                        "category": case["category"],
+                        "status": "error",
+                        "failures": [f"{type(exc).__name__}: {exc}"],
+                    }
+                    raw = {"case_id": case["id"], "error": str(exc)}
+                attempts.append(record)
+                if responses_fh is not None:
+                    responses_fh.write(
+                        json.dumps(
+                            {"endpoint": name, "model": model, "attempt": attempt, **raw},
+                            ensure_ascii=False,
+                            default=str,
+                        )
+                        + "\n"
+                    )
+                metrics = record.get("metrics") or {}
+                suffix = f" [{attempt}/{args.repeat}]" if args.repeat > 1 else ""
+                print(
+                    f"[{name}] {record['id']}{suffix}: {record['status']}"
+                    f"  ({metrics.get('wall_s', '-')}s,"
+                    f" tools={metrics.get('tools_called', [])})"
+                    + (f"  {record['failures']}" if record.get("failures") else "")
+                )
 
-        counted = [r for r in results if r["status"] in ("pass", "warn", "fail")]
-        passed = [r for r in counted if r["status"] in ("pass", "warn")]
-        walls = sorted(
-            (r["metrics"]["wall_s"] for r in results if r.get("metrics")),
-        )
-        summary = {
-            "pass": sum(1 for r in results if r["status"] == "pass"),
-            "warn": sum(1 for r in results if r["status"] == "warn"),
-            "fail": sum(1 for r in results if r["status"] == "fail"),
-            "skip": sum(1 for r in results if r["status"] == "skip"),
-            "error": sum(1 for r in results if r["status"] == "error"),
-            "pass_rate": round(len(passed) / len(counted), 3) if counted else None,
-            "wall_p50_s": walls[len(walls) // 2] if walls else None,
-            "wall_max_s": walls[-1] if walls else None,
-            "completion_tokens_total": sum(
-                r["metrics"]["completion_tokens"] for r in results if r.get("metrics")
-            ),
-        }
+            result = merge_attempts(attempts)
+            results.append(result)
+            if args.repeat > 1 and result["pass_hat_k"] < 1.0:
+                statuses = [a["status"] for a in attempts]
+                print(f"[{name}] {result['id']}: pass^{args.repeat} MISS {statuses}")
+
+        summary = summarize(results, args.repeat)
         print(f"[{name}] {json.dumps(summary)}")
         report["endpoints"][name] = {
             "url": url,
@@ -506,6 +790,16 @@ def main() -> int:
             "summary": summary,
             "results": results,
         }
+
+    if responses_fh is not None:
+        responses_fh.close()
+        print(f"responses written to {args.responses}")
+
+    return _finish(report, routing_results, args)
+
+
+def _finish(report: dict[str, Any], routing_results: list[dict], args: Any) -> int:
+    """Write the report and turn it into an exit code. Shared by both paths."""
 
     if args.routing_only:
         report["routing_results"] = routing_results
@@ -520,7 +814,9 @@ def main() -> int:
         )
         print(f"report written to {out}")
 
-    reasons = failure_reasons(report, routing_results)
+    reasons = failure_reasons(
+        report, routing_results, require_pass_k=args.require_pass_k
+    )
     for reason in reasons:
         print(f"FAIL {reason}", file=sys.stderr)
     return 1 if reasons else 0

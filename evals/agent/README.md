@@ -75,6 +75,17 @@ python3 scripts/vllm/business_eval.py \
 # Gate check without a model (CI-safe):
 python3 scripts/vllm/business_eval.py --routing-only
 
+# Decision-grade run: 3 attempts per case, full trajectories kept:
+python3 scripts/vllm/business_eval.py \
+  --endpoint lightning=http://127.0.0.1:8002 \
+  --repeat 3 \
+  --responses /mnt/data/urban-dossier-state/evals/run.jsonl \
+  --output /mnt/data/urban-dossier-state/evals/run.json
+
+# Re-grade that run after changing a grader -- no GPU, no model drift:
+python3 scripts/vllm/business_eval.py \
+  --regrade /mnt/data/urban-dossier-state/evals/run.jsonl
+
 # Same candidate at the sampling ITS OWN model card asks for:
 URBAN_DOSSIER_AGENT_TEMPERATURE=1.0 \
 URBAN_DOSSIER_AGENT_WRAPUP_TEMPERATURE=0.7 \
@@ -93,6 +104,44 @@ Statuses: `pass` / `warn` (only the soft numeric-faithfulness check
 missed) / `fail` / `skip` (case needs an availability-gated tool that is
 not released — `find_similar_neighborhoods` and `retrieve_dataset_docs`
 today) / `error` (harness or endpoint failure).
+
+## What every run records
+
+Each case keeps, alongside its status and metrics:
+
+- `trace` — the **action** record. One entry per tool call with the
+  arguments in full, the latency, and the result's shape plus a head.
+  Arguments are never truncated: "what radius did it actually query" is the
+  first question a surprising result raises.
+- `turns` — the **deliberation** record. One entry per model call with the
+  reasoning text (clipped, with the original length kept), what it said, the
+  finish reason, and which tools it decided to call.
+
+Full-fidelity responses go to `--responses` as JSONL; `--regrade` replays
+that file through the current graders without calling a model. Keep the
+JSONL for any run that decides something — a grader bug found next month can
+then be re-run over the decision instead of re-run against models that have
+since changed underneath it.
+
+This is not bookkeeping. The first run after `trace` landed overturned a
+conclusion already written into `MODEL_CANDIDATES.md`: a case recorded as
+"Lightning fails to select `compare_neighborhoods`" turned out to be
+`search_address` returning nothing for `"Union Square Manhattan"`, with the
+model reasoning correctly and retrying the geocode until it ran out of
+iterations. Tool names alone could not tell those two apart.
+
+## pass^k
+
+`--repeat K` runs each case K times per endpoint. `pass_hat_k` is 1.0 only
+if **all** K attempts passed — tau-bench's sense, not an average, because
+averaging is what let one model's high-frequency failure read as "the
+benchmark is a bit flaky" for a day. `status` stays the first attempt's, so
+repeated runs remain comparable with the single runs already in the history,
+and `attempt_statuses` plus `failures_any_attempt` carry the rest.
+
+pass^k does **not** affect the exit code unless `--require-pass-k` is
+passed. A gate that cannot go green while a known defect is open stops being
+read, and an unreliable case and a broken one deserve different responses.
 
 Exit code 0 means the run is fit to decide something: every endpoint
 answered, every routing case held, at least one case ran per endpoint, and
