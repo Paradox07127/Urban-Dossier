@@ -18,8 +18,11 @@ Termination conditions:
   3. The same (tool_name, args) hash appears 3 times in a row -> abort.
 
 Reflection:
-  Every `reflection_every` iterations, append REFLECTION_PROMPT as a system
-  message to force self-evaluation.
+  Every `reflection_every` iterations, append REFLECTION_PROMPT to force
+  self-evaluation.  Only the leading message carries role="system"; every
+  mid-conversation directive goes in as role="user" via _append_directive,
+  because some chat templates (Qwen3.8's) reject a later system message
+  outright.
 
 Test seam:
   Pass `client_factory` to inject a stub OpenAI client; tests/test_smoke.py
@@ -30,6 +33,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 from typing import Any, Callable
 
@@ -45,6 +49,36 @@ from .tools import (
 
 Message = dict[str, Any]
 ClientFactory = Callable[[str], Any]
+
+# 0.2 is the production setting for every model this service has served, and
+# stays the default -- these knobs exist so a benchmark can ask "is this
+# candidate being penalised by our sampling?" without editing the loop.
+# Qwen3.8, for one, asks for 1.0 with thinking on and 0.7 with it off, well
+# away from what the Nemotron checkpoints were tuned against here.
+# _WRAPUP_TEMPERATURE applies to the two thinking-disabled wrap-up calls,
+# which is the "instruct mode" half of that split.
+_TEMPERATURE = float(os.environ.get("URBAN_DOSSIER_AGENT_TEMPERATURE", "0.2"))
+_WRAPUP_TEMPERATURE = float(
+    os.environ.get("URBAN_DOSSIER_AGENT_WRAPUP_TEMPERATURE", "0.2")
+)
+
+
+def _append_directive(messages: list[Message], text: str) -> None:
+    """Inject a mid-conversation steering message (reflection, final-answer).
+
+    These used to go in as role="system", which the Nemotron checkpoints
+    accept anywhere in the conversation.  Qwen3.8's chat template does not:
+    it rejects the whole request with HTTP 400 "System message must be at the
+    beginning", killing the loop mid-run.  Measured 2026-08-14, that took out
+    3 of Qwen3.8's 20 business-eval cases -- and they were scored as model
+    failures, which they were not.
+
+    role="user" is accepted by every chat template we serve and reads the
+    same: both directives already announce themselves with a bracketed
+    [header], so they do not pass as something the human typed.
+    """
+
+    messages.append({"role": "user", "content": text})
 
 
 def _default_client_factory(base_url: str) -> Any:
@@ -239,7 +273,7 @@ def run_agent(
 
         # Reflection injection (skip iteration 0).
         if iteration > 0 and iteration % reflection_every == 0:
-            messages.append({"role": "system", "content": REFLECTION_PROMPT})
+            _append_directive(messages, REFLECTION_PROMPT)
 
         try:
             response = client.chat.completions.create(
@@ -247,7 +281,7 @@ def run_agent(
                 messages=messages,
                 tools=active_tools,
                 tool_choice="auto",
-                temperature=0.2,
+                temperature=_TEMPERATURE,
             )
         except Exception as exc:  # noqa: BLE001 - surface upstream failures
             final_answer = (
@@ -287,13 +321,13 @@ def run_agent(
             elif finish_reason == "length":
                 # Cut off before it produced an answer. Ask for a short one
                 # rather than handing the user raw chain of thought.
-                messages.append({"role": "system", "content": FINAL_ANSWER_PROMPT})
+                _append_directive(messages, FINAL_ANSWER_PROMPT)
                 try:
                     wrapup = client.chat.completions.create(
                         model=model,
                         messages=messages,
                         tool_choice="none",
-                        temperature=0.2,
+                        temperature=_WRAPUP_TEMPERATURE,
                         max_tokens=1024,
                         # Wrap-up wants a direct answer; with thinking on,
                         # reasoning models (Nemotron 3.5 measured at ~1K
@@ -403,13 +437,13 @@ def run_agent(
     else:
         # Loop ran to max_iterations without a final answer. Force the model
         # to produce one with FINAL_ANSWER_PROMPT.
-        messages.append({"role": "system", "content": FINAL_ANSWER_PROMPT})
+        _append_directive(messages, FINAL_ANSWER_PROMPT)
         try:
             wrapup = client.chat.completions.create(
                 model=model,
                 messages=messages,
                 tool_choice="none",
-                temperature=0.2,
+                temperature=_WRAPUP_TEMPERATURE,
                 max_tokens=1024,
                 # Same rationale as the truncation wrap-up above: direct
                 # answer only, no think block eating the 1024 budget.

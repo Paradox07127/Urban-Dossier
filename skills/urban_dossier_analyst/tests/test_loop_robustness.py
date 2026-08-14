@@ -215,5 +215,70 @@ def test_oversized_tool_result_is_compacted_before_reaching_the_model():
     assert result["trace"][0]["result"]["evidence_table"] == "x" * 40000
 
 
+# --------------------------------------------------------------------------- #
+# Portability of the message stream across chat templates
+# --------------------------------------------------------------------------- #
+
+
+def test_only_the_leading_message_is_a_system_message():
+    """A system message anywhere but position 0 is a 400 on some models.
+
+    Qwen3.8's chat template answers a later system message with HTTP 400
+    "System message must be at the beginning" and takes the whole request
+    down.  On 2026-08-14 that killed 3 of its 20 business-eval cases, scoring
+    a harness incompatibility as a model failure.  Both mid-conversation
+    directives (reflection, final-answer) must therefore go in as role="user".
+    """
+
+    import urban_dossier_analyst.agent_loop as loop
+
+    # Distinct args each turn, so the repeated-call guard does not abort the
+    # loop before the injections happen.
+    script = [
+        (
+            None,
+            None,
+            "tool_calls",
+            [{
+                "id": f"call_{i}",
+                "function": {
+                    "name": "score_neighborhood",
+                    "arguments": json.dumps({"latitude": 40.7 + i / 100}),
+                },
+            }],
+        )
+        for i in range(4)
+    ]
+    script.append(("Done.", None, "stop", None))
+
+    original = loop.dispatch_tool
+    loop.dispatch_tool = lambda name, args: {"scores": {"safety": 35}}
+    try:
+        client = _StubClient(script)
+        # reflection_every=1 injects the reflection prompt from iteration 1;
+        # max_iterations=4 then forces the final-answer wrap-up as well.
+        run_agent(
+            user_message="q",
+            client_factory=lambda _u: client,
+            max_iterations=4,
+            reflection_every=1,
+        )
+    finally:
+        loop.dispatch_tool = original
+
+    for call in client.calls:
+        roles = [m.get("role") for m in call["messages"]]
+        assert roles[0] == "system", roles
+        assert "system" not in roles[1:], (
+            f"system message at index {roles[1:].index('system') + 1}: {roles}"
+        )
+
+    # And the directives really were injected -- otherwise this passes vacuously.
+    last = client.calls[-1]["messages"]
+    injected = [m for m in last if m.get("role") == "user"
+                and str(m.get("content", "")).startswith("[")]
+    assert injected, [m.get("role") for m in last]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

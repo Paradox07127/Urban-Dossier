@@ -88,6 +88,7 @@ services:
   # explicitly and only while benchmarking:
   #   docker compose ... --profile candidate up -d llm-lightning
   #   docker compose ... --profile candidate-super up -d llm-super
+  #   docker compose ... --profile candidate-qwen up -d llm-qwen38
   # llm-super needs the GPU essentially to itself (80.3 GiB of weights on a
   # 96 GiB card) — stop every other GPU service first.
   llm-lightning:
@@ -217,6 +218,86 @@ services:
       - /model/super_v3_reasoning_parser.py
       - --reasoning-parser
       - super_v3
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - qwen3_coder
+    <<: *gpu
+
+  # Qwen3.8-27B (2026-08-14).  The first non-Nemotron candidate, and the only
+  # DENSE one: 27B active every token against Lightning's 30B-A3B MoE (3B
+  # active).  Read every throughput number here with that in mind — this
+  # model is not expected to win on tokens/s, it is here to answer whether a
+  # dense 27B is enough better at the agent's job to be worth the latency.
+  #
+  # Architecture is a Gated DeltaNet hybrid: 16 x (3 x GDN -> FFN, 1 x gated
+  # attention -> FFN).  Only a quarter of the layers hold a KV cache, so long
+  # context is cheap; the rest hold recurrent state sized by
+  # --mamba-ssm-cache-dtype.
+  #
+  # Checkpoint: Inferact/Qwen3.8-27B-NVFP4, the NVFP4 build vLLM's own recipe
+  # page names for the single-GPU (TP1) profile.  It quantizes every Linear to
+  # W4A4 but excludes the linear_attn projections and conv1d, lm_head and
+  # embed_tokens -- the right call for a GDN hybrid, whose recurrent state is
+  # precision-sensitive.  unsloth's same-named NVFP4 is mixed-precision (FP4
+  # only on the MLPs, FP8 elsewhere) and 22.5 GiB; keep it as the fallback if
+  # this one misbehaves.
+  llm-qwen38:
+    # 0.27.1 registers Qwen3_5ForConditionalGeneration natively (verified
+    # against this exact image on 2026-08-14), so no --trust-remote-code and
+    # no image bump is needed for the base serving path.
+    image: vllm/vllm-openai:v0.27.1
+    profiles: [candidate-qwen]
+    restart: unless-stopped
+    network_mode: host
+    ipc: host
+    shm_size: 16g
+    environment:
+      HF_HOME: /root/.cache/huggingface
+    volumes:
+      - ${URBAN_DOSSIER_STATE_ROOT:-/mnt/data/urban-dossier-state}/models/llm-candidates/qwen3.8-27b-nvfp4:/model:ro
+      - *hf-cache
+    entrypoint: [vllm]
+    command:
+      - serve
+      - /model
+      - --served-model-name
+      - ${QWEN38_SERVED_NAME:-Qwen/Qwen3.8-27B-NVFP4}
+      - --host
+      - 0.0.0.0
+      - --port
+      - ${QWEN38_PORT:-8004}
+      # 25.5 GiB of weights.  0.45 leaves room for the KV cache, the GDN
+      # recurrent state and the vision tower, and adds to Lightning's 0.38 for
+      # 0.83 of the card -- the same total the Nano+Lightning A/B ran at on
+      # 2026-08-12, so the two candidates can be co-resident for a same-session
+      # comparison.
+      - --gpu-memory-utilization
+      - ${QWEN38_GPU_MEMORY_UTILIZATION:-0.45}
+      # 262144 native (1M with YaRN), but pinned to Lightning's 131072 so the
+      # side-by-side varies the model and nothing else.
+      - --max-model-len
+      - ${QWEN38_MAX_MODEL_LEN:-131072}
+      - --max-num-seqs
+      - ${QWEN38_MAX_NUM_SEQS:-8}
+      - --max-num-batched-tokens
+      - ${QWEN38_MAX_BATCHED_TOKENS:-32768}
+      - --kv-cache-dtype
+      - fp8
+      - --enable-prefix-caching
+      - --enable-chunked-prefill
+      # float32 GDN state: the hybrid keeps attention KV for only a quarter of
+      # its layers, so there is headroom to spend on state precision here that
+      # llm-super (float16) does not have.
+      - --mamba-ssm-cache-dtype
+      - float32
+      # Dense model -- no --moe-backend.  MTP speculative decoding is NOT
+      # enabled yet: the checkpoint ships the head (nvfp4_experts_mtp
+      # .safetensors) and 0.27.1 registers Qwen3_5MTP, but the GDN speculative
+      # path is the one piece reported unfixed in a released tag.  Measure the
+      # base path first, then try:
+      #   --speculative_config '{"method":"mtp","num_speculative_tokens":3}'
+      - --reasoning-parser
+      - qwen3
       - --enable-auto-tool-choice
       - --tool-call-parser
       - qwen3_coder
