@@ -74,7 +74,20 @@ python3 scripts/vllm/business_eval.py \
 
 # Gate check without a model (CI-safe):
 python3 scripts/vllm/business_eval.py --routing-only
+
+# Same candidate at the sampling ITS OWN model card asks for:
+URBAN_DOSSIER_AGENT_TEMPERATURE=1.0 \
+URBAN_DOSSIER_AGENT_WRAPUP_TEMPERATURE=0.7 \
+python3 scripts/vllm/business_eval.py --endpoint qwen38=http://127.0.0.1:8004
 ```
+
+**Run every candidate twice: once at our production temperature (0.2, the
+default) and once at whatever its card recommends.** The first answers "can
+it drop into the service as-is", the second answers "is our sampling
+hiding what it can do" — and the two can disagree sharply. Qwen3.8-27B
+failed `format-three-sentences` at 0.2 and cleared the entire set at its
+recommended 1.0 (2026-08-14). A candidate judged only at 0.2 is judged
+under a Nemotron-era assumption.
 
 Statuses: `pass` / `warn` (only the soft numeric-faithfulness check
 missed) / `fail` / `skip` (case needs an availability-gated tool that is

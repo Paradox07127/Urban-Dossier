@@ -253,3 +253,108 @@ Operational note: the 128K context retune made the 0.30 GPU fraction
 unbootable for the Lightning service (cache-blocks OOM, crash loop); compose
 default is now 0.38 — 135 s to ready alongside production Nano, 76 GiB
 steady total.
+
+---
+
+## 2026-08-14 — Qwen3.8-27B enters the comparison
+
+The first non-Nemotron candidate, and the only dense one. Qwen3.8-27B is a
+Gated DeltaNet hybrid — 16 × (3 × GDN → FFN, 1 × gated attention → FFN),
+262K native context, MTP head, native vision — with **27B active on every
+token** against Lightning's 30B-A3B MoE that activates 3B. Every number
+below should be read against that asymmetry.
+
+**Checkpoint.** `Inferact/Qwen3.8-27B-NVFP4`, the NVFP4 build vLLM's own
+recipe page names for the single-GPU (TP1) profile. It quantizes every
+Linear to W4A4 but excludes the `linear_attn` projections, `conv1d`,
+`lm_head` and `embed_tokens` — the right call for a GDN hybrid, whose
+recurrent state is precision-sensitive. 25.5 GiB, MTP head included.
+Verified on download: all 7 shards' byte lengths match their safetensors
+headers exactly, 2111 tensors, index agrees. (The repo's own `crc32.txt`
+is stale — it describes a `layers-N.safetensors` packaging that the
+published files do not use, and only 10 of its 76 entries name a real file.
+Do not treat its mismatches as corruption.)
+
+**Framework.** No vLLM change was needed. The pinned v0.27.1 image already
+registers `Qwen3_5ForConditionalGeneration` *and* `Qwen3_5MTP` — verified by
+querying the registry inside that exact image, not by reading release notes.
+No `--trust-remote-code`. vLLM sets the Mamba cache to `align` mode by
+itself when prefix caching is on, so the GDN state needs no explicit flag.
+Parsers per the recipe: `--reasoning-parser qwen3`, `--tool-call-parser
+qwen3_coder`, `--kv-cache-dtype fp8`. There is no Qwen3.8 arXiv technical
+report — the model card and the vLLM recipe page are the primary sources.
+MTP speculative decoding is left off pending a measurement of the base path.
+
+**Throughput A/B** (`ab_bench`, 512 max tokens, zero errors both sides):
+
+| | Lightning | Qwen3.8-27B |
+|---|---|---|
+| C1 | **505.6 tok/s** | 59.6 tok/s |
+| C4 | **804.4 tok/s** | 204.1 tok/s |
+| TTFT p50 (C1) | 0.066 s | 0.059 s |
+
+8.5× single-stream. That is the dense-vs-3B-active gap plus Lightning's
+DSpark drafter (measured 59.9% draft acceptance during these runs).
+
+**Business eval** (`model_cases.json` v1.0, three same-code rounds at the
+production temperature, plus one round at Qwen's own recommended sampling):
+
+| | Lightning ×3 | Qwen3.8 @0.2 ×2 | Qwen3.8 @card temp |
+|---|---|---|---|
+| pass / warn / fail | 20 / 1 / 1 (all three rounds) | 17/4/1, 16/4/2 | **18 / 4 / 0** |
+| pass_rate | 0.955 | 0.955, 0.909 | **1.0** |
+| wall p50 | **5.6 – 7.3 s** | 25.7 – 26.6 s | 27.0 s |
+| wall max | **14.1 – 17.0 s** | 52.1 – 84.4 s | 118.2 s |
+| completion tokens | 31.2k – 39.9k | 27.2k – 31.6k | 35.6k |
+
+Read this carefully, because the two models fail in different *kinds* of
+ways:
+
+- **Lightning fails `tool-compare-two-places` in all three rounds.** It
+  substitutes two `score_neighborhood` calls for `compare_neighborhoods`
+  every time. The 2026-08-13 note called comparison-tool selection "flaky on
+  both models"; with three more rounds it is not flaky for Lightning, it is
+  consistent. This is a reproducible capability gap on a first-class product
+  feature.
+- **Qwen3.8 at its card sampling calls `compare_neighborhoods` correctly**
+  and clears the whole set — the only configuration in this comparison with
+  zero hard failures.
+- **Qwen3.8 at our production 0.2 fails `format-three-sentences`** (7 and 6
+  sentences against a limit of 4). Its verbosity is temperature-sensitive in
+  the direction opposite to intuition: the *hotter*, card-recommended
+  setting is the disciplined one. Qwen's card asks for 1.0 with thinking on
+  and 0.7 with it off; 0.2 is well outside what it was tuned for.
+
+**What the comparison exposed in our own code.** Round 1 scored Qwen at 2
+fails; 3 of its 20 cases had actually died on `HTTP 400 "System message must
+be at the beginning"`. `agent_loop` injected its reflection and final-answer
+directives as `role="system"` mid-conversation — accepted by Nemotron
+anywhere, rejected outright by Qwen's template. That is fixed (all
+mid-conversation directives are `role="user"` now, with a test pinning it)
+and rounds 2/3 show zero aborts. **Any candidate evaluated before
+2026-08-14 was measured with this defect present**; it only ever penalised
+models whose templates enforce the rule, so the Nemotron numbers stand, but
+no cross-family comparison older than this date should be trusted.
+
+**Verdict.** Qwen3.8-27B is not a serving replacement on this hardware: 8.5×
+slower single-stream and a 27 s case p50 against Lightning's 6 s is not a
+trade this product can make for an interactive map. It is, however, the only
+candidate that has cleared the business set outright, and it is right about
+`compare_neighborhoods` where Lightning is consistently wrong. Two things
+follow that are worth more than the verdict:
+
+1. Lightning's `compare_neighborhoods` failure is now a known, reproducible
+   defect to fix in the prompt or tool description — not a benchmark
+   artifact to average away.
+2. `format-three-sentences` and the temperature finding say our hardcoded
+   0.2 is a Nemotron-era assumption. The knob now exists
+   (`URBAN_DOSSIER_AGENT_TEMPERATURE`); any future candidate should be run
+   at both its own recommended sampling and ours before it is judged.
+
+Qwen3.8 stays on the bench as a second opinion (profile `candidate-qwen`,
+port 8004), alongside Super. It does not change Lightning's promotion path.
+
+**Not measured, and worth measuring before anyone revisits this:** MTP
+speculative decoding (the head is in the checkpoint and vLLM registers the
+class — this is the single biggest lever on that 59.6 tok/s), and the vision
+tower, which we load and never use.
