@@ -734,6 +734,51 @@ def test_inline_json_and_unknown_profiles():
         raise AssertionError("unknown profile must not resolve silently")
 
 
+def test_narrow_no_break_space_does_not_hide_a_correct_answer():
+    """U+202F cost Lightning a 3/3 failure it had not earned.
+
+    Its answer named Union Square eight times off a correctly resolved
+    referent; the separator it chose between the two words was a NARROW
+    NO-BREAK SPACE, and `union square` did not match. U+00A0 was already
+    normalised, so the family looked handled.
+    """
+    case = {
+        "prompt": "And how does that compare with Union Square in Manhattan?",
+        "expect": {"answer_regex_all": ["union square"]},
+    }
+    response = {
+        "answer": "Union Square scores 51 for safety [compare_neighborhoods].",
+        "evidence": [], "tools_called": ["compare_neighborhoods"],
+        "iterations": 1, "trace": [], "turns": [],
+    }
+    assert grade_case(case, response)["status"] == "pass"
+
+
+def test_the_whole_space_family_normalises():
+    for codepoint in (
+        " ", " ", " ", " ", "　", " ",
+    ):
+        case = {"prompt": "q", "expect": {"answer_regex_all": ["union square"]}}
+        response = {
+            "answer": f"Union{codepoint}Square", "evidence": [],
+            "tools_called": [], "iterations": 1, "trace": [], "turns": [],
+        }
+        assert grade_case(case, response)["status"] == "pass", (
+            f"U+{ord(codepoint):04X} still blocks the match"
+        )
+
+
+def test_zero_width_characters_are_deleted_not_spaced():
+    """A joiner has no width, so replacing it with a space would break the
+    word it was invisibly sitting inside."""
+    case = {"prompt": "q", "expect": {"answer_regex_all": ["manhattan"]}}
+    response = {
+        "answer": "Man​hattan", "evidence": [], "tools_called": [],
+        "iterations": 1, "trace": [], "turns": [],
+    }
+    assert grade_case(case, response)["status"] == "pass"
+
+
 def test_every_named_profile_is_a_dict():
     for name, profile in SAMPLING_PROFILES.items():
         assert isinstance(profile, dict), name

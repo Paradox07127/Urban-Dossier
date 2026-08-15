@@ -65,14 +65,42 @@ CITATION_RE = re.compile(r"\[[^\[\]]{3,120}\]")
 # are conversational, not claims worth policing.
 NUMBER_RE = re.compile(r"\d+\.\d+|\d{2,}")
 
-# Models emit typographic punctuation ("isn’t", "‑73.99" with a non-breaking
-# hyphen); the case regexes are ASCII. Observed in the first Nano baseline: a
-# perfect refusal failed grading because of U+2019. Normalize before matching.
-_TYPOGRAPHIC_MAP = str.maketrans({
-    "‘": "'", "’": "'", "“": '"', "”": '"',
-    "‐": "-", "‑": "-", "‒": "-", "–": "-", "—": "-",
-    " ": " ",
-})
+# Models emit typographic punctuation ("isn’t", "‑73.99" with a
+# non-breaking hyphen); the case regexes are ASCII. Observed in the first Nano
+# baseline: a perfect refusal failed grading because of U+2019. Normalize
+# before matching.
+#
+# The space family is here for the same reason and cost more to learn. On
+# 2026-08-15 Lightning failed multiturn-followup-referent 3/3 on "answer
+# missing required pattern: union square" -- while its answer named Union
+# Square eight times, in a comparison table, built off a correctly resolved
+# referent. The separator it had picked was U+202F NARROW NO-BREAK SPACE.
+# U+00A0 was already mapped; the rest of the family was not, so one invisible
+# character read as a model that could not hold a conversation.
+#
+# Written as escapes on purpose. The previous entry was a literal character
+# that no reader could tell from a plain space, which is exactly why nobody
+# noticed the family was covered by one member.
+_UNICODE_SPACES = (
+    "\u00a0"  # NO-BREAK SPACE
+    "\u1680"  # OGHAM SPACE MARK
+    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+    "\u202f"  # NARROW NO-BREAK SPACE
+    "\u205f"  # MEDIUM MATHEMATICAL SPACE
+    "\u3000"  # IDEOGRAPHIC SPACE
+)
+# Zero-width: delete rather than replace, there is no width to preserve.
+_ZERO_WIDTH = "\u200b\u200c\u200d\u2060\ufeff"
+
+_TYPOGRAPHIC_MAP = str.maketrans(
+    {
+        "\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"',
+        "\u2010": "-", "\u2011": "-", "\u2012": "-",
+        "\u2013": "-", "\u2014": "-",
+        **{c: " " for c in _UNICODE_SPACES},
+        **{c: "" for c in _ZERO_WIDTH},
+    }
+)
 
 
 def _canon(text: str) -> str:
