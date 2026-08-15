@@ -13,6 +13,8 @@ import re
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "vllm"))
 
@@ -735,6 +737,42 @@ def test_inline_json_and_unknown_profiles():
 def test_every_named_profile_is_a_dict():
     for name, profile in SAMPLING_PROFILES.items():
         assert isinstance(profile, dict), name
+
+
+# Where each profile's thinking-mode numbers must come from. The first
+# revision of the table guessed nemotron-card from memory and shipped
+# 0.6/0.95, which no card recommends; a run labelled "at its own card's
+# numbers" would then have been at numbers nobody chose.
+_CHECKPOINT_PROFILES = {
+    "qwen3.8-card": "qwen3.8-27b-nvfp4",
+    "nemotron-card": "nemotron-3.5-lightning-30b-a3b-nvfp4",
+}
+
+
+def test_card_profiles_match_the_checkpoint_generation_config():
+    """Cross-check against the checkpoint on this machine when it is present.
+
+    Skipped where the weights are not downloaded -- the profiles still have
+    to be readable in CI, and this cannot become a reason to weaken them.
+    """
+    root = Path("/mnt/data/urban-dossier-state/models/llm-candidates")
+    checked = 0
+    for profile_name, checkpoint in _CHECKPOINT_PROFILES.items():
+        config = root / checkpoint / "generation_config.json"
+        if not config.is_file():
+            continue
+        recommended = json.loads(config.read_text(encoding="utf-8"))
+        profile = SAMPLING_PROFILES[profile_name]
+        for key in ("temperature", "top_p", "top_k"):
+            if key in recommended and key in profile:
+                assert profile[key] == recommended[key], (
+                    f"{profile_name}.{key} is {profile[key]}, but "
+                    f"{checkpoint}/generation_config.json says "
+                    f"{recommended[key]}"
+                )
+                checked += 1
+    if checked == 0:
+        pytest.skip("no candidate checkpoints on this machine")
 
 
 # --- summary accounting ------------------------------------------------------

@@ -9,9 +9,13 @@ for model decisions: same prompts, same tools, swap only the endpoint.
 No model switch, KV-cache change, or prompt rewrite should be decided
 without citing a run of this set.
 
-Tool dispatch uses the skill's HTTP loopback against the live backend
-(http://localhost:8090 by default), i.e. the same path the sandboxed agent
-takes in production. The backend must be up.
+Tool dispatch takes whichever path the skill's tool layer resolves: in-process
+against `urban_dossier_backend.service` when that package is importable
+(put `backend/src` on PYTHONPATH), otherwise HTTP loopback to the live backend
+(http://localhost:8090 by default), the same path the sandboxed agent takes in
+production. Either is fine for a model comparison as long as every endpoint in
+the run takes the same one -- in-process additionally keeps tool latency out of
+`wall_s`, which makes the per-second figures closer to model throughput.
 
 Usage:
     python3 scripts/vllm/business_eval.py \
@@ -435,16 +439,25 @@ SAMPLING_PROFILES: dict[str, dict[str, Any]] = {
     # Module defaults (0.2 loop, 0.2 wrap-up). Empty on purpose: production is
     # whatever agent_loop ships, not a copy of it that can drift.
     "production": {},
+    # Thinking half verified against the checkpoint's own generation_config.json
+    # (temperature 1.0, top_p 0.95, top_k 20). The instruct half is the model
+    # card's non-thinking recommendation, which is the regime the two wrap-up
+    # calls run in.
     "qwen3.8-card": {
         "temperature": 1.0,
         "top_p": 0.95,
         "top_k": 20,
         "wrapup": {"temperature": 0.7, "top_p": 0.80, "presence_penalty": 1.5},
     },
+    # From nemotron-3.5-lightning-30b-a3b-nvfp4/generation_config.json.
+    # The first revision of this table put 0.6/0.95 here from memory and
+    # shipped it -- a made-up constant wearing the words "model card", which
+    # would have produced an authoritative-looking run at numbers nothing
+    # recommends. Read the checkpoint before adding a profile.
     "nemotron-card": {
-        "temperature": 0.6,
+        "temperature": 1.0,
         "top_p": 0.95,
-        "wrapup": {"temperature": 0.6, "top_p": 0.95},
+        "wrapup": {"temperature": 1.0, "top_p": 0.95},
     },
 }
 
