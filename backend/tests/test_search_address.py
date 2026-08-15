@@ -18,7 +18,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from urban_dossier_backend.service import search_address_payload
+from urban_dossier_backend.service import (
+    parse_location_query,
+    search_address_payload,
+)
 
 READY = Path("/mnt/data/Urban-Dossier/data/ready")
 pytestmark = pytest.mark.skipif(
@@ -61,3 +64,93 @@ def test_search_does_not_poison_the_thread_connection():
 def test_no_results_is_empty_not_error():
     out = search_address_payload("ZZZZ NOWHERE XYZZY", limit=3)
     assert out == {"results": []}
+
+
+# --- query parsing and matching, from the 2026-08-14 agent trace ------------
+#
+# The eval case "compare Union Square with Astoria" was recorded as the model
+# failing to select compare_neighborhoods. The stored trajectory showed the
+# opposite: it reasoned correctly, called search_address("Union Square
+# Manhattan"), got nothing, and spent its whole iteration budget retrying the
+# geocode. Matching the entire query as ONE substring against the address
+# column is what made adding a borough return zero rows.
+
+
+def test_borough_is_lifted_out_of_the_tokens():
+    tokens, borough = parse_location_query("UNION SQUARE MANHATTAN")
+    assert tokens == ["UNION", "SQUARE"]
+    assert borough == "MANHATTAN"
+
+
+def test_new_york_qualifies_manhattan_and_nyc_qualifies_nothing():
+    assert parse_location_query("UNION SQUARE NEW YORK")[1] == "MANHATTAN"
+    assert parse_location_query("UNION SQUARE NYC")[1] is None
+
+
+def test_street_ordinals_fold_to_bare_numbers():
+    """PLUTO stores "350 5 AVENUE"; everyone writes "350 5th Avenue"."""
+    tokens, _ = parse_location_query("350 5TH AVENUE")
+    assert tokens == ["350", "5", "AVENUE"]
+    assert parse_location_query("42ND STREET")[0] == ["42", "STREET"]
+
+
+def test_adding_a_borough_no_longer_empties_the_search():
+    """The exact query the agent asked and got nothing for."""
+    plain = search_address_payload("Union Square", limit=3)["results"]
+    qualified = search_address_payload("Union Square Manhattan", limit=3)["results"]
+    assert plain, "precondition: the unqualified query still works"
+    assert qualified, "adding the borough must not empty the result"
+    assert qualified[0]["borough"].upper() == "MANHATTAN"
+
+
+def test_borough_filters_rather_than_decorates():
+    out = search_address_payload("Broadway Brooklyn", limit=5)["results"]
+    assert out
+    assert {r["borough"].upper() for r in out} == {"BROOKLYN"}
+
+
+def test_numeric_tokens_match_on_word_boundaries_not_substrings():
+    """A confidently wrong coordinate is worse than no coordinate.
+
+    LIKE '%5%' matches the 5 inside "350", so the tokens of "350 5th Avenue"
+    used to resolve to "350 6 AVENUE" in Brooklyn.
+    """
+    out = search_address_payload("350 5th Avenue", limit=5)["results"]
+    addresses = [r["address"].upper() for r in out]
+    assert not [a for a in addresses if "6 AVENUE" in a or "3 AVENUE" in a]
+
+
+def test_an_indexed_numbered_avenue_still_resolves():
+    out = search_address_payload("350 3rd Avenue", limit=3)["results"]
+    assert out, "ordinal folding must not cost us real addresses"
+    assert out[0]["address"].upper() == "350 3 AVENUE"
+
+
+def test_a_named_place_that_is_not_an_address_resolves():
+    """An address index cannot answer "Fordham Plaza" -- the landmark
+    sources already published locally can."""
+    out = search_address_payload("Fordham Plaza", limit=3)["results"]
+    assert out
+    top = out[0]
+    assert top["match_type"] != "address"
+    assert 40.5 < top["latitude"] < 41.0
+    assert -74.3 < top["longitude"] < -73.7
+
+
+def test_landmark_ranking_prefers_the_place_over_a_business_named_after_it():
+    """"UNION SQUARE EYE CARE - HARLEM" matches every token too. Ranking is
+    the only thing that keeps Union Square out of Harlem."""
+    out = search_address_payload("Union Square", limit=3)["results"]
+    assert out
+    assert "HARLEM" not in out[0]["address"].upper()
+
+
+def test_a_bare_borough_name_returns_nothing():
+    """Better an honest miss than an arbitrary building in the right
+    borough."""
+    assert search_address_payload("Brooklyn", limit=3)["results"] == []
+
+
+def test_results_declare_how_they_were_matched():
+    out = search_address_payload("Union Square", limit=1)["results"]
+    assert out[0]["match_type"] == "address"

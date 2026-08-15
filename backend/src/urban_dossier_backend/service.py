@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -306,19 +307,169 @@ def analyze_point(
     return payload
 
 
+_ORDINAL_RE = re.compile(r"\b(\d+)(?:ST|ND|RD|TH)\b")
+
+# Spelled forms a person or a model actually types, mapped to the borough
+# column's values. "NEW YORK" and "NYC" are how models qualify Manhattan.
+_BOROUGH_ALIASES: tuple[tuple[str, str | None], ...] = (
+    ("STATEN ISLAND", "STATEN ISLAND"),
+    ("THE BRONX", "BRONX"),
+    ("MANHATTAN", "MANHATTAN"),
+    ("BROOKLYN", "BROOKLYN"),
+    ("QUEENS", "QUEENS"),
+    ("BRONX", "BRONX"),
+    ("NEW YORK CITY", None),
+    ("NEW YORK", "MANHATTAN"),
+    ("NYC", None),
+)
+
+# Name columns of the datasets that carry landmark names, in preference
+# order. Both files ship latitude/longitude already.
+_LANDMARK_SOURCES: tuple[tuple[str, str, str], ...] = (
+    ("facility", "amenities/facilities_indexed.parquet", "facname"),
+    ("subway_station", "transit/subway_indexed.parquet", "Stop Name"),
+)
+
+
+def parse_location_query(query: str) -> tuple[list[str], str | None]:
+    """Split a free-text location query into search tokens and a borough.
+
+    Two normalisations, both from observed failures:
+
+    * The borough is lifted OUT of the token list and matched against the
+      borough COLUMN. Previously the whole query was matched as one
+      substring against the address column, so "Union Square Manhattan"
+      returned nothing while "Union Square" returned three rows -- adding
+      the borough, the most natural thing a person or a model does, was
+      what broke it.
+    * Street ordinals are folded to bare numbers, because PLUTO stores
+      "350 5 AVENUE" and everyone writes "350 5th Avenue".
+    """
+
+    text = _ORDINAL_RE.sub(r"\1", (query or "").strip().upper())
+    borough: str | None = None
+    for alias, canonical in _BOROUGH_ALIASES:
+        pattern = rf"(?:^|[^A-Z]){re.escape(alias)}(?:[^A-Z]|$)"
+        if re.search(pattern, text):
+            borough = canonical
+            text = re.sub(pattern, " ", text)
+            break
+    # Tokens are alphanumeric by construction, which is also what makes it
+    # safe to inline them into the regex predicates below.
+    tokens = [t for t in re.split(r"[^A-Z0-9]+", text) if t]
+    return tokens, borough
+
+
+def _token_predicate(column: str, token: str) -> str:
+    """Match `token` as a whole word inside `column`.
+
+    A plain LIKE '%5%' matches the "5" inside "350", so the tokens of
+    "350 5th Avenue" happily matched "350 6 AVENUE" in Brooklyn -- a
+    confidently wrong coordinate, which is worse for an agent than no
+    result at all. Word boundaries are the difference.
+    """
+
+    return (
+        f"regexp_matches(upper(coalesce(\"{column}\", '')), "
+        f"'(^|[^A-Z0-9]){token}([^A-Z0-9]|$)')"
+    )
+
+
+def _search_landmarks(
+    con: Any,
+    provider: Any,
+    tokens: list[str],
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Resolve a named place from the datasets that carry place names.
+
+    An address index cannot answer "Fordham Plaza" or "Times Square" -- the
+    names are not addresses. The facilities and subway datasets are already
+    published locally and carry both a name and coordinates, so this needs
+    no new data.
+
+    Ranked shortest-name-first, which is what keeps a query for "Union
+    Square" off "UNION SQUARE EYE CARE - HARLEM": every token matches there
+    too, and only the ranking separates the plaza from a clinic named after
+    it in another neighbourhood.
+    """
+
+    results: list[dict[str, Any]] = []
+    for source_label, relative_path, name_col in _LANDMARK_SOURCES:
+        path = provider._ready_path(relative_path)
+        if not path.exists():
+            continue
+        source = f"read_parquet('{path.as_posix()}')"
+        try:
+            columns = {
+                row[0]
+                for row in con.execute(f"DESCRIBE SELECT * FROM {source}").fetchall()
+            }
+            if name_col not in columns or not {"latitude", "longitude"} <= columns:
+                continue
+            where = " AND ".join(_token_predicate(name_col, t) for t in tokens)
+            borough_select = '"borough"' if "borough" in columns else "NULL"
+            rows = provider._query_rows(
+                con,
+                f'''
+                SELECT DISTINCT "{name_col}" AS address, {borough_select} AS borough,
+                       latitude, longitude
+                FROM {source}
+                WHERE {where}
+                  AND latitude IS NOT NULL AND longitude IS NOT NULL
+                ORDER BY length("{name_col}")
+                LIMIT {limit}
+                ''',
+                [],
+            )
+        except Exception:  # noqa: BLE001 - a missing landmark source is not fatal
+            continue
+        for row in rows:
+            lat, lon = row.get("latitude"), row.get("longitude")
+            if lat and lon:
+                results.append(
+                    {
+                        "address": row.get("address", ""),
+                        "borough": row.get("borough") or "",
+                        "zip": "",
+                        "latitude": float(lat),
+                        "longitude": float(lon),
+                        "match_type": source_label,
+                    }
+                )
+        if results:
+            break
+    return results[:limit]
+
+
 def search_address_payload(query: str, limit: int = 5) -> dict[str, Any]:
     """Search the PLUTO / location index for addresses matching the query.
 
     Factored out of the inline ``/api/search`` handler in ``app.py`` so the
     in-process agent dispatcher can reuse the same logic without going over
     HTTP loopback. Returns
-    ``{"results": [{address, borough, zip, latitude, longitude}, ...]}``.
+    ``{"results": [{address, borough, zip, latitude, longitude,
+    match_type}, ...]}``.
+
+    Matching is per-token and word-anchored, the borough is matched against
+    its own column, and a named place that is not an address falls through
+    to the landmark sources. See parse_location_query and _token_predicate
+    for why each of those exists -- all three come from a 2026-08-14 agent
+    trace where the model reasoned correctly, asked for "Union Square
+    Manhattan", got nothing back, and burned its whole iteration budget
+    retrying the geocode.
     """
 
     from .providers.direct_provider import DirectQueryDataProvider
 
     cleaned_query = (query or "").strip().upper()
     if not cleaned_query or len(cleaned_query) < 3:
+        return {"results": []}
+
+    tokens, borough = parse_location_query(cleaned_query)
+    if not tokens:
+        # The query was nothing but a borough name. Better to say "no match"
+        # than to hand back an arbitrary building in the right borough.
         return {"results": []}
 
     provider = DirectQueryDataProvider()
@@ -359,15 +510,24 @@ def search_address_payload(query: str, limit: int = 5) -> dict[str, Any]:
             if not address_col or not {"latitude", "longitude"} <= columns:
                 continue
             zip_select = f'"{zip_col}" AS zip' if zip_col else "NULL AS zip"
+            where = " AND ".join(_token_predicate(address_col, t) for t in tokens)
+            params: list[Any] = []
+            if borough and "borough" in columns:
+                where += " AND upper(coalesce(borough, '')) = ?"
+                params.append(borough)
+            # Shortest address first: among everything containing all the
+            # tokens, the shortest is the closest to an exact match --
+            # "UNION SQUARE" ahead of "5 UNION SQUARE WEST".
             sql = f"""
                 SELECT "{address_col}" AS address, borough, {zip_select},
                        latitude, longitude
                 FROM {source}
-                WHERE upper(coalesce("{address_col}", '')) LIKE ?
+                WHERE {where}
                   AND latitude IS NOT NULL AND longitude IS NOT NULL
+                ORDER BY length("{address_col}")
                 LIMIT {capped_limit}
             """
-            rows = provider._query_rows(con, sql, [f"%{cleaned_query}%"])
+            rows = provider._query_rows(con, sql, params)
             for row in rows:
                 lat = row.get("latitude")
                 lon = row.get("longitude")
@@ -379,12 +539,17 @@ def search_address_payload(query: str, limit: int = 5) -> dict[str, Any]:
                             "zip": row.get("zip", ""),
                             "latitude": float(lat),
                             "longitude": float(lon),
+                            "match_type": "address",
                         }
                     )
             if results:
                 break
         except Exception:  # noqa: BLE001 - best-effort fallback across sources
             continue
+
+    if not results:
+        # Not an address. It may still be a place with a name.
+        results = _search_landmarks(con, provider, tokens, capped_limit)
     return {"results": results}
 
 
