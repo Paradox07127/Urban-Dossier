@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fixed business evaluation set for the Urban Dossier agent — EXPANSION_PLAN 4.1.
 
-Runs the cases in evals/agent/cases.json through the REAL production agent
+Runs the cases in evals/agent/model_cases.json through the REAL production agent
 loop (`urban_dossier_analyst.agent_loop.run_agent`: production system prompt,
 production tools, production budgets) pointed at any OpenAI-compatible
 endpoint, and grades every response. The point is a fair, repeatable surface
@@ -316,8 +316,11 @@ def failure_reasons(
         model_results = [
             r for r in (entry.get("results") or []) if r.get("category") != "routing"
         ]
-        if not model_results:
-            reasons.append(f"{name}: no cases ran")
+        # A run where every case was gated away benchmarked nothing, and an
+        # endpoint that reports only skips must not read as a clean sheet.
+        executed_results = [r for r in model_results if r.get("status") != "skip"]
+        if not executed_results:
+            reasons.append(f"{name}: no runnable cases executed")
         for result in model_results:
             if result["status"] in ("fail", "error"):
                 reasons.append(

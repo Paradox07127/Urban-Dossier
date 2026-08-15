@@ -85,7 +85,7 @@ second-opinion model, not a production candidate on this hardware.
 ## Running the comparison
 
 ```bash
-# Production + Lightning side by side (0.45 + 0.30 GPU fractions):
+# Production + Lightning side by side (0.45 + 0.38 GPU fractions):
 docker compose --env-file /mnt/data/urban-dossier-state/runtime/gpu.env \
   -f deploy/compose.gpu.yml --profile inference --profile candidate up -d llm llm-lightning
 
@@ -220,7 +220,7 @@ the post-fix run — after the eval's own day-one catches were fixed
 ran the same healed tool layer. Report:
 `/mnt/data/urban-dossier-state/evals/business_eval_20260813_final_nano_vs_lightning.json`.
 
-| Metric (20 runnable cases + 2 gated skips) | Nano 3 (current) | Lightning 3.5 |
+| Metric (22 executed cases, including 4 deterministic routing cases, + 2 gated skips) | Nano 3 (current) | Lightning 3.5 |
 |---|---:|---:|
 | Hard-check result | 21 pass / **1 fail** | 20 pass / 2 warn / **0 fail** |
 | Soft warns (derived-number faithfulness) | 0 | 2 |

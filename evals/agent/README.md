@@ -144,8 +144,8 @@ passed. A gate that cannot go green while a known defect is open stops being
 read, and an unreliable case and a broken one deserve different responses.
 
 Exit code 0 means the run is fit to decide something: every endpoint
-answered, every routing case held, at least one case ran per endpoint, and
-nothing failed or errored (`warn` and `skip` do not fail the run — one is
+answered, every routing case held, at least one non-skipped model case ran
+per endpoint, and nothing failed or errored (`warn` and `skip` do not fail the run — one is
 the soft check's tolerance zone, the other is an honestly-reported gap).
 Anything else exits 1 and prints `FAIL <reason>` lines on stderr. Same
 contract in `scripts/vllm/ab_bench.py`, where a run also fails if any

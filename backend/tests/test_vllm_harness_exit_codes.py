@@ -134,4 +134,20 @@ def test_business_eval_counts_routing_failures_once_not_per_endpoint():
 def test_business_eval_flags_an_endpoint_that_ran_no_cases():
     report = {"endpoints": {"current": {"results": list(ROUTING_OK)}}}
     reasons = business_eval.failure_reasons(report, ROUTING_OK)
-    assert any("no cases ran" in r for r in reasons)
+    assert any("no runnable cases executed" in r for r in reasons)
+
+
+def test_business_eval_flags_an_endpoint_where_every_case_was_skipped():
+    """Skips are honest, but a sheet of nothing but skips measured nothing.
+
+    Counting them as "cases ran" let an endpoint whose every case was gated
+    away report a clean run to a promotion gate.
+    """
+
+    report = {
+        "endpoints": {
+            "current": {"results": ROUTING_OK + [_case("gated", "skip")]}
+        }
+    }
+    reasons = business_eval.failure_reasons(report, ROUTING_OK)
+    assert any("no runnable cases executed" in r for r in reasons)
