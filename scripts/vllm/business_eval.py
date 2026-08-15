@@ -40,6 +40,8 @@ the behavior that separated the candidates in the 2026-08 A/B.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import functools
 import json
 import re
 import sys
@@ -80,6 +82,156 @@ def _canon(text: str) -> str:
 
 def _numbers(text: str) -> set[str]:
     return set(NUMBER_RE.findall(text or ""))
+
+
+# Deriving a figure the user asked for -- "how much higher", "what share" --
+# is the analyst's job, not a hallucination, but string-matching digits cannot
+# tell the two apart. Every 2026-08-14 run flagged both models on
+# multi-two-point-violations for exactly this: Lightning's "2.86" and "0.001"
+# and Qwen's "4.6" are arithmetic on numbers the tools returned. Checking a
+# few one-step derivations before calling a number invented turns that noise
+# back into signal.
+DERIVED_POOL_CAP = 120
+# Rounding means exactly that: half a unit, no relative term. A model writing
+# "58" for a score of 57.6 is rounding, and one writing "1200" for 1183 is
+# approximating a figure it should have cited exactly -- worth surfacing.
+# Derivation is stricter still, because the pairwise scan over the pool
+# produces tens of thousands of candidate values, and a loose tolerance there
+# would explain away real hallucinations instead of real arithmetic.
+_ROUND_REL_TOL = 0.0
+_ROUND_ABS_TOL = 0.5
+_DERIVE_REL_TOL = 0.0005
+_DERIVE_ABS_TOL = 0.005
+
+
+def _as_float(token: str) -> float | None:
+    try:
+        return float(token)
+    except (TypeError, ValueError):
+        return None
+
+
+def _close(a: float, b: float, rel: float, abs_tol: float) -> bool:
+    return abs(a - b) <= max(abs_tol, rel * max(abs(a), abs(b)))
+
+
+def classify_numbers(
+    claimed: set[str], supported: set[str], pool_cap: int = DERIVED_POOL_CAP
+) -> dict[str, list[str]]:
+    """Sort an answer's numbers into literal / rounded / derived / unsupported.
+
+    Pure. `supported` is every number that appeared in the prompt or in a tool
+    result. A claim counts as:
+      literal      the same digit string appears in the supported set
+      rounded      it matches a supported value to within tolerance (a model
+                   writing "58" for a score of 57.6)
+      derived      one arithmetic step from a supported pair -- difference,
+                   sum, ratio as a percentage, or product
+      unsupported  none of the above; this is the one worth reporting
+
+    The pool is capped and sorted so the pairwise scan stays bounded and the
+    result is deterministic: a score_neighborhood payload alone carries
+    thousands of numbers, and an uncapped O(n^2) would dominate grading.
+    """
+
+    literal = sorted(claimed & supported)
+    rest = sorted(claimed - supported)
+    if not rest:
+        return {"literal": literal, "rounded": [], "derived": [], "unsupported": []}
+
+    pool = sorted(
+        {v for v in (_as_float(s) for s in supported) if v is not None}
+    )[:pool_cap]
+
+    rounded: list[str] = []
+    derived: list[str] = []
+    unsupported: list[str] = []
+    def _near(value: float, other: float) -> bool:
+        return _close(value, other, _DERIVE_REL_TOL, _DERIVE_ABS_TOL)
+
+    for token in rest:
+        value = _as_float(token)
+        if value is None:
+            unsupported.append(token)
+            continue
+        if any(_close(value, p, _ROUND_REL_TOL, _ROUND_ABS_TOL) for p in pool):
+            rounded.append(token)
+            continue
+        # Difference, sum and share-of. Products are deliberately absent:
+        # multiplying two counts means nothing in this domain, and with a
+        # 120-value pool the products alone span enough of the number line
+        # to explain almost any large figure a model might invent.
+        hit = False
+        for i, a in enumerate(pool):
+            if hit:
+                break
+            for b in pool[i:]:
+                if _near(value, a - b) or _near(value, b - a) or _near(value, a + b):
+                    hit = True
+                    break
+                if b and _near(value, a / b * 100.0):
+                    hit = True
+                    break
+                if a and _near(value, b / a * 100.0):
+                    hit = True
+                    break
+        (derived if hit else unsupported).append(token)
+
+    return {
+        "literal": literal,
+        "rounded": rounded,
+        "derived": derived,
+        "unsupported": unsupported,
+    }
+
+
+@functools.lru_cache(maxsize=1)
+def load_place_vocabulary() -> tuple[str, ...]:
+    """NYC neighborhood and borough names, longest first.
+
+    Longest first so "Upper West Side" is tested before "West", and a match
+    on the specific name does not get double-reported as its own substring.
+    """
+
+    path = REPO_ROOT / "evals" / "agent" / "nyc_neighborhoods.json"
+    if not path.is_file():
+        return ()
+    spec = json.loads(path.read_text(encoding="utf-8"))
+    names = set(spec.get("neighborhoods") or []) | set(spec.get("boroughs") or [])
+    return tuple(sorted(names, key=lambda n: (-len(n), n)))
+
+
+def unsupported_places(
+    answer: str, supported_text: str, vocabulary: tuple[str, ...] | None = None
+) -> list[str]:
+    """Neighborhood names the answer asserts that no tool result mentions.
+
+    The failure this exists for: a model given East Village coordinates
+    produced an otherwise correct refusal that called the location "Upper
+    West Side". Every hard check passed -- the tools were right, the citation
+    was there, the refusal was honest -- and the answer still told the user
+    they were four miles from where they were. No regex over answer text can
+    catch that, because the sentence is only wrong relative to the trace.
+    """
+
+    if vocabulary is None:
+        vocabulary = load_place_vocabulary()
+    answer_l = (answer or "").lower()
+    supported_l = (supported_text or "").lower()
+
+    found: list[str] = []
+    claimed_span = answer_l
+    for name in vocabulary:
+        needle = name.lower()
+        if not re.search(rf"(?<![a-z]){re.escape(needle)}(?![a-z])", claimed_span):
+            continue
+        # Consume the match so a longer name already counted does not also
+        # report its shorter constituents.
+        claimed_span = claimed_span.replace(needle, " ")
+        if re.search(rf"(?<![a-z]){re.escape(needle)}(?![a-z])", supported_l):
+            continue
+        found.append(name)
+    return sorted(found)
 
 
 def _sentence_count(text: str) -> int:
@@ -218,27 +370,48 @@ def grade_case(case: dict[str, Any], response: dict[str, Any]) -> dict[str, Any]
         if invented:
             failures.append(f"numeric claims with zero tool calls: {sorted(invented)}")
 
-    # Soft: numeric faithfulness.
+    # Soft checks. These describe an answer that is formally correct and still
+    # not trustworthy, which is a different thing from a broken one -- so they
+    # warn rather than fail, unless a case opts into "hard".
     soft: dict[str, Any] = {}
+    trace_text = json.dumps(trace, default=str)
+    evidence_text = json.dumps(evidence, default=str)
+
     if expect.get("numeric_faithfulness"):
-        allowed = _numbers(prompt)
-        allowed |= _numbers(json.dumps(trace, default=str))
-        allowed |= _numbers(json.dumps(evidence, default=str))
+        allowed = _numbers(prompt) | _numbers(trace_text) | _numbers(evidence_text)
         claimed = _numbers(answer)
-        offenders = sorted(claimed - allowed)
+        buckets = classify_numbers(claimed, allowed)
         soft["faithfulness"] = {
             "claimed": len(claimed),
-            "unsupported": offenders,
+            "unsupported": buckets["unsupported"],
+            # Kept so a reader can see WHY a number was accepted, and so a
+            # later tightening of the derivation rules can be argued from
+            # recorded evidence instead of from memory.
+            "rounded": buckets["rounded"],
+            "derived": buckets["derived"],
             "ratio": (
-                round((len(claimed) - len(offenders)) / len(claimed), 3)
+                round(
+                    (len(claimed) - len(buckets["unsupported"])) / len(claimed), 3
+                )
                 if claimed
                 else 1.0
             ),
         }
 
+    place_mode = expect.get("place_faithfulness")
+    if place_mode:
+        strays = unsupported_places(
+            answer, f"{prompt}\n{trace_text}\n{evidence_text}"
+        )
+        soft["places"] = {"unsupported": strays}
+        if strays and place_mode == "hard":
+            failures.append(f"named places no tool result supports: {strays}")
+
     if failures:
         status = "fail"
-    elif soft.get("faithfulness", {}).get("unsupported"):
+    elif soft.get("faithfulness", {}).get("unsupported") or soft.get(
+        "places", {}
+    ).get("unsupported"):
         status = "warn"
     else:
         status = "pass"
@@ -248,6 +421,114 @@ def grade_case(case: dict[str, Any], response: dict[str, Any]) -> dict[str, Any]
 # --------------------------------------------------------------------------- #
 # Execution
 # --------------------------------------------------------------------------- #
+
+
+HARNESS_VERSION = "2.0"
+
+# A candidate benchmarked only at our sampling answers "how does it do in our
+# harness", not "how good is it". Qwen3.8 scored 16-17/22 at our production
+# 0.2 and 18/22 with zero hard failures at the numbers its own card asks for;
+# reading the first as a quality verdict would have been wrong. Naming the
+# profiles makes both runs reproducible and puts the setting in the report
+# instead of in a filename suffix.
+SAMPLING_PROFILES: dict[str, dict[str, Any]] = {
+    # Module defaults (0.2 loop, 0.2 wrap-up). Empty on purpose: production is
+    # whatever agent_loop ships, not a copy of it that can drift.
+    "production": {},
+    "qwen3.8-card": {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20,
+        "wrapup": {"temperature": 0.7, "top_p": 0.80, "presence_penalty": 1.5},
+    },
+    "nemotron-card": {
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "wrapup": {"temperature": 0.6, "top_p": 0.95},
+    },
+}
+
+
+def resolve_sampling_spec(spec: str) -> dict[str, Any]:
+    """Turn a --sampling value into a profile dict. Pure.
+
+    Accepts a built-in profile name, inline JSON, or @path to a JSON file.
+    """
+
+    spec = (spec or "").strip()
+    if not spec:
+        return {}
+    if spec in SAMPLING_PROFILES:
+        return dict(SAMPLING_PROFILES[spec])
+    if spec.startswith("@"):
+        return json.loads(Path(spec[1:]).read_text(encoding="utf-8"))
+    if spec.startswith("{"):
+        return json.loads(spec)
+    raise ValueError(
+        f"unknown sampling profile {spec!r}; use one of "
+        f"{sorted(SAMPLING_PROFILES)}, inline JSON, or @file.json"
+    )
+
+
+FAULT_MODES = ("error", "empty", "timeout")
+
+
+@contextlib.contextmanager
+def injected_fault(spec: dict[str, Any] | None):
+    """Make one tool misbehave for the duration of a case.
+
+    Error honesty was tested by a single case that happened to hit a tool that
+    happened to be unavailable -- which tests the release gate, not the model.
+    A model that invents numbers when a tool fails is a different, worse
+    failure than one that never sees a tool fail, and the only way to tell is
+    to break a tool on purpose.
+
+    Patches the name agent_loop imported, not tools.dispatch_tool, because the
+    loop bound it at import time.
+    """
+
+    if not spec:
+        yield
+        return
+
+    from urban_dossier_analyst import agent_loop
+
+    target = spec["tool"]
+    mode = spec.get("mode", "error")
+    if mode not in FAULT_MODES:
+        raise ValueError(f"fault mode {mode!r} not in {FAULT_MODES}")
+    # "all" makes the tool fail every time. A one-shot failure tests recovery;
+    # a persistent one tests honesty, because the model cannot get the number
+    # by trying again and has to say so instead.
+    on_call = spec.get("on_call", 1)
+    original = agent_loop.dispatch_tool
+    seen = {"n": 0}
+
+    def _faulty(name: str, args: dict[str, Any]) -> dict[str, Any]:
+        if name != target:
+            return original(name, args)
+        seen["n"] += 1
+        if on_call != "all" and seen["n"] != int(on_call):
+            return original(name, args)
+        if mode == "empty":
+            return {"results": [], "total": 0, "_injected_fault": "empty"}
+        if mode == "timeout":
+            return {
+                "error": "backend_timeout",
+                "retry_hint": "The backend did not respond in time.",
+                "_injected_fault": "timeout",
+            }
+        return {
+            "error": "injected_backend_failure",
+            "retry_hint": "This tool is failing. Do not report its numbers.",
+            "_injected_fault": "error",
+        }
+
+    agent_loop.dispatch_tool = _faulty
+    try:
+        yield
+    finally:
+        agent_loop.dispatch_tool = original
 
 
 class _UsageTracker:
@@ -519,22 +800,36 @@ def summarize(results: list[dict[str, Any]], repeat: int) -> dict[str, Any]:
     counted = [r for r in results if r["status"] in ("pass", "warn", "fail")]
     passed = [r for r in counted if r["status"] in PASSING]
     walls = sorted(r["metrics"]["wall_s"] for r in results if r.get("metrics"))
+    completion_total = sum(
+        (r["metrics"].get("completion_tokens") or 0)
+        for r in results
+        if r.get("metrics")
+    )
+    wall_total = round(sum(walls), 2) if walls else 0.0
     return {
         "pass": sum(1 for r in results if r["status"] == "pass"),
         "warn": sum(1 for r in results if r["status"] == "warn"),
         "fail": sum(1 for r in results if r["status"] == "fail"),
         "skip": sum(1 for r in results if r["status"] == "skip"),
         "error": sum(1 for r in results if r["status"] == "error"),
+        # The denominator, stated. A pass_rate over an unstated number of
+        # executed cases is how "0.955" and "20 of 24" ended up in the same
+        # sentence in a comparison table.
+        "cases_executed": len(counted),
+        "skipped_ids": sorted(r["id"] for r in results if r["status"] == "skip"),
         "pass_rate": round(len(passed) / len(counted), 3) if counted else None,
         "wall_p50_s": walls[len(walls) // 2] if walls else None,
         "wall_max_s": walls[-1] if walls else None,
+        # Single-tenant GPU: wall-clock IS the cost of the run. Without this a
+        # dense candidate and a sparse one get compared on quality alone, and
+        # the 8.5x that decides the question lives only in a separate bench.
+        "wall_total_s": wall_total,
+        "output_tok_per_s": (
+            round(completion_total / wall_total, 1) if wall_total else None
+        ),
         # `or 0`: a replayed record whose usage was never captured must not
         # take the whole summary down with a None.
-        "completion_tokens_total": sum(
-            (r["metrics"].get("completion_tokens") or 0)
-            for r in results
-            if r.get("metrics")
-        ),
+        "completion_tokens_total": completion_total,
         "repeat": repeat,
         # Fraction of cases that passed on EVERY attempt. Equals pass_rate
         # when repeat=1; diverges from it exactly where the model is
@@ -567,15 +862,42 @@ def regrade_responses(
             continue
         entry = json.loads(line)
         case = cases_by_id.get(entry.get("case_id"))
-        if case is None or "response" not in entry:
+        if case is None:
             continue
         bucket = by_endpoint.setdefault(
             entry.get("endpoint", "replay"),
             {"model": entry.get("model", ""), "attempts": {}},
         )
-        record = grade_response(
-            case, entry["response"], entry.get("wall_s", 0.0), entry.get("usage") or {}
-        )
+        if entry.get("turns"):
+            # Multi-turn: regrade each turn against its own expect block, then
+            # re-collapse exactly as the live path does.
+            spec_turns = case_turns(case)
+            turn_records = []
+            for index, stored in enumerate(entry["turns"]):
+                expect = (
+                    spec_turns[index].get("expect", {})
+                    if index < len(spec_turns)
+                    else {}
+                )
+                turn_case = {**case, "prompt": stored.get("prompt", ""), "expect": expect}
+                record = grade_response(
+                    turn_case,
+                    stored["response"],
+                    stored.get("wall_s", 0.0),
+                    stored.get("usage") or {},
+                )
+                record["turn"] = index + 1
+                turn_records.append(record)
+            record = merge_turn_records(case, turn_records)
+        elif "response" in entry:
+            record = grade_response(
+                case,
+                entry["response"],
+                entry.get("wall_s", 0.0),
+                entry.get("usage") or {},
+            )
+        else:
+            continue
         bucket["attempts"].setdefault(case["id"], []).append(record)
 
     out: dict[str, dict[str, Any]] = {}
@@ -591,36 +913,142 @@ def regrade_responses(
     return out
 
 
+WORST_FIRST = ("error", "fail", "warn", "pass", "skip")
+
+
+def merge_turn_records(
+    case: dict[str, Any], turn_records: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Collapse a multi-turn case's per-turn records into one. Pure.
+
+    Status is the worst turn: an agent that answers turn 1 correctly and then
+    loses the thread on the follow-up has failed the conversation, and a mean
+    would hide exactly the behaviour a multi-turn case exists to find.
+    """
+
+    statuses = [r["status"] for r in turn_records]
+    worst = next((s for s in WORST_FIRST if s in statuses), "pass")
+    failures: list[str] = []
+    for index, record in enumerate(turn_records, start=1):
+        for failure in record.get("failures") or []:
+            failures.append(f"turn {index}: {failure}")
+    return {
+        "id": case["id"],
+        "category": case["category"],
+        "status": worst,
+        "failures": failures,
+        "soft": {"turns": [r.get("soft") or {} for r in turn_records]},
+        "metrics": {
+            "wall_s": round(
+                sum((r.get("metrics") or {}).get("wall_s") or 0 for r in turn_records), 2
+            ),
+            "iterations": sum(
+                (r.get("metrics") or {}).get("iterations") or 0 for r in turn_records
+            ),
+            "llm_calls": sum(
+                (r.get("metrics") or {}).get("llm_calls") or 0 for r in turn_records
+            ),
+            "prompt_tokens": sum(
+                (r.get("metrics") or {}).get("prompt_tokens") or 0 for r in turn_records
+            ),
+            "completion_tokens": sum(
+                (r.get("metrics") or {}).get("completion_tokens") or 0
+                for r in turn_records
+            ),
+            "tools_called": [
+                name
+                for r in turn_records
+                for name in ((r.get("metrics") or {}).get("tools_called") or [])
+            ],
+            "tool_errors": sum(
+                (r.get("metrics") or {}).get("tool_errors") or 0 for r in turn_records
+            ),
+            "turn_statuses": statuses,
+        },
+        "answer": turn_records[-1].get("answer") if turn_records else "",
+        "turn_results": turn_records,
+    }
+
+
+def case_turns(case: dict[str, Any]) -> list[dict[str, Any]]:
+    """Normalise single-prompt and multi-turn cases to one shape. Pure."""
+
+    if case.get("turns"):
+        return list(case["turns"])
+    return [{"prompt": case["prompt"], "expect": case.get("expect", {})}]
+
+
 def run_model_case(
-    case: dict[str, Any], base_url: str, model: str, max_iterations: int
+    case: dict[str, Any],
+    base_url: str,
+    model: str,
+    max_iterations: int,
+    sampling: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Run one case. Returns (graded record, raw record for the JSONL)."""
+    """Run one case, single-turn or multi-turn.
+
+    Returns (graded record, raw record for the JSONL). The conversation is
+    threaded through `history`, so a follow-up turn sees what the agent said
+    before -- which is the point: "and what about the other one?" is only a
+    test if the agent has to resolve the referent itself.
+    """
 
     from urban_dossier_analyst.agent_loop import run_agent
 
-    tracker = _UsageTracker()
-    started = time.monotonic()
-    response = run_agent(
-        user_message=case["prompt"],
-        max_iterations=max_iterations,
-        vllm_base_url=f"{base_url}/v1",
-        model=model,
-        client_factory=tracker.factory,
-    )
-    wall = time.monotonic() - started
-    usage = {
-        "llm_calls": tracker.llm_calls,
-        "prompt_tokens": tracker.prompt_tokens,
-        "completion_tokens": tracker.completion_tokens,
-    }
-    record = grade_response(case, response, wall, usage)
-    raw = {
-        "case_id": case["id"],
-        "wall_s": round(wall, 2),
-        "usage": usage,
-        "response": response,
-    }
-    return record, raw
+    turns = case_turns(case)
+    history: list[dict[str, Any]] = []
+    turn_records: list[dict[str, Any]] = []
+    raw_turns: list[dict[str, Any]] = []
+
+    with injected_fault(case.get("fault_injection")):
+        for index, turn in enumerate(turns, start=1):
+            tracker = _UsageTracker()
+            started = time.monotonic()
+            response = run_agent(
+                user_message=turn["prompt"],
+                history=list(history) or None,
+                max_iterations=max_iterations,
+                vllm_base_url=f"{base_url}/v1",
+                model=model,
+                client_factory=tracker.factory,
+                sampling=sampling,
+            )
+            wall = time.monotonic() - started
+            usage = {
+                "llm_calls": tracker.llm_calls,
+                "prompt_tokens": tracker.prompt_tokens,
+                "completion_tokens": tracker.completion_tokens,
+            }
+            turn_case = {**case, "prompt": turn["prompt"], "expect": turn.get("expect", {})}
+            record = grade_response(turn_case, response, wall, usage)
+            record["turn"] = index
+            turn_records.append(record)
+            raw_turns.append(
+                {"turn": index, "prompt": turn["prompt"], "wall_s": round(wall, 2),
+                 "usage": usage, "response": response}
+            )
+            history.append({"role": "user", "content": turn["prompt"]})
+            history.append(
+                {"role": "assistant", "content": response.get("answer") or ""}
+            )
+
+    if len(turn_records) == 1:
+        record = turn_records[0]
+        record.pop("turn", None)
+        raw = {
+            "case_id": case["id"],
+            "wall_s": raw_turns[0]["wall_s"],
+            "usage": raw_turns[0]["usage"],
+            "response": raw_turns[0]["response"],
+        }
+        return record, raw
+
+    merged = merge_turn_records(case, turn_records)
+    raw = {"case_id": case["id"], "wall_s": merged["metrics"]["wall_s"],
+           "usage": {k: merged["metrics"][k] for k in
+                     ("llm_calls", "prompt_tokens", "completion_tokens")},
+           "turns": raw_turns}
+    return merged, raw
 
 
 def main() -> int:
@@ -644,7 +1072,21 @@ def main() -> int:
     parser.add_argument(
         "--responses", default=None, metavar="PATH",
         help="write one JSON object per attempt, full fidelity, to this "
-             "JSONL. Replayable with --regrade after a grader change.",
+             "JSONL. Defaults to <output>.responses.jsonl. Replayable with "
+             "--regrade after a grader change.",
+    )
+    parser.add_argument(
+        "--no-responses", action="store_true",
+        help="do not persist raw responses. Off by default: every stored "
+             "comparison from before 2026-08-14 kept only the graded verdict, "
+             "so nothing could be re-examined or re-graded afterwards.",
+    )
+    parser.add_argument(
+        "--sampling", action="append", default=None, metavar="NAME=PROFILE",
+        help="sampling profile per endpoint. PROFILE is a built-in name "
+             f"({', '.join(sorted(SAMPLING_PROFILES))}), inline JSON, or "
+             "@file.json. Use NAME=* to apply one profile to every endpoint. "
+             "Recorded in the report.",
     )
     parser.add_argument(
         "--regrade", default=None, metavar="PATH",
@@ -656,6 +1098,20 @@ def main() -> int:
         parser.error("--repeat must be >= 1")
     if args.regrade and args.endpoint:
         parser.error("--regrade replays a stored run; it takes no --endpoint")
+
+    # NAME=PROFILE, with "*" as the wildcard endpoint name.
+    sampling_specs: dict[str, str] = {}
+    for item in args.sampling or []:
+        name, _, spec = item.partition("=")
+        if not spec:
+            parser.error(f"--sampling needs NAME=PROFILE, got {item}")
+        sampling_specs[name.strip()] = spec.strip()
+    try:
+        sampling_by_endpoint = {
+            name: resolve_sampling_spec(spec) for name, spec in sampling_specs.items()
+        }
+    except (ValueError, json.JSONDecodeError, OSError) as exc:
+        parser.error(f"--sampling: {exc}")
 
     spec = json.loads(Path(args.cases).read_text(encoding="utf-8"))
     cases = spec["cases"]
@@ -685,6 +1141,7 @@ def main() -> int:
 
     report: dict[str, Any] = {
         "eval_schema": spec.get("schema_version"),
+        "harness_version": HARNESS_VERSION,
         "cases_total": len(cases),
         "generated_unix": int(time.time()),
         "tool_availability": sorted(available),
@@ -710,9 +1167,17 @@ def main() -> int:
             print(f"[{endpoint_name}] regraded {json.dumps(endpoint_report['summary'])}")
         return _finish(report, routing_results, args)
 
+    # Persist the trajectory unless explicitly told not to. Opting in was the
+    # wrong default: the flag existed for the whole 2026-08-14 comparison and
+    # was never passed, so every artifact from that day holds a verdict with
+    # no way to see what the model actually did.
+    responses_target = args.responses
+    if responses_target is None and not args.no_responses and args.output:
+        responses_target = str(Path(args.output).with_suffix(".responses.jsonl"))
+
     responses_fh = None
-    if args.responses:
-        responses_path = Path(args.responses)
+    if responses_target and not args.no_responses:
+        responses_path = Path(responses_target)
         responses_path.parent.mkdir(parents=True, exist_ok=True)
         responses_fh = responses_path.open("w", encoding="utf-8")
 
@@ -730,7 +1195,14 @@ def main() -> int:
             print(f"[{name}] UNREACHABLE at {url}: {exc}", file=sys.stderr)
             report["endpoints"][name] = {"url": url, "error": str(exc)}
             continue
-        print(f"[{name}] {model} at {url}: {len(model_cases)} cases")
+        sampling = sampling_by_endpoint.get(name, sampling_by_endpoint.get("*", {}))
+        sampling_label = sampling_specs.get(
+            name, sampling_specs.get("*", "production")
+        )
+        print(
+            f"[{name}] {model} at {url}: {len(model_cases)} cases "
+            f"(sampling={sampling_label})"
+        )
 
         results: list[dict[str, Any]] = list(routing_results)
         for case in model_cases:
@@ -750,7 +1222,7 @@ def main() -> int:
             for attempt in range(1, args.repeat + 1):
                 try:
                     record, raw = run_model_case(
-                        case, url, model, args.max_iterations
+                        case, url, model, args.max_iterations, sampling
                     )
                 except Exception as exc:  # noqa: BLE001 - harness must survive
                     record = {
@@ -790,13 +1262,17 @@ def main() -> int:
         report["endpoints"][name] = {
             "url": url,
             "model": model,
+            # Which knobs produced these numbers. A comparison that does not
+            # record this cannot be reproduced and cannot be defended.
+            "sampling_profile": sampling_label,
+            "sampling": sampling,
             "summary": summary,
             "results": results,
         }
 
     if responses_fh is not None:
         responses_fh.close()
-        print(f"responses written to {args.responses}")
+        print(f"responses written to {responses_target}")
 
     return _finish(report, routing_results, args)
 

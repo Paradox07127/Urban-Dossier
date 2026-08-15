@@ -59,7 +59,8 @@ class TurnTrace(BaseModel):
     tool_calls: list[str] = Field(default_factory=list)
     kind: str = Field(
         default="loop",
-        description="loop | wrapup_truncated | wrapup_max_iterations",
+        description="loop | wrapup_truncated | wrapup_max_iterations "
+                    "| wrapup_no_progress",
     )
 
 

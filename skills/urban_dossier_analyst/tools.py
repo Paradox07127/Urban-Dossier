@@ -446,6 +446,40 @@ def _simulate_intervention(args: SimulateInterventionArgs) -> dict[str, Any]:
     return _backend_post("/api/simulate", body)
 
 
+def _steer_geocode(payload: dict[str, Any], query: str) -> dict[str, Any]:
+    """Tell the model what to do with a geocode result.
+
+    A bare list of candidates leaves "and now what?" to inference, and the
+    2026-08-14 traces show what inference produces under pressure: five
+    reworded search_address calls and no analysis. Both branches below name
+    the next action explicitly. This lives in the tool layer rather than in
+    ``search_address_payload`` because it is agent steering, not part of the
+    /api/search contract the frontend consumes.
+    """
+
+    hits = payload.get("results") or []
+    steered = dict(payload)
+    if hits:
+        best = hits[0]
+        steered["next_step"] = (
+            "Coordinates resolved. Call an analysis tool "
+            "(score_neighborhood / compare_neighborhoods / query_dataset) "
+            f"with latitude={best.get('latitude')}, "
+            f"longitude={best.get('longitude')}. Do not geocode this place "
+            "again."
+        )
+    else:
+        steered["retry_hint"] = (
+            f"No address matched {query!r}. Do not retry with a reworded "
+            "version of the same place -- the index is street addresses plus "
+            "named facilities and subway stations, so a bare neighborhood "
+            "name often has no entry. Either geocode a specific street "
+            "address or a landmark inside the area, or tell the user you "
+            "need a street address."
+        )
+    return steered
+
+
 def _search_address(args: SearchAddressArgs) -> dict[str, Any]:
     """Geocode an address. In-process via ``service.search_address_payload``
     when the backend module is importable, otherwise HTTP loopback to
@@ -454,9 +488,11 @@ def _search_address(args: SearchAddressArgs) -> dict[str, Any]:
     _log_dispatch_mode_once()
     backend = _resolve_backend_module()
     if backend is not None:
-        return backend.search_address_payload(query=args.query, limit=args.limit)
-    body = {"query": args.query, "limit": args.limit}
-    return _backend_post("/api/search", body)
+        payload = backend.search_address_payload(query=args.query, limit=args.limit)
+    else:
+        body = {"query": args.query, "limit": args.limit}
+        payload = _backend_post("/api/search", body)
+    return _steer_geocode(payload, args.query)
 
 
 def _retrieve_dataset_docs(args: RetrieveDatasetDocsArgs) -> dict[str, Any]:
@@ -640,7 +676,11 @@ TOOLS: list[dict[str, Any]] = [
         "Geocode an address, building number, or place name to a list of "
         "candidate {address, borough, zip, latitude, longitude} matches. "
         "Always run this first when the user provides a name instead of "
-        "coordinates.",
+        "coordinates. The index holds NYC street addresses plus named "
+        "facilities and subway stations -- a bare neighborhood name may "
+        "return nothing, in which case use a street address or a landmark "
+        "inside it rather than rewording the query. This is a LOOKUP tool: "
+        "once it returns a coordinate, move on to an analysis tool.",
         {
             "type": "object",
             "properties": {
@@ -679,6 +719,24 @@ _CORE_TOOLS = {
     "query_dataset",
     "search_address",
 }
+
+# Lookup tools locate things; they never answer the user's question on their
+# own. The distinction is what lets the loop notice an agent that has geocoded
+# the same place five times and analysed nothing -- a real Qwen3.8 failure on
+# 2026-08-14 that the identical-arguments repeat guard could not see, because
+# each query string was different.
+LOOKUP_TOOLS = frozenset({"search_address", "retrieve_dataset_docs"})
+
+ANALYSIS_TOOLS = frozenset(
+    {
+        "score_neighborhood",
+        "compare_neighborhoods",
+        "query_dataset",
+        "find_similar_neighborhoods",
+        "walking_isochrone",
+        "simulate_intervention",
+    }
+)
 
 
 def _artifact_state(available: bool, reason: str, **details: Any) -> dict[str, Any]:

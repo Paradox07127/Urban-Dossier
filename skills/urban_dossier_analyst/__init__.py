@@ -1,8 +1,10 @@
 """urban-dossier-analyst skill package.
 
 Master ReAct agent for goal-driven NYC neighborhood analysis. Runs on
-DGX Spark against a local vLLM server hosting Nemotron-3-Nano-30B-A3B-NVFP4
-with the qwen3_coder tool-call parser and the nano_v3 reasoning parser.
+DGX Spark against a local vLLM server exposing an OpenAI-compatible API.
+The served checkpoint is deployment configuration, not a property of this
+package: production, Lightning and Qwen3.8 candidates all run this same
+loop, and the prompts deliberately name no model.
 """
 
 from __future__ import annotations
