@@ -140,16 +140,38 @@ services:
       - --kv-cache-dtype
       - fp8
       - --enable-prefix-caching
-      # The card publishes no recipe for RTX PRO 6000 Blackwell; this follows
-      # the DGX Spark recipe (marlin W4A16 + FlashInfer Mamba + DSpark
-      # drafter), the closest validated single-GPU profile.  If the SM 12.0
-      # native-FP4 path proves stable, try LIGHTNING_MOE_BACKEND=default.
+      # Overlaps CPU-side scheduling with GPU execution. The model card lists
+      # it among the flags that apply to every hardware profile and we did not
+      # have it; it was incompatible with speculative decoding in vLLM <=0.10
+      # and is not in this image's defaults, which is presumably how it got
+      # missed. Verified booting with the DSpark drafter on 0.27.1.
+      - --async-scheduling
+      # The card publishes no recipe for RTX PRO 6000 Blackwell (SM 12.0), so
+      # this follows the DGX Spark profile -- the closest validated
+      # single-GPU one.
+      #
+      # Do NOT "try native FP4 now that the card is Blackwell". On SM 12.0 the
+      # native NVFP4 grouped-GEMM path is broken, not merely slow: every TMA
+      # warp-specialised tactic fails at initialisation (CUTLASS #3096) and
+      # both the FlashInfer CUTLASS and vLLM native CUTLASS backends return
+      # GARBAGE TOKENS at ~6 tok/s rather than erroring out. Marlin dequantises
+      # W4 to FP16 and runs an ordinary FP16 GEMM, which is why it is the only
+      # backend that is correct here. `humming` is the card's H100/Ampere
+      # choice and is untested on SM 12.0.
       - --moe-backend
       - ${LIGHTNING_MOE_BACKEND:-marlin}
       - --mamba-backend
       - flashinfer
       - --mamba-cache-mode
       - align
+      # DSpark drafter, 3 tokens -- the card's DGX Spark and H100-interactive
+      # number (GB200 uses 5). DSpark is built for DGX Spark and low-concurrency
+      # serving; the sibling DFlash checkpoint lists consumer/workstation
+      # Blackwell (RTX 5090) among its targets, which is this card's silicon.
+      # DSpark reports the better acceptance length on SPEED-Bench (3.75 vs
+      # 3.16 at draft length 7) but is tuned for a unified-memory system, and
+      # NVIDIA's own guidance is to benchmark DFlash per workload rather than
+      # assume. Unmeasured here -- see MODEL_CANDIDATES.md for the shortlist.
       - --speculative_config.model
       - /draft
       - --speculative_config.num_speculative_tokens

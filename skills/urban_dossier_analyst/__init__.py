@@ -1,7 +1,8 @@
 """urban-dossier-analyst skill package.
 
-Master ReAct agent for goal-driven NYC neighborhood analysis. Runs on
-DGX Spark against a local vLLM server exposing an OpenAI-compatible API.
+Master ReAct agent for goal-driven NYC neighborhood analysis. Runs against a
+local vLLM server exposing an OpenAI-compatible API, on an RTX PRO 6000
+Blackwell (96 GB, SM 12.0).
 The served checkpoint is deployment configuration, not a property of this
 package: production, Lightning and Qwen3.8 candidates all run this same
 loop, and the prompts deliberately name no model.

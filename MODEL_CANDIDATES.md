@@ -477,3 +477,116 @@ profile against the checkpoint on disk.
 **Still not measured:** MTP speculative decoding, unchanged as the biggest
 available lever on Qwen's throughput and the only thing that could reopen
 this comparison.
+
+---
+
+## 2026-08-15 — Lightning's serving config, settled against the vendor sources
+
+Lightning stays the default. This section pins what we serve and why, and
+lists what is left on the table. Sources at the end.
+
+### The hardware has no official recipe, and that matters
+
+This machine is an **RTX PRO 6000 Blackwell Workstation Edition, 96 GB,
+compute capability 12.0** — not the DGX Spark that `SKILL.md` and several
+comments still claimed. NVIDIA publishes recipes for DGX Spark (GB10), H100,
+GB200, Ampere and 8×H100, and none for SM 12.0. We follow the DGX Spark
+profile as the closest validated single-GPU one.
+
+The one place that guess is load-bearing is the MoE backend, and there the
+community evidence is unambiguous: on SM 12.0 the **native NVFP4 grouped-GEMM
+path is broken, not slow**. Every TMA warp-specialised tactic fails at
+initialisation (CUTLASS #3096), and both FlashInfer CUTLASS and vLLM native
+CUTLASS return **garbage tokens at ~6 tok/s instead of erroring**. Marlin
+dequantises W4 to FP16 and runs an ordinary FP16 GEMM, which is why it is the
+only backend known-correct on this silicon. The compose comment that invited
+a future reader to "try `default` if native FP4 proves stable" has been
+replaced with that warning.
+
+### Config as shipped
+
+| Flag | Value | Why |
+|---|---|---|
+| image | `vllm/vllm-openai:v0.27.1` | the card's validated container |
+| `--moe-backend` | `marlin` | only backend correct on SM 12.0 (above) |
+| `--mamba-backend` | `flashinfer` | card, every profile |
+| `--mamba-cache-mode` | `align` | card; also what prefix caching requires |
+| `--kv-cache-dtype` | `fp8` | card, DGX Spark profile |
+| `--enable-prefix-caching` | on | card, universal |
+| `--async-scheduling` | on | card, universal — **was missing** |
+| `--reasoning-parser` | `nemotron_v3` | card; built into 0.27, no plugin file |
+| `--tool-call-parser` | `qwen3_coder` | card |
+| `--speculative_config.model` | DSpark | card, DGX Spark + H100-interactive |
+| `--speculative_config.num_speculative_tokens` | 3 | same (GB200 uses 5) |
+| `--max-model-len` | 131072 | ours; card validates 1M, we do not need it |
+| `--max-num-seqs` | 8 | ours: one interactive user, not a throughput farm |
+| `--gpu-memory-utilization` | 0.38 | ours: co-residency for A/B. Card says 0.91 for a sole model — that is the promotion step, not this one |
+
+`--async-scheduling` was the only recommended-everywhere flag we did not
+have. It overlaps CPU-side scheduling with GPU execution; it was incompatible
+with speculative decoding in vLLM ≤0.10, which is the likely reason it never
+got added here. Verified accepted by 0.27.1 alongside the DSpark drafter, and
+**it changes nothing measurable at our concurrency** (cold C1 492 vs a 505
+baseline, cold C4 795 vs 804 — one sample each, inside noise). That is the
+expected result: at one to four in-flight requests there is little scheduling
+to overlap. Kept because it is the vendor's universal recommendation and
+costs nothing measurable, not because it bought us anything.
+
+### A benchmark caveat found while measuring that
+
+`ab_bench.py` sends a **fixed** prompt set at servers running
+`--enable-prefix-caching`, so its numbers depend on cache state and two
+reports can look comparable while measuring different regimes. Same build,
+same flags, 2026-08-15:
+
+| | C1 | C4 | TTFT p50 @C4 |
+|---|---|---|---|
+| freshly started server | 492 tok/s | 795 tok/s | 0.586 s |
+| third run, same process | 518 tok/s | 1380 tok/s | 0.090 s |
+
+**1.7× at C4 from cache state alone.** `--warmup` now pins the warm regime
+and the report records which one it used. Every stored `ab_bench` number
+before today is a cold-start number; do not compare one to a warmed run.
+
+### Optimization space, ranked, none of it measured
+
+1. **DFlash instead of DSpark.** DFlash's card lists GeForce RTX 5090 —
+   consumer/workstation Blackwell, this card's silicon class — while DSpark
+   targets DGX Spark and low-concurrency data centre. DSpark reports the
+   better SPEED-Bench acceptance length (3.75 vs 3.16 at draft length 7), but
+   it is tuned for a unified-memory system with far less bandwidth than a
+   discrete card, and acceptance length is not throughput once the drafter's
+   own cost is counted. NVIDIA's guidance is explicitly to benchmark DFlash
+   per workload. Needs the checkpoint downloaded; cheapest real experiment
+   available.
+2. **Draft length above 3.** Both drafter cards report acceptance at draft
+   length **7**; we run 3, and the GB200 profile uses 5. Free to try.
+3. **Native MTP.** Ships inside the checkpoint, no download. The card
+   recommends it for medium-to-high concurrency, so at our single-user load
+   DSpark should win — but the SM 12.0 report saw MTP cost 22% on Marlin
+   (different model, TP=4), which is worth knowing before assuming.
+4. **`--moe-backend humming`.** The card's H100 and Ampere choice, untested
+   on SM 12.0. Given that the other non-Marlin backends fail silently into
+   garbage here, this needs a **correctness** check before a speed one.
+5. **`--mamba-ssm-cache-dtype float16`.** In the H100 profiles, absent from
+   DGX Spark's. Halves the Mamba state; it is a precision change to a
+   recurrent state, so it needs an eval run, not a throughput run.
+6. **`--gpu-memory-utilization 0.91`** and dropping the co-residency
+   reservation — part of the production switch (§4.5), with a rollback, not
+   a tuning knob.
+
+For reference, someone benchmarked this exact GPU and model publicly and got
+935 / 1730 / 1176 tok/s on prompt-heavy / decode-heavy / balanced
+`vllm bench serve` at 16 prompts, with speculative decoding on. They did not
+publish their flags, so it is a sanity check on the order of magnitude and
+nothing more.
+
+**Sources.** [NVIDIA Nemotron 3.5 Lightning launch blog](https://developer.nvidia.com/blog/nvidia-nemotron-3-5-lightning-delivers-fast-accurate-specialized-task-execution-for-long-running-agents/) ·
+[NVFP4 model card and vLLM recipes](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4) ·
+[DSpark drafter card](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DSpark) ·
+[DFlash drafter card](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DFlash) ·
+[SM120 / RTX PRO 6000 NVFP4 MoE report (vLLM forums)](https://discuss.vllm.ai/t/sm120-rtx-pro-6000-nvfp4-moe-performance-report-qwen3-5-397b/2536) ·
+[DGX Spark vs RTX PRO 6000 on this model (NVIDIA forums)](https://forums.developer.nvidia.com/t/nvidia-nemotron-3-5-lightning-30b-a3b-nvfp4-dgx-spark-vs-rtx-pro-6000-blackwell-performance/379921)
+
+No arXiv paper exists for Nemotron 3.5 Lightning; the launch blog and the
+model cards are the primary sources.

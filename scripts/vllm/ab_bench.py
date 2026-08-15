@@ -19,6 +19,14 @@ The prompt set is Urban-Dossier-flavoured: the same scoring-rubric system
 prompt the backend sends on every /api/analyze-point, plus mixed analytical
 questions, so prefix caching and reasoning behave as they do in production.
 
+Because that prompt set is FIXED and the servers run --enable-prefix-caching,
+the numbers depend on cache state, and two reports that look comparable may
+not be. Measured 2026-08-15 on one unchanged build: C4 gave 794.6 tok/s on a
+freshly started server and 1380.2 tok/s on the third run against the same
+process, with TTFT p50 falling 0.586s -> 0.09s. Pass --warmup on every
+endpoint of a comparison to pin the warm regime, or compare only runs against
+freshly started servers. The report records which regime it used.
+
 Exit code 0 means the run is fit to compare: every endpoint answered, every
 request succeeded, every prompt completed. Exit 1 means it is not, and says
 why on stderr -- the report is still written either way, because partial
@@ -215,10 +223,26 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=600.0)
     parser.add_argument("--output", default=None,
                         help="write the full JSON report here")
+    parser.add_argument(
+        "--warmup", action="store_true",
+        help="send the prompt set once, discarded, before measuring. The "
+             "servers we benchmark run --enable-prefix-caching and the prompt "
+             "set is fixed, so an unwarmed run measures cold cache and a "
+             "repeat run against the same process measures warm: 794 vs 1380 "
+             "tok/s at C4 for the same build on 2026-08-15. Use this on every "
+             "endpoint of a comparison, or compare only cold-start runs.",
+    )
     args = parser.parse_args()
     levels = args.concurrency or [1, 4]
 
-    report: dict = {"endpoints": {}, "generated_unix": int(time.time())}
+    report: dict = {
+        "endpoints": {},
+        "generated_unix": int(time.time()),
+        # Which cache regime produced these numbers. Without it a report is
+        # not comparable with any other report, and looks like it is.
+        "warmup": bool(args.warmup),
+        "max_tokens": args.max_tokens,
+    }
     for spec in args.endpoint:
         name, _, url = spec.partition("=")
         url = url.rstrip("/")
@@ -232,6 +256,9 @@ def main() -> int:
             continue
         print(f"[{name}] {model} at {url}")
         entry = {"url": url, "model": model, "levels": []}
+        if args.warmup:
+            print(f"[{name}] warming the prefix cache (discarded)")
+            run_level(url, model, 1, args.max_tokens, args.timeout)
         for level in levels:
             summary = run_level(url, model, level, args.max_tokens, args.timeout)
             entry["levels"].append(summary)

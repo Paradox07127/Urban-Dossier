@@ -5,9 +5,12 @@ description: Goal-driven NYC neighborhood analysis agent. Use when the user asks
 
 # Urban Dossier Analyst
 
-Master ReAct agent for the Urban Dossier system. Runs on DGX Spark
-(NVIDIA GB10, ARM64, 128GB unified memory) against a local vLLM server with
-`--enable-auto-tool-choice` and a tool-call parser.
+Master ReAct agent for the Urban Dossier system. Runs against a local vLLM
+server with `--enable-auto-tool-choice` and a tool-call parser, on an
+NVIDIA RTX PRO 6000 Blackwell Workstation Edition (96 GB, compute capability
+12.0). Earlier revisions of this file said DGX Spark (GB10, ARM64, 128 GB
+unified); that was never this machine, and the difference decides which of
+NVIDIA's serving recipes applies — see `MODEL_CANDIDATES.md`.
 
 The served checkpoint is deployment configuration, not part of this skill.
 Nemotron-3-Nano, Nemotron-3.5-Lightning and Qwen3.8-27B have all run this
