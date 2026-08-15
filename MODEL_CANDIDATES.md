@@ -342,6 +342,14 @@ ways:
   > misattribution and the flakiness are exactly what pass^k and a stored
   > trajectory exist to prevent, and neither existed when the paragraph
   > above was written.
+  >
+  > **Settled 2026-08-14.** With `search_address` matching per token, on
+  > word boundaries, against the borough column, the case passes **3 of 3
+  > (pass^3 = 1.0)** and the trajectory is what the model always intended:
+  > `search_address, search_address, compare_neighborhoods` in 6.2 s.
+  > `tool-geocode-before-score` likewise goes 3 of 3 with two tool calls
+  > where it previously burned five or six retrying the geocode. Lightning
+  > never had a tool-selection defect on this set.
 - **Qwen3.8 at its card sampling calls `compare_neighborhoods` correctly**
   and clears the whole set — the only configuration in this comparison with
   zero hard failures.
