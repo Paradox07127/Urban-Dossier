@@ -6,9 +6,14 @@ description: Goal-driven NYC neighborhood analysis agent. Use when the user asks
 # Urban Dossier Analyst
 
 Master ReAct agent for the Urban Dossier system. Runs on DGX Spark
-(NVIDIA GB10, ARM64, 128GB unified memory) against a local vLLM server
-hosting **Nemotron-3-Nano-30B-A3B-NVFP4** with the `qwen3_coder` tool-call
-parser, the `nano_v3` reasoning parser, and `--enable-auto-tool-choice`.
+(NVIDIA GB10, ARM64, 128GB unified memory) against a local vLLM server with
+`--enable-auto-tool-choice` and a tool-call parser.
+
+The served checkpoint is deployment configuration, not part of this skill.
+Nemotron-3-Nano, Nemotron-3.5-Lightning and Qwen3.8-27B have all run this
+loop unchanged; the reasoning field is read from whichever channel the
+runtime provides, and the prompts name no model. See `MODEL_CANDIDATES.md`
+for what is currently deployed and what is under evaluation.
 
 The skill exposes a single Python entry point - `run_agent(user_message, ...)` -
 that drives a Thought-Action-Observation loop over a fixed set of 8 tools and

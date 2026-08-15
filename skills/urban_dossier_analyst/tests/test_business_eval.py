@@ -17,15 +17,24 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "vllm"))
 
 from business_eval import (  # noqa: E402
+    FAULT_MODES,
+    SAMPLING_PROFILES,
+    case_turns,
+    classify_numbers,
     failure_reasons,
     grade_case,
     grade_response,
+    injected_fault,
+    load_place_vocabulary,
     merge_attempts,
+    merge_turn_records,
     regrade_responses,
+    resolve_sampling_spec,
     run_routing_case,
     summarize,
     trace_digest,
     turns_digest,
+    unsupported_places,
 )
 
 CASES = json.loads(
@@ -34,6 +43,7 @@ CASES = json.loads(
 
 KNOWN_CATEGORIES = {
     "routing", "tool_call", "evidence", "multi_step", "format", "robustness",
+    "multi_turn", "fault",
 }
 KNOWN_EXPECT_KEYS = {
     "route_intent", "route_rule", "tools_all", "tools_any", "tools_forbidden",
@@ -41,8 +51,13 @@ KNOWN_EXPECT_KEYS = {
     "answer_regex_all", "answer_regex_any", "answer_forbidden_regex",
     "citation_required", "evidence_list_required", "json_answer_keys",
     "max_sentences", "either", "no_numbers_without_tools",
-    "numeric_faithfulness",
+    "numeric_faithfulness", "place_faithfulness",
 }
+
+
+def _expect_blocks(case):
+    """Every expect block in a case, single-prompt or multi-turn."""
+    return [turn.get("expect", {}) for turn in case_turns(case)]
 
 
 # --- the case file ----------------------------------------------------------
@@ -51,22 +66,45 @@ KNOWN_EXPECT_KEYS = {
 def test_case_file_shape():
     ids = [case["id"] for case in CASES["cases"]]
     assert len(ids) == len(set(ids)), "case ids must be unique"
-    assert 20 <= len(ids) <= 30, "plan 4.1 calls for 20-30 cases"
+    assert 20 <= len(ids) <= 40, "the set should stay hand-auditable"
     for case in CASES["cases"]:
         assert case["category"] in KNOWN_CATEGORIES, case["id"]
-        assert case["prompt"].strip()
-        unknown = set(case["expect"]) - KNOWN_EXPECT_KEYS
-        assert not unknown, f"{case['id']}: unknown expect keys {unknown}"
+        for turn in case_turns(case):
+            assert turn["prompt"].strip(), case["id"]
+            unknown = set(turn.get("expect", {})) - KNOWN_EXPECT_KEYS
+            assert not unknown, f"{case['id']}: unknown expect keys {unknown}"
+
+
+def test_multi_turn_cases_declare_turns_not_prompt():
+    """A case carries `prompt` or `turns`, never both -- the runner would
+    silently ignore one of them."""
+    for case in CASES["cases"]:
+        assert not (
+            case.get("prompt") and case.get("turns")
+        ), f"{case['id']}: has both prompt and turns"
+        if case["category"] == "multi_turn":
+            assert len(case.get("turns") or []) >= 2, case["id"]
+
+
+def test_fault_cases_declare_a_valid_injection():
+    faults = [c for c in CASES["cases"] if c["category"] == "fault"]
+    assert faults, "the set must exercise tool failure on purpose"
+    for case in faults:
+        spec = case["fault_injection"]
+        assert spec["mode"] in FAULT_MODES, case["id"]
+        assert spec["on_call"] == "all" or int(spec["on_call"]) >= 1, case["id"]
 
 
 def test_all_regexes_compile():
     for case in CASES["cases"]:
-        expect = case["expect"]
-        for key in ("answer_regex_all", "answer_regex_any", "answer_forbidden_regex"):
-            for pattern in expect.get(key, []):
+        for expect in _expect_blocks(case):
+            for key in (
+                "answer_regex_all", "answer_regex_any", "answer_forbidden_regex"
+            ):
+                for pattern in expect.get(key, []):
+                    re.compile(pattern, re.IGNORECASE)
+            for pattern in (expect.get("either") or {}).get("answer_regex_any", []):
                 re.compile(pattern, re.IGNORECASE)
-        for pattern in (expect.get("either") or {}).get("answer_regex_any", []):
-            re.compile(pattern, re.IGNORECASE)
 
 
 def test_routing_cases_pass_against_live_router():
@@ -448,3 +486,270 @@ def test_regrade_groups_repeated_attempts_into_pass_hat_k(tmp_path):
     assert record["attempt_statuses"] == ["pass", "fail", "pass"]
     assert record["pass_hat_k"] == 0.0
     assert replayed["cand"]["summary"]["repeat"] == 3
+
+
+# --- numeric faithfulness: derived figures are not hallucinations ------------
+
+
+def test_literal_and_rounded_numbers_are_supported():
+    buckets = classify_numbers({"141", "58"}, {"141", "57.6"})
+    assert buckets["literal"] == ["141"]
+    assert buckets["rounded"] == ["58"]
+    assert buckets["unsupported"] == []
+
+
+def test_one_step_arithmetic_counts_as_derived():
+    """The check that flagged both models on multi-two-point-violations.
+
+    An analyst asked "how many more" answers with a difference, and asked
+    "what share" answers with a percentage. Neither digit string appears in
+    any tool result, and the old grader called both inventions.
+    """
+    supported = {"400", "140"}
+    assert classify_numbers({"260"}, supported)["derived"] == ["260"]
+    assert classify_numbers({"540"}, supported)["derived"] == ["540"]
+    assert classify_numbers({"35.0"}, supported)["derived"] == ["35.0"]
+
+
+def test_an_invented_number_stays_unsupported():
+    """The loosening must not launder a real hallucination.
+
+    Products are deliberately not a derivation rule: with a large pool they
+    would span enough of the number line to explain almost anything.
+    """
+    buckets = classify_numbers({"999999"}, {"400", "140", "1000"})
+    assert buckets["unsupported"] == ["999999"]
+    assert buckets["derived"] == []
+
+
+def test_derivation_pool_is_capped_and_deterministic():
+    supported = {str(n) for n in range(1000, 1400)}
+    first = classify_numbers({"7"}, supported, pool_cap=50)
+    second = classify_numbers({"7"}, supported, pool_cap=50)
+    assert first == second
+
+
+def test_faithfulness_soft_check_records_why_a_number_was_accepted():
+    case = {
+        "prompt": "compare 40.7282,-73.9942 and 40.8618,-73.8904",
+        "expect": {"numeric_faithfulness": True},
+    }
+    response = {
+        "answer": "The first has 260 more violations than the second.",
+        "evidence": [],
+        "tools_called": ["query_dataset"],
+        "iterations": 1,
+        "trace": [
+            {"iteration": 0, "tool_name": "query_dataset", "args": {},
+             "result": {"a_total": 400, "b_total": 140}, "latency_ms": 5}
+        ],
+        "turns": [],
+    }
+    graded = grade_case(case, response)
+    assert graded["status"] == "pass"
+    assert graded["soft"]["faithfulness"]["derived"] == ["260"]
+    assert graded["soft"]["faithfulness"]["unsupported"] == []
+
+
+# --- place grounding ---------------------------------------------------------
+
+
+def test_vocabulary_loads_real_nyc_names():
+    vocab = load_place_vocabulary()
+    assert "Upper West Side" in vocab
+    assert "East Village" in vocab
+    assert "Manhattan" in vocab
+    # Longest first, so a specific name is tested before its substrings.
+    assert len(vocab[0]) >= len(vocab[-1])
+
+
+def test_place_named_from_memory_is_flagged():
+    """The failure mode: every hard check passes and the answer still puts
+    the user four miles from where they are."""
+    strays = unsupported_places(
+        "The Upper West Side has good transit.",
+        "688 BROADWAY, Manhattan 10012",
+    )
+    assert strays == ["Upper West Side"]
+
+
+def test_place_backed_by_the_trace_is_not_flagged():
+    assert unsupported_places(
+        "Manhattan scores well.", "688 BROADWAY, Manhattan 10012"
+    ) == []
+
+
+def test_longer_place_name_consumes_its_substrings():
+    """'Upper West Side' must not also report 'West' as a separate stray."""
+    strays = unsupported_places("Upper West Side is nice.", "")
+    assert strays == ["Upper West Side"]
+
+
+def test_place_faithfulness_can_be_hard():
+    case = {"prompt": "describe 40.7282,-73.9942",
+            "expect": {"place_faithfulness": "hard"}}
+    response = {"answer": "This is the Upper West Side.", "evidence": [],
+                "tools_called": [], "iterations": 1, "trace": [], "turns": []}
+    graded = grade_case(case, response)
+    assert graded["status"] == "fail"
+    assert any("Upper West Side" in f for f in graded["failures"])
+
+
+# --- multi-turn --------------------------------------------------------------
+
+
+def test_case_turns_normalises_both_shapes():
+    single = {"id": "a", "prompt": "hi", "expect": {"max_sentences": 1}}
+    assert case_turns(single) == [{"prompt": "hi", "expect": {"max_sentences": 1}}]
+
+    multi = {"id": "b", "turns": [{"prompt": "one", "expect": {}},
+                                  {"prompt": "two", "expect": {}}]}
+    assert len(case_turns(multi)) == 2
+
+
+def test_multi_turn_status_is_the_worst_turn():
+    """An agent that answers turn 1 and loses the thread on turn 2 has failed
+    the conversation; averaging would hide exactly what the case is for."""
+    case = {"id": "conv", "category": "multi_turn"}
+    turns = [
+        {"id": "conv", "category": "multi_turn", "status": "pass",
+         "failures": [], "metrics": {"wall_s": 3.0, "tools_called": ["a"]},
+         "answer": "first"},
+        {"id": "conv", "category": "multi_turn", "status": "fail",
+         "failures": ["required tool not called: compare_neighborhoods"],
+         "metrics": {"wall_s": 4.0, "tools_called": ["b"]}, "answer": "second"},
+    ]
+    merged = merge_turn_records(case, turns)
+    assert merged["status"] == "fail"
+    assert merged["metrics"]["turn_statuses"] == ["pass", "fail"]
+    assert merged["metrics"]["wall_s"] == 7.0
+    assert merged["metrics"]["tools_called"] == ["a", "b"]
+    # Failures stay attributed to the turn that produced them.
+    assert merged["failures"] == [
+        "turn 2: required tool not called: compare_neighborhoods"
+    ]
+    assert merged["answer"] == "second"
+
+
+def test_multi_turn_regrade_reproduces_the_live_collapse(tmp_path):
+    case = {
+        "id": "conv",
+        "category": "multi_turn",
+        "turns": [
+            {"prompt": "one", "expect": {"tools_all": ["search_address"]}},
+            {"prompt": "two", "expect": {"tools_all": ["compare_neighborhoods"]}},
+        ],
+    }
+    stored = {
+        "endpoint": "cand", "model": "m", "attempt": 1, "case_id": "conv",
+        "turns": [
+            {"turn": 1, "prompt": "one", "wall_s": 1.0, "usage": {},
+             "response": {"answer": "a", "evidence": [],
+                          "tools_called": ["search_address"], "iterations": 1,
+                          "trace": [], "turns": []}},
+            {"turn": 2, "prompt": "two", "wall_s": 2.0, "usage": {},
+             "response": {"answer": "b", "evidence": [], "tools_called": [],
+                          "iterations": 1, "trace": [], "turns": []}},
+        ],
+    }
+    path = tmp_path / "r.jsonl"
+    path.write_text(json.dumps(stored) + "\n", encoding="utf-8")
+
+    record = regrade_responses(path, {"conv": case})["cand"]["results"][0]
+    assert record["status"] == "fail"
+    assert record["metrics"]["turn_statuses"] == ["pass", "fail"]
+
+
+# --- fault injection ---------------------------------------------------------
+
+
+def test_injected_fault_breaks_only_the_named_tool():
+    from urban_dossier_analyst import agent_loop
+
+    def _real(name, args):
+        return {"ok": True, "tool": name}
+
+    original = agent_loop.dispatch_tool
+    agent_loop.dispatch_tool = _real
+    try:
+        with injected_fault({"tool": "score_neighborhood", "mode": "error",
+                             "on_call": "all"}):
+            broken = agent_loop.dispatch_tool("score_neighborhood", {})
+            fine = agent_loop.dispatch_tool("search_address", {})
+        assert "error" in broken
+        assert broken["_injected_fault"] == "error"
+        assert fine == {"ok": True, "tool": "search_address"}
+        # Restored on exit.
+        assert agent_loop.dispatch_tool("score_neighborhood", {})["ok"] is True
+    finally:
+        agent_loop.dispatch_tool = original
+
+
+def test_injected_fault_on_nth_call_lets_a_retry_succeed():
+    """One-shot failure tests recovery, persistent failure tests honesty."""
+    from urban_dossier_analyst import agent_loop
+
+    original = agent_loop.dispatch_tool
+    agent_loop.dispatch_tool = lambda name, args: {"ok": True}
+    try:
+        with injected_fault({"tool": "score_neighborhood", "mode": "error",
+                             "on_call": 1}):
+            first = agent_loop.dispatch_tool("score_neighborhood", {})
+            second = agent_loop.dispatch_tool("score_neighborhood", {})
+        assert "error" in first
+        assert second == {"ok": True}
+    finally:
+        agent_loop.dispatch_tool = original
+
+
+def test_no_fault_spec_is_a_no_op():
+    from urban_dossier_analyst import agent_loop
+
+    original = agent_loop.dispatch_tool
+    with injected_fault(None):
+        assert agent_loop.dispatch_tool is original
+
+
+# --- sampling profiles -------------------------------------------------------
+
+
+def test_builtin_sampling_profiles_resolve():
+    qwen = resolve_sampling_spec("qwen3.8-card")
+    assert qwen["temperature"] == 1.0
+    # The wrap-up runs with thinking disabled, which the card gives its own
+    # numbers for.
+    assert qwen["wrapup"]["temperature"] == 0.7
+    assert resolve_sampling_spec("production") == {}
+
+
+def test_inline_json_and_unknown_profiles():
+    assert resolve_sampling_spec('{"temperature": 0.9}') == {"temperature": 0.9}
+    try:
+        resolve_sampling_spec("no-such-profile")
+    except ValueError as exc:
+        assert "no-such-profile" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("unknown profile must not resolve silently")
+
+
+def test_every_named_profile_is_a_dict():
+    for name, profile in SAMPLING_PROFILES.items():
+        assert isinstance(profile, dict), name
+
+
+# --- summary accounting ------------------------------------------------------
+
+
+def test_summary_states_its_denominator_and_cost():
+    results = [
+        {"id": "a", "status": "pass", "pass_hat_k": 1.0,
+         "metrics": {"wall_s": 4.0, "completion_tokens": 400}},
+        {"id": "b", "status": "fail", "pass_hat_k": 0.0,
+         "metrics": {"wall_s": 6.0, "completion_tokens": 200}},
+        {"id": "c", "status": "skip", "failures": ["tool(s) not released"]},
+    ]
+    summary = summarize(results, repeat=1)
+    assert summary["cases_executed"] == 2
+    assert summary["skipped_ids"] == ["c"]
+    assert summary["wall_total_s"] == 10.0
+    assert summary["output_tok_per_s"] == 60.0

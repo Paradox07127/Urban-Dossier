@@ -1,21 +1,24 @@
 """ReAct loop for the urban-dossier-analyst agent.
 
-Drives Nemotron-3-Nano-30B-A3B-NVFP4 served by vLLM (OpenAI-compatible API)
-through a Thought -> Action -> Observation cycle, dispatching tool calls via
-tools.dispatch_tool and feeding results back into the conversation.
+Drives any OpenAI-compatible chat-completions endpoint (in practice a local
+vLLM server) through a Thought -> Action -> Observation cycle, dispatching
+tool calls via tools.dispatch_tool and feeding results back into the
+conversation.
 
 Public surface:
   run_agent(user_message, history=None, max_iterations=8, reflection_every=3,
-            vllm_base_url="http://localhost:8000/v1",
-            model="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4") -> dict
+            vllm_base_url="http://localhost:8000/v1", model=...,
+            sampling=None) -> dict
 
 The returned dict matches schemas.AgentResponse:
-  {answer, evidence, tools_called, iterations, trace}
+  {answer, evidence, tools_called, iterations, trace, turns}
 
 Termination conditions:
   1. Model returns a final text answer with no tool calls.
   2. max_iterations is reached -> force a final-answer wrap-up.
   3. The same (tool_name, args) hash appears 3 times in a row -> abort.
+  4. Lookup tools called `no_progress_after` iterations running with no
+     analysis call between them -> nudge once, then force a wrap-up.
 
 Reflection:
   Every `reflection_every` iterations, append REFLECTION_PROMPT to force
@@ -23,6 +26,14 @@ Reflection:
   mid-conversation directive goes in as role="user" via _append_directive,
   because some chat templates (Qwen3.8's) reject a later system message
   outright.
+
+Sampling:
+  `sampling` is a per-run profile; the module defaults stay the production
+  0.2. A candidate model tuned for very different settings (Qwen3.8 asks for
+  1.0 thinking / 0.7 instruct) can be benchmarked at its own numbers without
+  editing this file, and the benchmark records which profile it used. A
+  nested "wrapup" key carries the instruct-mode half, because the two
+  wrap-up calls run with thinking disabled.
 
 Test seam:
   Pass `client_factory` to inject a stub OpenAI client; tests/test_smoke.py
@@ -37,9 +48,15 @@ import os
 import time
 from typing import Any, Callable
 
-from .prompts import FINAL_ANSWER_PROMPT, REFLECTION_PROMPT, SYSTEM_PROMPT
+from .prompts import (
+    FINAL_ANSWER_PROMPT,
+    NO_PROGRESS_PROMPT,
+    REFLECTION_PROMPT,
+    SYSTEM_PROMPT,
+)
 from .schemas import AgentResponse, ToolCallTrace, TurnTrace
 from .tools import (
+    LOOKUP_TOOLS,
     dispatch_tool,
     get_available_tools,
     tool_availability,
@@ -49,6 +66,20 @@ from .tools import (
 
 Message = dict[str, Any]
 ClientFactory = Callable[[str], Any]
+
+# Sampling knobs the OpenAI SDK takes as named arguments. Anything else in a
+# sampling profile (top_k, repetition_penalty, min_p -- vLLM extensions every
+# recent model card reaches for) has to travel in extra_body instead.
+_OPENAI_SAMPLING_KEYS = frozenset(
+    {
+        "temperature",
+        "top_p",
+        "presence_penalty",
+        "frequency_penalty",
+        "seed",
+        "stop",
+    }
+)
 
 # 0.2 is the production setting for every model this service has served, and
 # stays the default -- these knobs exist so a benchmark can ask "is this
@@ -112,6 +143,54 @@ def _append_directive(messages: list[Message], text: str) -> None:
     """
 
     messages.append({"role": "user", "content": text})
+
+
+def resolve_sampling(
+    profile: dict[str, Any] | None, *, wrapup: bool
+) -> dict[str, Any]:
+    """Turn a sampling profile into the kwargs for one completions call. Pure.
+
+    The loop calls and the two wrap-up calls are different sampling regimes:
+    wrap-up runs with thinking disabled, and the model cards that bother to
+    say so give thinking and non-thinking modes different numbers (Qwen3.8:
+    1.0/0.95/top_k 20 thinking, 0.7/0.80/presence_penalty 1.5 instruct). A
+    nested "wrapup" key carries that second half; without one the wrap-up
+    inherits the loop profile and only swaps in the wrap-up temperature.
+
+    Unknown keys land in extra_body so vLLM-only knobs (top_k, min_p) work
+    without this function needing to know what they mean.
+    """
+
+    profile = dict(profile or {})
+    override = profile.pop("wrapup", None) or {}
+    if wrapup:
+        base: dict[str, Any] = {**profile, **override}
+        if "temperature" not in override:
+            base["temperature"] = _WRAPUP_TEMPERATURE
+    else:
+        base = profile
+        base.setdefault("temperature", _TEMPERATURE)
+
+    kwargs: dict[str, Any] = {}
+    extra: dict[str, Any] = {}
+    for key, value in base.items():
+        if value is None:
+            continue
+        if key in _OPENAI_SAMPLING_KEYS:
+            kwargs[key] = value
+        else:
+            extra[key] = value
+    if extra:
+        kwargs["extra_body"] = extra
+    return kwargs
+
+
+def _merge_extra_body(kwargs: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
+    """Add to extra_body without dropping sampling knobs already routed there."""
+
+    merged = dict(kwargs)
+    merged["extra_body"] = {**(merged.get("extra_body") or {}), **extra}
+    return merged
 
 
 def _default_client_factory(base_url: str) -> Any:
@@ -249,15 +328,69 @@ def _summarize_result(tool_name: str, result: dict[str, Any]) -> str:
     return "tool result captured"
 
 
+DEFAULT_MODEL = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4"
+
+
+def _force_wrapup(
+    client: Any,
+    model: str,
+    messages: list[Message],
+    turns: list[TurnTrace],
+    iteration: int,
+    kind: str,
+    sampling: dict[str, Any] | None,
+) -> tuple[str, str]:
+    """Ask for a final answer with tools switched off. Returns (answer, error).
+
+    Three separate paths need this -- truncation, max_iterations, and the
+    no-progress guard -- and having it inline twice was already one copy too
+    many to keep the `enable_thinking` rationale in sync.
+    """
+
+    _append_directive(messages, FINAL_ANSWER_PROMPT)
+    kwargs = _merge_extra_body(
+        resolve_sampling(sampling, wrapup=True),
+        # Wrap-up wants a direct answer; with thinking on, reasoning models
+        # (Nemotron 3.5 measured at ~1K thinking tokens) can exhaust the
+        # max_tokens budget inside the think block and return empty content.
+        {"chat_template_kwargs": {"enable_thinking": False}},
+    )
+    try:
+        wrapup = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            tool_choice="none",
+            max_tokens=1024,
+            **kwargs,
+        )
+    except Exception as exc:  # noqa: BLE001 - surface upstream failures
+        return "", f"{type(exc).__name__}: {exc}"
+
+    wrap_choice = wrapup.choices[0]
+    wrap_dict = _to_dict(wrap_choice.message)
+    turns.append(
+        _turn(
+            iteration,
+            wrap_dict,
+            getattr(wrap_choice, "finish_reason", None),
+            [],
+            kind=kind,
+        )
+    )
+    return _message_text(wrap_dict), ""
+
+
 def run_agent(
     user_message: str,
     history: list[dict] | None = None,
     max_iterations: int = 8,
     reflection_every: int = 3,
     vllm_base_url: str = "http://localhost:8000/v1",
-    model: str = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4",
+    model: str = DEFAULT_MODEL,
     client_factory: ClientFactory | None = None,
     observation_budget_chars: int = 8000,
+    sampling: dict[str, Any] | None = None,
+    no_progress_after: int = 3,
 ) -> dict[str, Any]:
     """Run the ReAct loop and return the structured agent response.
 
@@ -273,6 +406,13 @@ def run_agent(
                        back to the model. Oversized results are reduced by
                        dropping their largest fields; the full result is still
                        recorded in the returned trace.
+      sampling:        Sampling profile for this run (see resolve_sampling).
+                       None keeps the production defaults.
+      no_progress_after: Consecutive lookup-only iterations before the loop
+                       nudges the model toward an analysis tool. It gets one
+                       nudge; ignoring it twice more forces a wrap-up, which
+                       returns the honest partial answer instead of burning
+                       the remaining iterations on geocoding.
 
     Returns:
       Dict matching schemas.AgentResponse.
@@ -301,6 +441,11 @@ def run_agent(
     recent_hashes: list[str] = []
     iterations = 0
     final_answer: str = ""
+    # Consecutive iterations whose tool calls were all lookups. Reset by any
+    # analysis call, so a legitimate geocode-then-score run never trips it.
+    lookup_streak = 0
+    nudged = False
+    loop_sampling = resolve_sampling(sampling, wrapup=False)
 
     for iteration in range(max_iterations):
         iterations = iteration + 1
@@ -315,7 +460,7 @@ def run_agent(
                 messages=messages,
                 tools=active_tools,
                 tool_choice="auto",
-                temperature=_TEMPERATURE,
+                **loop_sampling,
             )
         except Exception as exc:  # noqa: BLE001 - surface upstream failures
             final_answer = (
@@ -358,39 +503,20 @@ def run_agent(
             elif finish_reason == "length":
                 # Cut off before it produced an answer. Ask for a short one
                 # rather than handing the user raw chain of thought.
-                _append_directive(messages, FINAL_ANSWER_PROMPT)
-                try:
-                    wrapup = client.chat.completions.create(
-                        model=model,
-                        messages=messages,
-                        tool_choice="none",
-                        temperature=_WRAPUP_TEMPERATURE,
-                        max_tokens=1024,
-                        # Wrap-up wants a direct answer; with thinking on,
-                        # reasoning models (Nemotron 3.5 measured at ~1K
-                        # thinking tokens) can exhaust this budget inside the
-                        # think block and return empty content.
-                        extra_body={
-                            "chat_template_kwargs": {"enable_thinking": False}
-                        },
-                    )
-                    wrap_choice = wrapup.choices[0]
-                    wrap_dict = _to_dict(wrap_choice.message)
-                    turns.append(
-                        _turn(
-                            iteration,
-                            wrap_dict,
-                            getattr(wrap_choice, "finish_reason", None),
-                            [],
-                            kind="wrapup_truncated",
-                        )
-                    )
-                    final_answer = _message_text(wrap_dict)
-                except Exception as exc:  # noqa: BLE001
+                final_answer, wrap_error = _force_wrapup(
+                    client,
+                    model,
+                    messages,
+                    turns,
+                    iteration,
+                    "wrapup_truncated",
+                    sampling,
+                )
+                if wrap_error:
                     final_answer = (
                         f"Agent loop hit the model's token limit at iteration "
                         f"{iterations} and the wrap-up call failed with "
-                        f"{type(exc).__name__}: {exc}"
+                        f"{wrap_error}"
                     )
                 if not final_answer:
                     final_answer = fallback_text
@@ -483,40 +609,66 @@ def run_agent(
                     "content": _compact_observation(result, observation_budget_chars),
                 }
             )
+
+        # No-progress guard. Distinct from the repeat guard above, which only
+        # fires on identical arguments: the failure this catches is the model
+        # geocoding the same place with a different spelling every iteration,
+        # which looks like fresh work and never reaches an analysis tool.
+        called_this_turn = [
+            _to_dict(c).get("function", {}).get("name", "") for c in tool_calls
+        ]
+        if called_this_turn and all(n in LOOKUP_TOOLS for n in called_this_turn):
+            lookup_streak += 1
+        else:
+            lookup_streak = 0
+
+        if lookup_streak >= no_progress_after:
+            if not nudged:
+                _append_directive(
+                    messages,
+                    NO_PROGRESS_PROMPT.format(
+                        lookup_calls=lookup_streak,
+                        tool_names=", ".join(sorted(set(called_this_turn))),
+                    ),
+                )
+                nudged = True
+            elif lookup_streak >= no_progress_after + 2:
+                # It has now ignored the nudge twice. Spending the remaining
+                # iterations on more geocoding helps nobody; take the honest
+                # partial answer instead.
+                final_answer, wrap_error = _force_wrapup(
+                    client,
+                    model,
+                    messages,
+                    turns,
+                    iterations,
+                    "wrapup_no_progress",
+                    sampling,
+                )
+                if wrap_error:
+                    final_answer = (
+                        f"Agent loop stopped at iteration {iterations}: "
+                        f"{lookup_streak} lookup-only iterations with no "
+                        f"analysis call, and the wrap-up failed with "
+                        f"{wrap_error}"
+                    )
+                break
     else:
         # Loop ran to max_iterations without a final answer. Force the model
         # to produce one with FINAL_ANSWER_PROMPT.
-        _append_directive(messages, FINAL_ANSWER_PROMPT)
-        try:
-            wrapup = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                tool_choice="none",
-                temperature=_WRAPUP_TEMPERATURE,
-                max_tokens=1024,
-                # Same rationale as the truncation wrap-up above: direct
-                # answer only, no think block eating the 1024 budget.
-                extra_body={
-                    "chat_template_kwargs": {"enable_thinking": False}
-                },
-            )
-            wrap_choice = wrapup.choices[0]
-            wrap_dict = _to_dict(wrap_choice.message)
-            turns.append(
-                _turn(
-                    iterations,
-                    wrap_dict,
-                    getattr(wrap_choice, "finish_reason", None),
-                    [],
-                    kind="wrapup_max_iterations",
-                )
-            )
-            final_answer = _message_text(wrap_dict)
-        except Exception as exc:  # noqa: BLE001
+        final_answer, wrap_error = _force_wrapup(
+            client,
+            model,
+            messages,
+            turns,
+            iterations,
+            "wrapup_max_iterations",
+            sampling,
+        )
+        if wrap_error:
             final_answer = (
                 f"Agent loop hit max_iterations={max_iterations} and the "
-                f"final-answer wrap-up call failed with "
-                f"{type(exc).__name__}: {exc}"
+                f"final-answer wrap-up call failed with {wrap_error}"
             )
 
     if not final_answer:

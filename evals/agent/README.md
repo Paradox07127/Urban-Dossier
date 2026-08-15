@@ -41,18 +41,20 @@ must expose those gaps rather than silently dropping the cases.
 
 ## Model-level: `business_eval.py`
 
-24 cases across six categories, run through the REAL production loop
-(production system prompt, tool schemas, iteration caps, observation
-budgets) pointed at **any OpenAI-compatible endpoint** — the seam the
-service-level runner cannot reach, because the sandbox pins its model.
-Tools dispatch over HTTP loopback to the live backend (`:8090`).
+31 cases across eight categories (schema 1.1), run through the REAL
+production loop (production system prompt, tool schemas, iteration caps,
+observation budgets) pointed at **any OpenAI-compatible endpoint** — the
+seam the service-level runner cannot reach, because the sandbox pins its
+model. Tools dispatch over HTTP loopback to the live backend (`:8090`).
 
 | Category | Cases | What a failure means |
 |---|---|---|
 | `routing` | 4 | the deterministic intent gate drifted (no model involved) |
 | `tool_call` | 8 | wrong tool, wrong arguments, or geocoding skipped |
-| `evidence` | 6 | uncited claims, invented numbers, or fake confidence where data is absent |
+| `evidence` | 7 | uncited claims, invented numbers, places named from memory, or fake confidence where data is absent |
 | `multi_step` | 2 | cannot chain two tools into one comparison |
+| `multi_turn` | 3 | loses the referent, the correction, or the format across turns |
+| `fault` | 3 | invents numbers when a tool breaks, or gives up when a retry would have worked |
 | `format` | 2 | ignores explicit output-shape instructions |
 | `robustness` | 2 | out-of-coverage and ambiguous inputs handled dishonestly |
 
@@ -75,21 +77,27 @@ python3 scripts/vllm/business_eval.py \
 # Gate check without a model (CI-safe):
 python3 scripts/vllm/business_eval.py --routing-only
 
-# Decision-grade run: 3 attempts per case, full trajectories kept:
+# Decision-grade run: 3 attempts per case. Trajectories are kept
+# automatically, next to --output as <output>.responses.jsonl:
 python3 scripts/vllm/business_eval.py \
   --endpoint lightning=http://127.0.0.1:8002 \
   --repeat 3 \
-  --responses /mnt/data/urban-dossier-state/evals/run.jsonl \
   --output /mnt/data/urban-dossier-state/evals/run.json
 
 # Re-grade that run after changing a grader -- no GPU, no model drift:
 python3 scripts/vllm/business_eval.py \
-  --regrade /mnt/data/urban-dossier-state/evals/run.jsonl
+  --regrade /mnt/data/urban-dossier-state/evals/run.responses.jsonl
 
 # Same candidate at the sampling ITS OWN model card asks for:
-URBAN_DOSSIER_AGENT_TEMPERATURE=1.0 \
-URBAN_DOSSIER_AGENT_WRAPUP_TEMPERATURE=0.7 \
-python3 scripts/vllm/business_eval.py --endpoint qwen38=http://127.0.0.1:8004
+python3 scripts/vllm/business_eval.py \
+  --endpoint qwen38=http://127.0.0.1:8004 \
+  --sampling qwen38=qwen3.8-card
+
+# Head-to-head, each model at its own card's numbers, in one report:
+python3 scripts/vllm/business_eval.py \
+  --endpoint lightning=http://127.0.0.1:8002 --sampling lightning=nemotron-card \
+  --endpoint qwen38=http://127.0.0.1:8004  --sampling qwen38=qwen3.8-card \
+  --repeat 3 --output /mnt/data/urban-dossier-state/evals/headtohead.json
 ```
 
 **Run every candidate twice: once at our production temperature (0.2, the
@@ -100,10 +108,31 @@ failed `format-three-sentences` at 0.2 and cleared the entire set at its
 recommended 1.0 (2026-08-14). A candidate judged only at 0.2 is judged
 under a Nemotron-era assumption.
 
-Statuses: `pass` / `warn` (only the soft numeric-faithfulness check
-missed) / `fail` / `skip` (case needs an availability-gated tool that is
-not released — `find_similar_neighborhoods` and `retrieve_dataset_docs`
+`--sampling NAME=PROFILE` takes a built-in profile name (`production`,
+`qwen3.8-card`, `nemotron-card`), inline JSON, or `@file.json`, and `NAME=*`
+applies one profile to every endpoint. The resolved profile is written into
+the report under each endpoint — a comparison that does not record its
+sampling cannot be reproduced or defended, and for one day the only record
+of which knobs produced which numbers was a `_cardtemp` suffix on a
+filename.
+
+A profile's nested `wrapup` key covers the two wrap-up calls, which run with
+thinking disabled; cards that distinguish thinking from instruct mode give
+them different numbers (Qwen3.8: 1.0/0.95/top_k 20 thinking, 0.7/0.80 with
+presence_penalty 1.5 instruct). vLLM-only knobs like `top_k` are routed
+through `extra_body` automatically.
+
+Statuses: `pass` / `warn` (only a soft check missed — numeric or place
+faithfulness) / `fail` / `skip` (case needs an availability-gated tool that
+is not released — `find_similar_neighborhoods` and `retrieve_dataset_docs`
 today) / `error` (harness or endpoint failure).
+
+Each endpoint summary states its own denominator and cost: `cases_executed`
+and `skipped_ids` alongside `pass_rate`, and `wall_total_s` with
+`output_tok_per_s`. On a single-tenant GPU wall-clock *is* the cost of the
+run, and without it a dense candidate and a sparse one get compared on
+quality alone — while the 8.5× that actually decides the question sits in a
+separate benchmark nobody reads next to the pass rate.
 
 ## What every run records
 
@@ -117,11 +146,16 @@ Each case keeps, alongside its status and metrics:
   reasoning text (clipped, with the original length kept), what it said, the
   finish reason, and which tools it decided to call.
 
-Full-fidelity responses go to `--responses` as JSONL; `--regrade` replays
-that file through the current graders without calling a model. Keep the
-JSONL for any run that decides something — a grader bug found next month can
-then be re-run over the decision instead of re-run against models that have
-since changed underneath it.
+Full-fidelity responses go to JSONL — `<output>.responses.jsonl` by default,
+`--responses PATH` to place it, `--no-responses` to opt out — and `--regrade`
+replays that file through the current graders without calling a model. A
+grader bug found next month can then be re-run over the decision instead of
+re-run against models that have since changed underneath it.
+
+Persistence is the default because opting in did not work: the flag existed
+throughout the 2026-08-14 Qwen3.8/Lightning comparison and was never passed,
+so every artifact from that day holds a verdict with no way to see what the
+model did to earn it.
 
 This is not bookkeeping. The first run after `trace` landed overturned a
 conclusion already written into `MODEL_CANDIDATES.md`: a case recorded as
@@ -153,12 +187,52 @@ request errored or any prompt did not complete — a partial set skews every
 per-second number in the report. Both write their report either way:
 partial numbers are worth reading, just not worth deciding on.
 
+## Multi-turn and fault injection (schema 1.1)
+
+A case carries either `prompt` or `turns`, never both. `turns` is a list of
+`{prompt, expect}`; the runner threads the conversation through `history`, so
+a follow-up like *"and how does that compare with Union Square?"* is only a
+test if the agent has to resolve "that" from its own previous answer. Each
+turn is graded against its own `expect`, and the case status is the **worst**
+turn — an agent that answers turn 1 and loses the thread on turn 2 has failed
+the conversation, and a mean would hide exactly what the case exists to find.
+
+`fault_injection: {tool, mode, on_call}` forces a named tool to misbehave for
+the duration of the case: `mode` is `error`, `empty`, or `timeout`; `on_call`
+is an integer to break only that call, or `"all"` to break every one. The two
+settings test different things and both cases are in the set:
+
+- `"all"` tests **honesty** — the number is unreachable, so the only correct
+  answer says so. `fault-score-tool-down` forbids a score in the answer.
+- an integer tests **recovery** — one failure then success, where giving up is
+  as wrong as inventing. `fault-score-tool-flaky` requires ≥2 tool calls.
+
+Before this, error honesty rested on a single case that happened to hit a
+tool that happened to be gated off — which tests the release gate, not the
+model.
+
 Grading rules of note:
 
-- **Numeric faithfulness (soft):** every ≥2-digit number in the final
-  answer must appear in the prompt, a tool result, or an evidence entry.
-  Soft because legitimately derived figures (differences, percentages)
-  fail string matching; wholesale failure still means invented numbers.
+- **Numeric faithfulness (soft):** every ≥2-digit number in the final answer
+  must be traceable to the prompt or a tool result. A claim is accepted as
+  `literal`, `rounded` (within half a unit of a supported value), or
+  `derived` (one arithmetic step — difference, sum, or share-of — from a
+  supported pair); anything else is `unsupported` and warns. All four
+  buckets are recorded, so a later tightening can be argued from evidence.
+  Products are deliberately *not* a derivation rule: over a large pool they
+  would span enough of the number line to explain away real inventions.
+  Before derivations were recognised, both models warned on
+  `multi-two-point-violations` in all three 2026-08-14 runs for doing the
+  arithmetic the question asked for.
+- **Place faithfulness (soft, `place_faithfulness`):** a neighborhood or
+  borough name in the answer that appears in no tool result is flagged
+  against the frozen NTA-2020 vocabulary (`nyc_neighborhoods.json`, rebuilt
+  by `scripts/vllm/build_neighborhood_vocab.py`). Set it to `"hard"` to fail
+  instead. This catches the answer that passes every structural check and
+  still puts the user four miles from where they are — a model given East
+  Village coordinates produced a correct, well-cited refusal that called the
+  location "Upper West Side". No regex over answer text can see that,
+  because the sentence is only wrong relative to the trace.
 - **Typographic normalization:** answers are canonicalized (curly quotes,
   unicode hyphens) before regex matching — a perfect refusal once failed
   grading on a U+2019 apostrophe.
@@ -173,11 +247,38 @@ Grading rules of note:
   different cases on consecutive baseline runs (compare-tool selection,
   then nothing). Compare models on the same number of runs.
 
+## What the loop does that the scores depend on
+
+Two loop behaviours change what a failure means, so they belong here rather
+than only in `agent_loop.py`:
+
+- **Repeat guard** — three identical `(tool, args)` calls in a row abort the
+  run. It only sees identical arguments.
+- **No-progress guard** — three consecutive iterations calling only lookup
+  tools (`search_address`, `retrieve_dataset_docs`) with no analysis call
+  between them injects a directive naming the analysis tools; ignoring it
+  twice more forces an honest wrap-up instead of burning the rest of the
+  budget. This is the failure the repeat guard cannot see: on 2026-08-14
+  Qwen3.8 geocoded the same place five times with a different spelling each
+  time, so every hash differed and the guard stayed silent while the whole
+  iteration budget went on lookups.
+
+Cases whose grading depends on a tool actually running should therefore be
+read together with `metrics.tools_called` and the turn `kind` — a
+`wrapup_no_progress` turn means the agent was stopped, not that it chose to
+answer.
+
 ## Maintenance
 
 - Changing a case, a threshold, or a grader is an eval-set version event:
   bump `schema_version` in the corpus you changed and note it here.
-  Comparisons are only valid within one version.
+  Comparisons are only valid within one version. Current: **1.1** (adds
+  `turns`, `fault_injection`, `place_faithfulness`); harness **2.0**, which
+  the report records as `harness_version`.
+- Numbers from schema 1.0 runs are **not** comparable with 1.1: the
+  numeric-faithfulness grader was loosened to recognise derived figures, and
+  every stored 1.0 artifact predates both the trajectory capture and the
+  `search_address` per-token fix.
 - Offline tests: `backend/tests/test_agent_business_eval.py` pins the
   service-level corpus and graders;
   `skills/urban_dossier_analyst/tests/test_business_eval.py` pins the
