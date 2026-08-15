@@ -394,3 +394,86 @@ port 8004), alongside Super. It does not change Lightning's promotion path.
 speculative decoding (the head is in the checkpoint and vLLM registers the
 class — this is the single biggest lever on that 59.6 tok/s), and the vision
 tower, which we load and never use.
+
+---
+
+## 2026-08-15 — rerun on eval 1.1 / harness 2.0: the quality gap closed
+
+> **The 2026-08-14 section above is superseded on quality.** Every number in
+> it was collected before three fixes that each moved results: the
+> `search_address` per-token rewrite, a system prompt that had been telling
+> both non-Nemotron models they were Nemotron, and two grader defects. The
+> throughput findings there still stand — nothing about serving changed.
+
+Same 31-case set, same loop, both endpoints co-resident, 3 attempts per case,
+`business_eval_20260815_v2_3way.json` (+ `_regraded`) in
+`/mnt/data/urban-dossier-state/evals/`. 25 cases executed; 2 skipped on both
+(`find_similar_neighborhoods`, `retrieve_dataset_docs` still unreleased).
+
+| | Lightning @ 0.2 | Qwen3.8 @ 0.2 | Qwen3.8 @ its card |
+|---|---|---|---|
+| pass / warn / fail | 23 / 1 / 1 | **24 / 0 / 1** | 23 / 2 / **0** |
+| pass_rate | 0.96 | 0.96 | **1.00** |
+| pass^3 | 0.96 | 0.96 | 0.96 |
+| case wall p50 | **6.8 s** | 24.7 s | 21.4 s |
+| case wall max | **19.3 s** | 61.2 s | 107.3 s |
+| set wall total | **175.7 s** | 702.8 s | 742.6 s |
+
+**Qwen3.8 is no longer behind on quality.** At our own production sampling it
+now scores level with Lightning, and at its card's numbers it is the only
+column with zero hard failures. The earlier reading — 16–17 of 22, "unstable,
+no two runs alike" — was an artifact of the three defects above, not a
+property of the model. Both are now at pass^3 0.96: exactly one case each
+that did not pass all three attempts.
+
+**The decision is now purely cost.** Lightning finishes the set in 176 s
+against Qwen's 703 s — 4.0× on this workload, against 8.5× on pure
+generation, because tool time is shared. A 24.7 s median case, with a 61 s
+tail, is not a trade an interactive map can make. Lightning stays the
+promotion path; Qwen3.8 stays on the bench (`candidate-qwen`, port 8004).
+
+What each model still gets wrong, from the trajectories:
+
+- **Lightning, `multi-two-point-violations` (1 of 3).** Spent all 8
+  iterations on `query_dataset`, hit the cap, and the forced wrap-up returned
+  empty — so the user got the "loop terminated without producing a final
+  answer" fallback. Not a no-progress case (`query_dataset` is an analysis
+  tool, so that guard correctly stayed out of it); it is iteration
+  exhaustion plus a wrap-up that came back with nothing.
+- **Lightning, `evidence-place-grounded` (soft, 1 of 3).** Asked to describe
+  the area at East Village coordinates, it recommended "the East Village,
+  West Village, or Upper West Side" for green space — three neighborhoods it
+  never scored, offered inside an answer that otherwise cites
+  `score_neighborhood`, to a user who is already in the first one. Every
+  hard check passed. This is the failure `place_faithfulness` was added for,
+  and it found it on the first live run.
+- **Qwen3.8 @ 0.2, `robust-out-of-coverage` (1 of 3).** Still the one case it
+  misses, and still a wording drift rather than a bad action: it called
+  `score_neighborhood` three times on out-of-NYC coordinates instead of
+  declining. At its card sampling the case passes 3/3.
+- **Qwen3.8 @ card, `format-json-object` (1 of 3)** produced no parseable
+  JSON, and `tool-literal-count` claimed one unsupported number. Higher
+  temperature buys the refusals and costs a little format discipline.
+
+Two grader defects were found by this run and fixed mid-flight; both were
+caught **only** because the run kept its trajectories, and both were repaired
+by `--regrade` at zero GPU cost:
+
+1. **U+202F.** Lightning failed `multiturn-followup-referent` 3/3 on "answer
+   missing required pattern: union square" while naming Union Square eight
+   times off a correctly resolved referent. The separator between the two
+   words was a NARROW NO-BREAK SPACE. `_TYPOGRAPHIC_MAP` normalised U+00A0
+   and nothing else in the family. Regraded: 3/3 pass, and Lightning's
+   pass^3 went 0.793 → 0.96.
+2. **"green space" as a neighborhood claim.** The vocabulary builder split
+   every hyphenated NTA name, so Green-Wood Cemetery contributed a bare
+   "Green" and Co-op City contributed "op City".
+
+And one fabricated constant, caught before it was used: the `nemotron-card`
+sampling profile shipped with temperature 0.6 from memory. Lightning's
+`generation_config.json` says 1.0. A test now cross-checks every `*-card`
+profile against the checkpoint on disk.
+
+**Still not measured:** MTP speculative decoding, unchanged as the biggest
+available lever on Qwen's throughput and the only thing that could reopen
+this comparison.
