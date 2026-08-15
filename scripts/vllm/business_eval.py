@@ -907,7 +907,15 @@ def regrade_responses(
             continue
         bucket = by_endpoint.setdefault(
             entry.get("endpoint", "replay"),
-            {"model": entry.get("model", ""), "attempts": {}},
+            {
+                "model": entry.get("model", ""),
+                # Carried through from the live run. A regraded report that
+                # cannot say which sampling produced the answers is exactly
+                # the report the sampling field was added to prevent.
+                "sampling_profile": entry.get("sampling_profile", "unrecorded"),
+                "sampling": entry.get("sampling") or {},
+                "attempts": {},
+            },
         )
         if entry.get("turns"):
             # Multi-turn: regrade each turn against its own expect block, then
@@ -948,6 +956,8 @@ def regrade_responses(
         out[endpoint_name] = {
             "url": "(replayed)",
             "model": bucket["model"],
+            "sampling_profile": bucket["sampling_profile"],
+            "sampling": bucket["sampling"],
             "summary": summarize(results, repeat),
             "results": results,
         }
@@ -1277,7 +1287,14 @@ def main() -> int:
                 if responses_fh is not None:
                     responses_fh.write(
                         json.dumps(
-                            {"endpoint": name, "model": model, "attempt": attempt, **raw},
+                            {
+                                "endpoint": name,
+                                "model": model,
+                                "sampling_profile": sampling_label,
+                                "sampling": sampling,
+                                "attempt": attempt,
+                                **raw,
+                            },
                             ensure_ascii=False,
                             default=str,
                         )

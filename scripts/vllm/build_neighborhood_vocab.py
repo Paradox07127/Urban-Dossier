@@ -21,9 +21,26 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SRC = REPO_ROOT / "data" / "boundaries" / "nta_2020.geojson"
 OUT = REPO_ROOT / "evals" / "agent" / "nyc_neighborhoods.json"
 
-# Compound NTA labels ("Highbridge Park", "Prospect Park-Lefferts Gardens")
-# should also match when a model names just one half of them.
+# Compound NTA labels ("Prospect Park-Lefferts Gardens") should also match
+# when a model names just one half. Splitting naively cost more than it
+# bought on the first run: "Co-op City" became the fragment "op City", and
+# "green space" in an answer matched the "Green" split out of "Green-Wood
+# Cemetery". A soft check that cries wolf is a soft check people stop reading.
+#
+# So: split only where BOTH sides look like standalone name parts, and never
+# keep a fragment that is a bare direction or a generic landscape word.
 MIN_PART_CHARS = 4
+
+_GENERIC_PARTS = frozenset(
+    {
+        "east", "west", "north", "south", "upper", "lower", "central",
+        "old", "new", "great", "little",
+        "park", "parks", "green", "hill", "hills", "heights", "point",
+        "bay", "beach", "island", "city", "town", "village", "gardens",
+        "terrace", "manor", "hook", "neck", "grove", "field", "fields",
+        "cemetery", "airport", "yard", "yards", "houses", "court",
+    }
+)
 
 
 def build(src: Path) -> dict[str, object]:
@@ -41,10 +58,18 @@ def build(src: Path) -> dict[str, object]:
 
     expanded = set(names)
     for name in names:
-        for part in name.replace("(", "-").replace(")", "-").split("-"):
-            part = part.strip()
-            if len(part) >= MIN_PART_CHARS:
-                expanded.add(part)
+        parts = [
+            part.strip()
+            for part in name.replace("(", "-").replace(")", "-").split("-")
+        ]
+        # Every side has to look like a name before any side is kept --
+        # otherwise "Co-op City" contributes the fragment "op City".
+        if len(parts) < 2 or any(len(part) < MIN_PART_CHARS for part in parts):
+            continue
+        for part in parts:
+            if part.lower() in _GENERIC_PARTS:
+                continue
+            expanded.add(part)
 
     return {
         "source": "NYC DCP Neighborhood Tabulation Areas 2020 "

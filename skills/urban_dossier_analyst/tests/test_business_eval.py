@@ -779,6 +779,61 @@ def test_zero_width_characters_are_deleted_not_spaced():
     assert grade_case(case, response)["status"] == "pass"
 
 
+def test_vocabulary_excludes_generic_fragments():
+    """A soft check that cries wolf is one people stop reading.
+
+    The first vocabulary split every hyphenated NTA name unconditionally, so
+    "green space" in an answer matched the "Green" from Green-Wood Cemetery,
+    and "Co-op City" contributed the fragment "op City".
+    """
+    vocab = set(load_place_vocabulary())
+    for noise in ("Green", "East", "West", "North", "South", "op City",
+                  "Park", "Heights"):
+        assert noise not in vocab, f"{noise!r} is not a neighborhood claim"
+    # The names themselves must survive the filtering.
+    for real in ("Upper West Side", "East Village", "Chelsea", "Co-op City"):
+        assert real in vocab, real
+
+
+def test_regrade_carries_the_sampling_profile(tmp_path):
+    """A replayed report that cannot say which sampling produced the answers
+    defeats the point of recording sampling at all."""
+    case = {"id": "c", "category": "tool_call", "prompt": "q",
+            "expect": {"tools_all": ["score_neighborhood"]}}
+    path = tmp_path / "r.jsonl"
+    path.write_text(json.dumps({
+        "endpoint": "cand", "model": "m", "attempt": 1,
+        "sampling_profile": "qwen3.8-card",
+        "sampling": {"temperature": 1.0},
+        "case_id": "c", "wall_s": 1.0, "usage": {},
+        "response": {"answer": "a", "evidence": [],
+                     "tools_called": ["score_neighborhood"], "iterations": 1,
+                     "trace": [], "turns": []},
+    }) + "\n", encoding="utf-8")
+
+    replayed = regrade_responses(path, {"c": case})["cand"]
+    assert replayed["sampling_profile"] == "qwen3.8-card"
+    assert replayed["sampling"] == {"temperature": 1.0}
+
+
+def test_regrade_of_an_older_jsonl_says_unrecorded():
+    """Files written before sampling was persisted must not silently read as
+    if they had run at the default profile."""
+    import tempfile
+
+    case = {"id": "c", "category": "tool_call", "prompt": "q", "expect": {}}
+    with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as fh:
+        fh.write(json.dumps({
+            "endpoint": "old", "model": "m", "attempt": 1, "case_id": "c",
+            "wall_s": 1.0, "usage": {},
+            "response": {"answer": "a", "evidence": [], "tools_called": [],
+                         "iterations": 1, "trace": [], "turns": []},
+        }) + "\n")
+        name = fh.name
+    replayed = regrade_responses(Path(name), {"c": case})["old"]
+    assert replayed["sampling_profile"] == "unrecorded"
+
+
 def test_every_named_profile_is_a_dict():
     for name, profile in SAMPLING_PROFILES.items():
         assert isinstance(profile, dict), name
