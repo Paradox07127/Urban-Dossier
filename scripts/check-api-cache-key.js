@@ -1,3 +1,12 @@
+// Contract test for the disk-cache key server.js derives for /api/analyze-point
+// and the report route (server.js:919, :935). The key decides when two requests
+// share a cached report, so the properties below are correctness, not style:
+// equal-but-differently-typed coordinates must collide, and anything that
+// changes the answer -- window, radius, data mode, priority order -- must not.
+//
+// Wired into the root package.json `test` script. It sat unreferenced for a
+// while, and an unrun test guarding a cache key is indistinguishable from no
+// test at all.
 const assert = require('node:assert/strict');
 const { previewCacheKey } = require('./api-cache-key');
 

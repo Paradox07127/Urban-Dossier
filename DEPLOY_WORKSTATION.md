@@ -144,6 +144,11 @@ Build the per-building choropleth. Three passes, run in order; the last needs
 `tippecanoe` on PATH (`apt-get install tippecanoe`):
 
 ```bash
+# 0. The basemap itself. Everything below stacks on top of it, and without
+#    it the map renders as bare geometry on white -- Map.tsx's `openmaptiles`
+#    source is served from this tileset via /tiles/{z}/{x}/{y}.pbf.
+bash scripts/maps/build_nyc_mbtiles.sh
+
 # 1. Footprints from the OSM extract already on disk for the walking graph.
 .venv/bin/python backend/scripts/extract_building_footprints.py
 
@@ -156,7 +161,11 @@ Build the per-building choropleth. Three passes, run in order; the last needs
 # 4. The plateau the 3D view stands the city on.
 .venv/bin/python backend/scripts/build_plateau_dem.py
 
-# Node serves both from the repo root; the tilesets live in state.
+# Node serves all three from the repo root; the tilesets live in state.
+# The basemap's link name is the one the tile route expects -- it is not
+# cosmetic, and renaming it serves 404s for every basemap tile.
+ln -sf /mnt/data/urban-dossier-state/maps/output/new-york-openmaptiles.mbtiles \
+  osm-2020-02-10-v3.11_new-york_new-york.mbtiles
 ln -sf /mnt/data/urban-dossier-state/maps/output/building-scores.mbtiles \
   building-scores.mbtiles
 ln -sf /mnt/data/urban-dossier-state/maps/output/nyc-plateau-dem.mbtiles \
