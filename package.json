@@ -1,8 +1,8 @@
 {
-  "name": "demo",
+  "name": "urban-dossier-server",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Node tile/static/proxy layer for Urban Dossier NYC (server.js).",
+  "main": "server.js",
   "scripts": {
     "test": "node scripts/check-api-cache-key.js"
   },

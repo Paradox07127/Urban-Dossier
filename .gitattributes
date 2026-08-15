@@ -1,2 +1,30 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Binary assets must never be line-ending normalised.
+#
+# `text=auto` decides by heuristic: a blob is binary only if a NUL byte
+# appears in its first 8000 bytes. Eight of the tracked MapLibre glyph
+# ranges are 29-34 byte protobufs for ranges Open Sans barely covers (CJK
+# and misc symbols), they contain no NUL at all, and each carries two 0x0A
+# bytes inside its payload. git therefore classifies them as TEXT. Nothing
+# has broken because this repo is developed with core.autocrlf=false, but a
+# clone on Windows defaults would rewrite those bytes to CRLF, grow each
+# file by two bytes, and corrupt the protobuf -- MapLibre then silently
+# fails to label those glyph ranges. These rules are the fix; do not rely
+# on the heuristic for binary formats.
+*.pbf binary
+*.mbtiles binary
+*.parquet binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.pdf binary
+*.zip binary
+*.gz binary

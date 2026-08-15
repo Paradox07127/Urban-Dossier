@@ -1293,9 +1293,11 @@ app.get('/fonts/:fontstack/:range.pbf', (req, res) => {
 app.use('/public', express.static(path.join(__dirname, 'public')));
 app.use('/vendor/maplibre-gl', express.static(path.join(__dirname, 'node_modules', 'maplibre-gl', 'dist')));
 
-app.get('/building-id-test', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'building-id-test.html'));
-});
+// /building-id-test is gone with the page it served. building-id-test.html
+// was retired for duplicating the landmark table with latitude and longitude
+// swapped relative to App.tsx (see interactive-map-explorer/vite.config.ts);
+// its Vite entry point went with it, and this route was left pointing at a
+// file that has never existed in this repository.
 
 app.get('/global-render', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'global-render.html'));
