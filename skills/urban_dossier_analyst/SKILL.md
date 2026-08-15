@@ -6,11 +6,17 @@ description: Goal-driven NYC neighborhood analysis agent. Use when the user asks
 # Urban Dossier Analyst
 
 Master ReAct agent for the Urban Dossier system. Runs against a local vLLM
-server with `--enable-auto-tool-choice` and a tool-call parser, on an
-NVIDIA RTX PRO 6000 Blackwell Workstation Edition (96 GB, compute capability
-12.0). Earlier revisions of this file said DGX Spark (GB10, ARM64, 128 GB
-unified); that was never this machine, and the difference decides which of
-NVIDIA's serving recipes applies — see `MODEL_CANDIDATES.md`.
+server with `--enable-auto-tool-choice` and a tool-call parser.
+
+**Hardware history.** The project was built and first run on **DGX Spark**
+(NVIDIA GB10, ARM64, 128 GB unified memory), which is where the original
+design, the Nemotron-3-Nano deployment and the early benchmarks come from.
+Development has since moved to an **NVIDIA RTX PRO 6000 Blackwell
+Workstation Edition** (96 GB, compute capability 12.0). Both are Blackwell,
+but they are not interchangeable for serving: NVIDIA publishes a vLLM recipe
+for DGX Spark (GB10) and none for SM 12.0, so which machine you are on
+decides which profile applies and which MoE kernels are usable. See
+`MODEL_CANDIDATES.md` for the current config and the measurements behind it.
 
 The served checkpoint is deployment configuration, not part of this skill.
 Nemotron-3-Nano, Nemotron-3.5-Lightning and Qwen3.8-27B have all run this

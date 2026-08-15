@@ -146,18 +146,32 @@ services:
       # and is not in this image's defaults, which is presumably how it got
       # missed. Verified booting with the DSpark drafter on 0.27.1.
       - --async-scheduling
-      # The card publishes no recipe for RTX PRO 6000 Blackwell (SM 12.0), so
-      # this follows the DGX Spark profile -- the closest validated
-      # single-GPU one.
+      # The project was built on DGX Spark (GB10); this box is an RTX PRO 6000
+      # Blackwell, SM 12.0, for which NVIDIA publishes no recipe. We follow the
+      # DGX Spark profile as the closest validated single-GPU one.
       #
-      # Do NOT "try native FP4 now that the card is Blackwell". On SM 12.0 the
-      # native NVFP4 grouped-GEMM path is broken, not merely slow: every TMA
-      # warp-specialised tactic fails at initialisation (CUTLASS #3096) and
-      # both the FlashInfer CUTLASS and vLLM native CUTLASS backends return
-      # GARBAGE TOKENS at ~6 tok/s rather than erroring out. Marlin dequantises
-      # W4 to FP16 and runs an ordinary FP16 GEMM, which is why it is the only
-      # backend that is correct here. `humming` is the card's H100/Ampere
-      # choice and is untested on SM 12.0.
+      # marlin is not a workaround here, it is what vLLM picks anyway.
+      # Measured on this box, 0.27.1, 2026-08-15 with --moe-backend auto:
+      #   Using 'MARLIN' NvFp4 MoE backend out of potential backends:
+      #   [FLASHINFER_TRTLLM, FLASHINFER_CUTEDSL, FLASHINFER_CUTEDSL_BATCHED,
+      #    FLASHINFER_CUTLASS, VLLM_CUTLASS, MARLIN, HUMMING, EMULATION]
+      #   WARNING: Your GPU does not have native support for FP4 computation
+      # Setting it explicitly only pins that choice.
+      #
+      # Native NVFP4 on SM 12.0 is still unfixed upstream (vLLM #31085 open;
+      # the CUTLASS #3096 fix needs CUDA 13.0 + compute_120f and ~10 hand
+      # patches to FlashInfer, none upstreamed) and lands at ~39 tok/s against
+      # marlin's 46-49 even when it works. There is no upside to chase.
+      #
+      # Two dead ends, both measured here rather than inferred:
+      #   default          not a valid value at all -- argparse rejects it and
+      #                    the container never starts.
+      #   flashinfer_b12x  the newer SM120/121 path; loads, then dies with
+      #                    RuntimeError: shape '[344064, 116]' is invalid for
+      #                    input of size 41287680.
+      # The garbage-output reports on SM 12.0 come from FORCING
+      # flashinfer_cutlass / vllm_cutlass. auto never selects them, so the
+      # danger is in overriding this flag, not in leaving it alone.
       - --moe-backend
       - ${LIGHTNING_MOE_BACKEND:-marlin}
       - --mamba-backend
@@ -165,13 +179,31 @@ services:
       - --mamba-cache-mode
       - align
       # DSpark drafter, 3 tokens -- the card's DGX Spark and H100-interactive
-      # number (GB200 uses 5). DSpark is built for DGX Spark and low-concurrency
-      # serving; the sibling DFlash checkpoint lists consumer/workstation
-      # Blackwell (RTX 5090) among its targets, which is this card's silicon.
-      # DSpark reports the better acceptance length on SPEED-Bench (3.75 vs
-      # 3.16 at draft length 7) but is tuned for a unified-memory system, and
-      # NVIDIA's own guidance is to benchmark DFlash per workload rather than
-      # assume. Unmeasured here -- see MODEL_CANDIDATES.md for the shortlist.
+      # number (GB200 uses 5).
+      #
+      # Lightning ships THREE draft paths and they are not interchangeable:
+      #   MTP     multi-token prediction baked into the checkpoint during
+      #           pretraining. No extra download, no second model in memory.
+      #           NVIDIA recommends it for medium-to-high concurrency, with
+      #           the optimal draft length falling as concurrency rises.
+      #   DSpark  a separate 967M dense GQA drafter (615M non-embedding,
+      #           sliding window 1024 on all layers). Built for compact
+      #           Blackwell -- DGX Spark GB10 -- and low-concurrency data
+      #           centre work. Best acceptance of the three: 3.75 average
+      #           accepted length on SPEED-Bench at draft length 7.
+      #   DFlash  the other separate drafter, aimed at data centre GPUs and
+      #           high-end local systems, and its card names GeForce RTX 5090
+      #           -- consumer/workstation Blackwell, i.e. THIS box's silicon
+      #           class, which DSpark's target list does not include.
+      #           Acceptance 3.16 at draft length 7.
+      #
+      # So the two disagree: DSpark accepts more tokens per step, DFlash is
+      # the one aimed at this hardware. Acceptance length is not throughput
+      # once the drafter's own forward pass is paid for, and a drafter tuned
+      # for GB10's unified memory is tuned for far less bandwidth than this
+      # card has. NVIDIA's guidance is to benchmark DFlash per workload rather
+      # than assume. We inherited DSpark from the DGX Spark days and have
+      # never measured DFlash here -- see MODEL_CANDIDATES.md.
       - --speculative_config.model
       - /draft
       - --speculative_config.num_speculative_tokens

@@ -485,23 +485,76 @@ this comparison.
 Lightning stays the default. This section pins what we serve and why, and
 lists what is left on the table. Sources at the end.
 
-### The hardware has no official recipe, and that matters
+### The hardware moved, and the recipe did not follow
 
-This machine is an **RTX PRO 6000 Blackwell Workstation Edition, 96 GB,
-compute capability 12.0** — not the DGX Spark that `SKILL.md` and several
-comments still claimed. NVIDIA publishes recipes for DGX Spark (GB10), H100,
-GB200, Ampere and 8×H100, and none for SM 12.0. We follow the DGX Spark
-profile as the closest validated single-GPU one.
+Urban Dossier was built on **DGX Spark** (GB10, ARM64, 128 GB unified) — the
+original design, the Nemotron-3-Nano deployment and the early benchmarks all
+come from there, and the DGX history stays in the docs. Development now runs
+on an **RTX PRO 6000 Blackwell Workstation Edition, 96 GB, compute capability
+12.0**.
 
-The one place that guess is load-bearing is the MoE backend, and there the
-community evidence is unambiguous: on SM 12.0 the **native NVFP4 grouped-GEMM
-path is broken, not slow**. Every TMA warp-specialised tactic fails at
-initialisation (CUTLASS #3096), and both FlashInfer CUTLASS and vLLM native
-CUTLASS return **garbage tokens at ~6 tok/s instead of erroring**. Marlin
-dequantises W4 to FP16 and runs an ordinary FP16 GEMM, which is why it is the
-only backend known-correct on this silicon. The compose comment that invited
-a future reader to "try `default` if native FP4 proves stable" has been
-replaced with that warning.
+That migration matters more than it looks. NVIDIA publishes vLLM recipes for
+DGX Spark (GB10), H100, GB200, Ampere and 8×H100 — and **none for SM 12.0**.
+We inherited the DGX Spark profile, which is the closest validated
+single-GPU one, but two of its choices were made for a machine we are no
+longer on: the MoE backend and the draft model.
+
+### `--moe-backend`: is the SM 12.0 FP4 bug fixed yet? No — and it would not help
+
+Asked directly, checked upstream and then measured on this box.
+
+**Upstream: not fixed.** vLLM issue #31085 (native NVFP4 MoE kernels for
+SM120) is **still open** — the kernels are compiled into the tree
+(`nvfp4_scaled_mm_sm120_kernels.cu`, `nvfp4_blockwise_moe_kernel.cu`) but the
+backend-selection logic does not treat SM120 as eligible, so it falls back to
+Marlin. CUTLASS #3096 is marked closed with a fix, but that fix is **not
+upstreamed**: it needs CUDA 13.0 with `compute_120f` (the `f` matters —
+`compute_120a` on CUDA 12.8 falls back to slower tactics), roughly ten hand
+patches to FlashInfer 0.6.5, and modified vLLM capability checks.
+
+**And even working, it loses.** The person who got native FP4 running on
+SM120 measured **39 tok/s against Marlin's 46–49** — about 20% slower, from
+activation-quantisation overhead. There is no upside on the other side of
+that work.
+
+**Measured here, vLLM 0.27.1, 2026-08-15:**
+
+| `--moe-backend` | Result |
+|---|---|
+| `auto` | selects `MARLIN` itself, with "Your GPU does not have native support for FP4 computation". Same backend we pin explicitly. |
+| `marlin` | what we ship |
+| `default` | **not a valid value** — argparse rejects it, container never starts |
+| `flashinfer_b12x` | loads, then dies: `RuntimeError: shape '[344064, 116]' is invalid for input of size 41287680` |
+
+So the previous comment in `compose.gpu.yml` — "try `default` if the SM 12.0
+native-FP4 path proves stable" — pointed at a value that has never existed in
+this vLLM. And the widely reported garbage output on SM 12.0 comes from
+**forcing** `flashinfer_cutlass` / `vllm_cutlass`; `auto` never picks them.
+The risk is in overriding the flag, not in leaving it alone.
+
+`humming` (the card's H100/Ampere choice) is in the valid list and remains
+untested here. Given that the failure modes on this silicon are "silent
+garbage" and "shape error at load", it needs a correctness check first.
+
+### The three draft paths, and why ours may be the wrong one
+
+Lightning ships three, and they are not interchangeable:
+
+| | What it is | Built for | SPEED-Bench acceptance @ draft 7 |
+|---|---|---|---|
+| **MTP** | multi-token prediction baked into the checkpoint at pretraining; no second model to download or hold in memory | medium-to-high concurrency, optimal draft length falling as concurrency rises | — |
+| **DSpark** | separate 967M dense drafter (615M non-embedding, GQA, sliding window 1024 on every layer) | compact Blackwell — **DGX Spark GB10** — and low-concurrency data centre | **3.75** |
+| **DFlash** | the other separate drafter | data centre GPUs and high-end local systems; its card names **GeForce RTX 5090** — consumer/workstation Blackwell, this box's silicon class | 3.16 |
+
+The two disagree about which is right for us. DSpark accepts more tokens per
+verification step; DFlash is the one whose target list includes this
+hardware, and DSpark's does not. Acceptance length is not throughput once the
+drafter's own forward pass is paid for, and a drafter tuned for GB10's
+unified memory is tuned for a fraction of this card's bandwidth. NVIDIA's own
+guidance is to benchmark DFlash per workload rather than assume.
+
+**We run DSpark because the project started on DGX Spark.** That was the
+right choice on GB10 and is an untested inheritance here.
 
 ### Config as shipped
 
@@ -550,24 +603,19 @@ before today is a cold-start number; do not compare one to a warmed run.
 
 ### Optimization space, ranked, none of it measured
 
-1. **DFlash instead of DSpark.** DFlash's card lists GeForce RTX 5090 —
-   consumer/workstation Blackwell, this card's silicon class — while DSpark
-   targets DGX Spark and low-concurrency data centre. DSpark reports the
-   better SPEED-Bench acceptance length (3.75 vs 3.16 at draft length 7), but
-   it is tuned for a unified-memory system with far less bandwidth than a
-   discrete card, and acceptance length is not throughput once the drafter's
-   own cost is counted. NVIDIA's guidance is explicitly to benchmark DFlash
-   per workload. Needs the checkpoint downloaded; cheapest real experiment
-   available.
+1. **DFlash instead of DSpark** — the DGX-era inheritance, table above.
+   Needs the checkpoint downloaded; cheapest real experiment available, and
+   the only one where the vendor's own advice is "benchmark it".
 2. **Draft length above 3.** Both drafter cards report acceptance at draft
    length **7**; we run 3, and the GB200 profile uses 5. Free to try.
-3. **Native MTP.** Ships inside the checkpoint, no download. The card
-   recommends it for medium-to-high concurrency, so at our single-user load
-   DSpark should win — but the SM 12.0 report saw MTP cost 22% on Marlin
-   (different model, TP=4), which is worth knowing before assuming.
+3. **Native MTP.** Ships inside the checkpoint, no download, no second model
+   resident. The card recommends it for medium-to-high concurrency, so at our
+   single-user load DSpark should win — but the SM 12.0 report saw MTP cost
+   22% on Marlin (different model, TP=4), worth knowing before assuming.
 4. **`--moe-backend humming`.** The card's H100 and Ampere choice, untested
-   on SM 12.0. Given that the other non-Marlin backends fail silently into
-   garbage here, this needs a **correctness** check before a speed one.
+   on SM 12.0. The other non-Marlin paths here fail either silently (forced
+   CUTLASS → garbage) or loudly (`flashinfer_b12x` → shape error at load),
+   so this needs a **correctness** check before a speed one.
 5. **`--mamba-ssm-cache-dtype float16`.** In the H100 profiles, absent from
    DGX Spark's. Halves the Mamba state; it is a precision change to a
    recurrent state, so it needs an eval run, not a throughput run.
@@ -586,7 +634,9 @@ nothing more.
 [DSpark drafter card](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DSpark) ·
 [DFlash drafter card](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DFlash) ·
 [SM120 / RTX PRO 6000 NVFP4 MoE report (vLLM forums)](https://discuss.vllm.ai/t/sm120-rtx-pro-6000-nvfp4-moe-performance-report-qwen3-5-397b/2536) ·
-[DGX Spark vs RTX PRO 6000 on this model (NVIDIA forums)](https://forums.developer.nvidia.com/t/nvidia-nemotron-3-5-lightning-30b-a3b-nvfp4-dgx-spark-vs-rtx-pro-6000-blackwell-performance/379921)
+[DGX Spark vs RTX PRO 6000 on this model (NVIDIA forums)](https://forums.developer.nvidia.com/t/nvidia-nemotron-3-5-lightning-30b-a3b-nvfp4-dgx-spark-vs-rtx-pro-6000-blackwell-performance/379921) ·
+[CUTLASS #3096 — SM120 grouped GEMM, fix not upstreamed](https://github.com/NVIDIA/cutlass/issues/3096) ·
+[vLLM #31085 — native NVFP4 MoE for SM120, still open](https://github.com/vllm-project/vllm/issues/31085)
 
 No arXiv paper exists for Nemotron 3.5 Lightning; the launch blog and the
 model cards are the primary sources.
