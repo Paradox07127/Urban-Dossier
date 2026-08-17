@@ -221,9 +221,10 @@ interface MapProps {
   sandbox?: boolean;
   /** Fires once the baked tiles and coastline are both present. */
   onSandboxAvailable?: (available: boolean) => void;
+  /** Reports the settled camera so React observes user navigation without
+   * feeding a stale center back into MapLibre on the next zoom. */
+  onViewChange?: (view: { center: [number, number]; zoom: number }) => void;
   /** Measured colour domains, hoisted so the rail can draw the legend. */
-  /** Reports user-driven zoom so the legend follows the visible score layer. */
-  onZoomChange?: (zoom: number) => void;
   onColourDomains?: (domains: Record<string, ColourDomain>) => void;
   onBivariatePresentation?: (presentation: BivariatePresentation | null) => void;
   onTimelinePresentation?: (presentation: TimelinePresentation | null) => void;
@@ -2254,7 +2255,7 @@ export default function Map({
   bivariate = false,
   timeline = false,
   timelinePeriod = null,
-  onZoomChange,
+  onViewChange,
   sandbox = false,
   onSandboxAvailable,
   onColourDomains,
@@ -2278,6 +2279,11 @@ export default function Map({
   // Mirrored into state purely so the legend can label its own ends; the map
   // itself reads the ref.
   const sandboxRef = useRef(false);
+  const onViewChangeRef = useRef(onViewChange);
+
+  useEffect(() => {
+    onViewChangeRef.current = onViewChange;
+  }, [onViewChange]);
 
   const activeRadiusM = localRenderTarget?.radiusM ?? 200;
 
@@ -2335,7 +2341,13 @@ export default function Map({
         : { lat: event.lngLat.lat, lng: event.lngLat.lng };
       onMapClick(at.lat, at.lng);
     });
-    map.on('zoomend', () => onZoomChange?.(map.getZoom()));
+    map.on('moveend', () => {
+      const settledCenter = map.getCenter();
+      onViewChangeRef.current?.({
+        center: [settledCenter.lat, settledCenter.lng],
+        zoom: map.getZoom(),
+      });
+    });
 
     map.on('load', async () => {
       const status = await fetchBuildingTileStatus();
@@ -2542,8 +2554,15 @@ export default function Map({
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (!mapRef.current) return;
-    mapRef.current.flyTo({
+    const map = mapRef.current;
+    if (!map) return;
+    const actualCenter = map.getCenter();
+    const cameraAlreadySettled =
+      Math.abs(actualCenter.lat - center[0]) < 1e-7 &&
+      Math.abs(actualCenter.lng - center[1]) < 1e-7 &&
+      Math.abs(map.getZoom() - zoom) < 1e-6;
+    if (cameraAlreadySettled) return;
+    map.flyTo({
       center: [center[1], center[0]],
       zoom,
       duration: 800,
@@ -2750,12 +2769,24 @@ export default function Map({
   }, [markers, onMarkerClick]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      mapRef.current?.resize();
-    }, 500);
+    const container = mapContainer.current;
+    if (!container) return;
 
-    return () => window.clearTimeout(timer);
-  });
+    let timer: number | null = null;
+    const observer = new ResizeObserver(() => {
+      if (timer) window.clearTimeout(timer);
+      // The detail panel animates the map container width for 300ms. Debounce
+      // its ResizeObserver notifications so MapLibre reconciles once at the
+      // settled size instead of manufacturing a moveend after every render.
+      timer = window.setTimeout(() => mapRef.current?.resize(), 50);
+    });
+    observer.observe(container);
+
+    return () => {
+      observer.disconnect();
+      if (timer) window.clearTimeout(timer);
+    };
+  }, []);
 
   useEffect(() => {
     return () => {

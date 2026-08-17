@@ -667,7 +667,15 @@ export default function App() {
           timeline={timeline}
           timelinePeriod={timelinePeriod}
           sandbox={sandbox}
-          onZoomChange={setZoom}
+          onViewChange={(view) => {
+            setCenter((current) =>
+              Math.abs(current[0] - view.center[0]) < 1e-7 &&
+              Math.abs(current[1] - view.center[1]) < 1e-7
+                ? current
+                : view.center,
+            );
+            setZoom((current) => Math.abs(current - view.zoom) < 1e-6 ? current : view.zoom);
+          }}
           onSandboxAvailable={setSandboxAvailable}
           onColourDomains={setColourDomains}
           onBivariatePresentation={setBivariatePresentation}
