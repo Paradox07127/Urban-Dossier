@@ -12,6 +12,22 @@ const screenshotPath =
 const methodologyScreenshotPath = '/tmp/urban-dossier-methodology-smoke.png';
 const reportPath = fileURLToPath(new URL('../dist/offline-export-smoke.html', import.meta.url));
 
+// metrics.py owns the methodology version, so a literal here goes stale the day
+// it is bumped. Read the registry instead, and keep the drift check the literal
+// used to provide by asserting code and registry still agree. Fetched directly
+// rather than through the page so it stays off the methodologyRequests count.
+const methodologyRegistry = await fetch(`${baseUrl}/api/methodology`).then((response) => {
+  if (!response.ok) throw new Error(`/api/methodology returned ${response.status}`);
+  return response.json();
+});
+const methodologyVersion = methodologyRegistry.methodology_version;
+assert.match(methodologyVersion ?? '', /^\d+\.\d+\.\d+$/);
+assert.equal(
+  methodologyRegistry.code_methodology_version,
+  methodologyVersion,
+  'backend code and registry disagree on the methodology version',
+);
+
 const browser = await chromium.launch({
   executablePath,
   headless: true,
@@ -132,7 +148,7 @@ try {
   const exportedCharts = await offlinePage.locator('.vega-embed svg').count();
   const exportStamp = await offlinePage.locator('[data-testid="generated-at"]').textContent();
   assert(exportedCharts >= 3, `expected at least 3 exported Vega SVGs, got ${exportedCharts}`);
-  await offlinePage.getByText('methodology v3.9.0', { exact: true }).waitFor();
+  await offlinePage.getByText(`methodology v${methodologyVersion}`, { exact: true }).waitFor();
   await offlinePage.getByText('overall tier', { exact: true }).waitFor();
   await offlinePage.getByText('modeled NO context', { exact: true }).waitFor();
   await offlinePage.getByText('heat vulnerability', { exact: true }).waitFor();
@@ -282,7 +298,7 @@ try {
     timeout: 15_000,
   });
   await page.getByTestId('methodology-version-verified').waitFor({ timeout: 15_000 });
-  await page.getByText('code = registry = v3.9.0', { exact: true }).waitFor();
+  await page.getByText(`code = registry = v${methodologyVersion}`, { exact: true }).waitFor();
   await page.getByText('Runtime dataset coverage', { exact: true }).waitFor();
   const methodologyAudit = {
     metricRows: await page.locator('table tbody tr').count(),
