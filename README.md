@@ -73,8 +73,9 @@ docker compose \
 # Reconcile the dedicated agent and restore its Gateway forward/token.
 bash scripts/configure_openclaw_agent.sh
 
-# Start the persistent backend.
-systemctl --user enable --now urban-dossier-backend.service
+# Start the stack. Add --agent for the agent-enabled backend; without it the
+# backend runs with URBAN_DOSSIER_AGENT_ENABLED=0 and needs no gateway.
+scripts/start_stack.sh --agent
 
 # Validate all active components.
 bash scripts/health-check.sh
@@ -86,8 +87,12 @@ Frontend development/build:
 npm install
 npm --prefix interactive-map-explorer install
 npm --prefix interactive-map-explorer run build
-node server.js
+scripts/run_frontend.sh
 ```
+
+`run_frontend.sh` rather than `node server.js`: `better-sqlite3` is a native
+addon and loads only under the Node ABI it was built against, so the `node`
+first on `PATH` is often the wrong one.
 
 Open `http://<workstation-lan-ip>:3456`. The service binds for LAN use; do not
 use `127.0.0.1` on a different computer unless an SSH local forward is active.
@@ -265,7 +270,11 @@ per host and ignored by Git — see [`DEPLOY_WORKSTATION.md`](DEPLOY_WORKSTATION
 - workstation backend runtime: [`deploy/backend.env.example`](deploy/backend.env.example)
 - workstation GPU runtime: [`deploy/gpu.env.example`](deploy/gpu.env.example)
 - portable backend development sample: [`backend/.env.example`](backend/.env.example)
-- persistent service: [`deploy/systemd/urban-dossier-backend.service`](deploy/systemd/urban-dossier-backend.service)
+- systemd units: [`deploy/systemd/`](deploy/systemd/) — `ud-backend-noagent`
+  (8090, agent disabled) and `ud-frontend` (3456) make up `ud-stack.target`,
+  the everyday topology `scripts/start_stack.sh` installs;
+  `urban-dossier-backend.service` is the agent-enabled backend that
+  `--agent` starts instead
 
 Runtime secrets and downloaded model/data files belong under
 `/mnt/data/urban-dossier-state/`, not in Git. The OpenClaw Gateway bearer token is

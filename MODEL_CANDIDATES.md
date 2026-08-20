@@ -113,6 +113,15 @@ python3 scripts/vllm/ab_bench.py \
    (currently Nano) and was chosen in the interactive `nemoclaw onboard`
    wizard — repointing needs either a re-onboard or serving Lightning under
    the same served-name (discouraged: misleading).
+
+   **2026-08-20: the harness this gate runs on is healthy again, but the
+   gate itself is still open.** The gateway's mTLS material had drifted
+   since 08-15 and the sandbox had been crash-looping on a policy generation
+   its stale supervisor rejected; the NemoClaw upgrade to v0.0.111 refreshed
+   the certs and `rebuild --force` brought the sandbox to OpenShell 0.0.101 /
+   OpenClaw v2026.7.1. `test_openclaw_gateway.py` now returns
+   `gateway-route-ok` — **against Nano**. Repointing to Lightning is what
+   remains. See "Rebuilding the sandbox" in `DEPLOY_WORKSTATION.md`.
 4. License review of OpenMDW-1.1 for our use (user decision).
 5. ~~Pin the v0.27.1 image digest in `deploy/compose.gpu.yml`.~~ Done
    2026-08-12, Nano regression passed on it. Remaining: retarget the

@@ -137,7 +137,7 @@ Recover a stopped forward/container without recreating state:
 ```bash
 nemoclaw urban-dossier-agent recover
 bash scripts/refresh_openclaw_gateway_token.sh
-systemctl --user restart urban-dossier-backend.service
+scripts/start_stack.sh --agent
 ```
 
 After an upgrade/rebuild:
@@ -146,9 +146,19 @@ After an upgrade/rebuild:
 nemoclaw backup-all
 nemoclaw urban-dossier-agent rebuild --yes
 bash scripts/configure_openclaw_agent.sh
-systemctl --user restart urban-dossier-backend.service
+scripts/start_stack.sh --agent
 .venv/bin/python scripts/test_openclaw_gateway.py
 ```
+
+**Both backup steps above go over the sandbox's in-sandbox SSH endpoint, so
+neither works on a sandbox that cannot start** — and a sandbox that cannot
+start is the usual reason to be rebuilding in the first place. `backup-all`
+reports the failure and `rebuild` aborts on it. When that happens, copy the
+state out of the stopped container with `docker cp` and use
+`rebuild --yes --force`; see "Rebuilding the sandbox" in
+[`DEPLOY_WORKSTATION.md`](../../DEPLOY_WORKSTATION.md) for the full sequence.
+This is survivable because `configure_openclaw_agent.sh` rebuilds the agent
+from files tracked in this directory.
 
 Use `nemoclaw urban-dossier-agent stop` for a recoverable stop. `destroy` is a
 destructive sandbox deletion and is not part of routine shutdown.

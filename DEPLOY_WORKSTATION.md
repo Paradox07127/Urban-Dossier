@@ -358,6 +358,7 @@ workaround and recovery details.
 ```bash
 scripts/start_stack.sh          # backend :8090 + frontend :3456
 scripts/start_stack.sh --llm    # ... and the production vLLM on :8000
+scripts/start_stack.sh --agent  # agent-enabled backend instead of the plain one
 scripts/start_stack.sh --status # report only, change nothing
 ```
 
@@ -369,8 +370,14 @@ a reboot, a `git pull`, or a unit-file edit.
 `ud-backend-noagent` is the same FastAPI app as the unit in the next section
 with `URBAN_DOSSIER_AGENT_ENABLED=0`, which drops the OpenClaw gateway from
 the startup path. Use it whenever you are working on the map, the data plane
-or the frontend; use the full unit below only when you actually need the
-agent sandbox. Both bind 8090, so only one of them runs at a time.
+or the frontend; use `--agent` only when you actually need the agent sandbox.
+Both bind 8090, so only one of them runs at a time — `start_stack.sh` stops
+the other one for you.
+
+`--status` also reports the gateway and the sandbox. That report is
+informational without `--agent` (the default backend does not need either),
+but it is there deliberately: in August the gateway sat dead for four days
+because nothing in the startup path ever looked at it.
 
 Two failures this path exists to prevent, both of which cost a session:
 
@@ -447,29 +454,89 @@ Expected Agent status includes:
 
 ## 9. Recovery and upgrades
 
-After a reboot or stopped sandbox:
+After a reboot or a stopped sandbox:
 
 ```bash
 nemoclaw urban-dossier-agent recover
-systemctl --user restart urban-dossier-backend.service
+scripts/start_stack.sh --agent      # or plain, if you do not need the agent
 ```
 
-After a NemoClaw/OpenClaw rebuild:
+### Rebuilding the sandbox
+
+`rebuild` is the fix when the sandbox predates the current install — the
+symptoms are an in-sandbox OpenShell version behind the host's, a policy
+generation the supervisor rejects, or `nemoclaw <name> status` telling you to
+rebuild. **Back the sandbox up by hand first.** `rebuild` takes its own
+backup over the in-sandbox SSH endpoint, so a sandbox that cannot start
+cannot be backed up, and it aborts rather than lose state:
 
 ```bash
+# 1. Preserve the state the failing backup cannot reach.
+C=$(docker ps -a --format '{{.Names}}' | grep urban-dossier-agent)
+B=/mnt/data/urban-dossier-state/backups/nemoclaw-$(date +%Y%m%d)
+mkdir -p "$B" && chmod 700 "$B"
+docker cp "$C:/sandbox" "$B/"
+
+# 2. Try the safe path first. If it aborts on "Failed to back up sandbox
+#    state", check that everything it lists as failed is in your copy, then
+#    take the documented escape hatch.
 nemoclaw urban-dossier-agent rebuild --yes
+nemoclaw urban-dossier-agent rebuild --yes --force
+
+# 3. Restore the agent setup from version control.
 bash scripts/configure_openclaw_agent.sh
-systemctl --user restart urban-dossier-backend.service
+
+# 4. Prove the route end to end.
+.venv/bin/python scripts/test_openclaw_gateway.py   # -> gateway-route-ok
 ```
+
+Step 3 is what makes step 2 safe: everything that defines this agent —
+`deploy/openclaw/agents.yaml`, `AGENTS.md`, `SOUL.md`, and every
+`openclaw config set` — is tracked in the repo. The 2026-08-20 rebuild
+confirmed the rest of `/sandbox` held nothing bespoke: `credentials`,
+`memory`, `skills`, `plugin-skills`, `cron`, `hooks`, `flows` and `canvas`
+were all empty.
+
+### Version upgrades
+
+Run the NemoClaw installer; it is also what repairs a gateway whose mTLS
+material has drifted (see Troubleshooting):
+
+```bash
+NEMOCLAW_INSTALL_TAG=vX.Y.Z NEMOCLAW_NON_INTERACTIVE=1 \
+  NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1 \
+  NEMOCLAW_SANDBOX_NAME=urban-dossier-agent \
+  bash ~/.nemoclaw/source/install.sh
+```
+
+`lkg` is the vendor's last-known-good tag and the installer's default;
+`latest` is the newest release.
+
+**Do not go looking for an OpenShell upgrade.** NemoClaw pins it to an exact
+version — `MIN_VERSION`, `MAX_VERSION` and `PIN_VERSION` in
+`scripts/install-openshell.sh` were all `0.0.101` from NemoClaw v0.0.107
+through v0.0.111. The OpenShell version moves when NemoClaw's pin moves.
 
 Before changing a container digest or vLLM version, record the old digest, pull
 the candidate, run the 8K C1/C4 benchmark and real Agent smoke test, then update
 `deploy/compose.gpu.yml`. Do not use floating `latest` in the production file.
 
+### Troubleshooting
+
+| Symptom | What it is |
+|---|---|
+| `invalid peer certificate: BadSignature` on every `openshell`/`nemoclaw` call | The gateway regenerated its TLS material and the client copy in `~/.config/openshell/gateways/<gw>/mtls/` is stale. Re-run the installer; it restarts the gateway as a managed service and refreshes the client certs. Beware that a bare `openshell gateway start` creates a *second* profile holding the current certs, which makes `gateway list` look healthy while the active profile stays broken. |
+| The installer prints `[ERROR] Pre-upgrade backup stopped the installer` but exits 0 | Its exit code does not reflect the abort. Read the log, not `$?`. |
+| `nemoclaw <name> status` says `Inference: unhealthy` | Usually a false negative — the probe cannot parse a Nemotron response body (it carries a `reasoning` field). Confirm for yourself before chasing it: `nemoclaw urban-dossier-agent exec -- curl -sS https://inference.local/v1/chat/completions -H 'Content-Type: application/json' -d '{"model":"...","messages":[{"role":"user","content":"Say OK"}],"max_tokens":400}'` |
+| `urban-dossier-embeddings-1` crash-loops on `Invalid repository ID or local directory '/model'` | `models/embedding/` is empty; the weights were never downloaded. Only the standalone `rag/` subsystem uses them, so start the LLM alone — which is what `start_stack.sh --llm` does. |
+| `ud-frontend` dies with `ERR_DLOPEN_FAILED` | Wrong Node ABI; see section 6. Start it through `scripts/run_frontend.sh`. |
+
 ## 10. Shutdown
 
 ```bash
-systemctl --user stop urban-dossier-backend.service
+# Whichever backend is running, plus the frontend.
+systemctl --user stop ud-backend-noagent.service urban-dossier-backend.service \
+  ud-frontend.service
 nemoclaw urban-dossier-agent stop
 docker compose \
   --env-file /mnt/data/urban-dossier-state/runtime/gpu.env \
