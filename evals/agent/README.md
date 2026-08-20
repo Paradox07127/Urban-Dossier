@@ -192,14 +192,20 @@ partial numbers are worth reading, just not worth deciding on.
 Cases that fail for a reason in the product, not in the model. Keep them
 failing rather than relaxing them: that is the point of having them.
 
-- **`fault-score-tool-flaky` — the agent does not retry a tool that errors
-  once.** The case injects one error on the first `score_neighborhood` call
-  and expects a second attempt (`min_tool_calls: 2`). The agent makes one
-  call and gives up, and the answer that follows has no citation either.
-  Failed 3/3 on **both** endpoints of the 2026-08-20 FP8/BF16 A/B, i.e. it is
-  deterministic and model-independent — the only case in that run that was.
-  A single transient tool error is a thing that happens in production, so
-  this is a real robustness gap, not a harness artifact.
+- **`fault-score-tool-flaky` — the agent usually does not retry a tool that
+  errors once.** The case injects one error on the first `score_neighborhood`
+  call and expects a second attempt (`min_tool_calls: 2`). The agent
+  typically makes one call and gives up, and the answer that follows has no
+  citation either. Failure is **model- and config-independent**: 3/3 on both
+  endpoints of the FP8/BF16 A/B and 2/3 on both endpoints of the
+  cutlass/marlin A/B, 2026-08-20 — four different serving configurations,
+  10 of 12 attempts failed.
+
+  The first write-up of this entry called it deterministic on the strength of
+  the FP8 run alone; the second run passed once per endpoint, so it is a
+  high-frequency failure rather than a certain one. A single transient tool
+  error is an ordinary production event, so this is a real robustness gap
+  either way — but "usually" is what the evidence supports.
 
 This is why `--require-pass-k` is off by default.
 

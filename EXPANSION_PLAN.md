@@ -294,7 +294,7 @@ ECharts 6 保留为报告导出的备选：其零依赖服务端 SVG 渲染可�
 
 | # | 工作项 | 触发条件 |
 | --- | --- | --- |
-| 5.1 | 确认 NVFP4 MoE 实际启用的后端（读 vLLM 启动日志判断 CUTLASS 或 Marlin 回退） | 下次启动 LLM 时顺带完成；若在走 Marlin 回退则存在未取的性能 |
+| 5.1 | 确认 NVFP4 MoE 实际启用的后端（读 vLLM 启动日志判断 CUTLASS 或 Marlin 回退） | 下次启动 LLM 时顺带完成；若在走 Marlin 回退则存在未取的性能 **已完成 2026-08-20**：生产 Nano 实际走的就是 `FLASHINFER_CUTLASS`（启动日志 `Using 'FLASHINFER_CUTLASS' NvFp4 MoE backend`、`FlashInferCutlassNvFp4LinearKernel for NVFP4 GEMM`、`arch=sm120`），**没有回退到 Marlin，不存在未取的性能**。查证过程中发现一个更值得答的问题并已一并做掉：MODEL_CANDIDATES 关于 Lightning 的结论是"SM 12.0 上强制 flashinfer_cutlass 正是乱码来源"，而 gpu.env 恰恰对生产 Nano 强制了它。遂做正确性 A/B（同卡共存、除 `--moe-backend` 外参数逐字相同，eval 1.1 ×3，报告 `moe_backend_ab_20260820.json`）：**该结论不适用于 Nano（Nemotron-H）**，cutlass 质量更好——pass_rate 0.931 vs marlin 0.862、pass^3 0.793 vs 0.655；marlin 反而更快（274.6 vs 241.8 tok/s）但质量更差，且 `multiturn-followup-referent` 在 marlin 上 3/3 全败、cutlass 上 3/3 全过（本轮唯一确定性分裂），另有 marlin 编造地名 "Midtown" 触发 place 软检查。**生产维持 cutlass** |
 | 5.2 | vLLM sleep mode 编排：Level 1 权重卸载至 CPU RAM（128 GB 内存充裕） | 采用模型舰队方案后 |
 | 5.3 | 预处理从 pandas 全量物化改为 DuckDB / Polars streaming（吃满 32 核） | 数据集扩展导致刷新耗时上升时 |
 | 5.4 | cuVS 评估门槛上调至百万级向量 | catalog 向量规模实测超过阈值时；当前约 90 chunks，扩展后仍在万级 |

@@ -541,6 +541,20 @@ this vLLM. And the widely reported garbage output on SM 12.0 comes from
 **forcing** `flashinfer_cutlass` / `vllm_cutlass`; `auto` never picks them.
 The risk is in overriding the flag, not in leaving it alone.
 
+> **Scope, added 2026-08-20.** The sentence above is about **Lightning**
+> (Nemotron 3.5) and must not be read as a statement about SM 12.0 in
+> general. Production Nano forces `flashinfer_cutlass` on this same card and
+> is fine — measured, not assumed: an eval-1.1 A/B at 3 attempts, cutlass vs
+> marlin, all flags otherwise byte-identical, put cutlass **ahead** on
+> quality (pass_rate 0.931 vs 0.862, pass^3 0.793 vs 0.655) with marlin
+> faster (274.6 vs 241.8 tok/s) and carrying the run's only deterministic
+> split — `multiturn-followup-referent` 0/3 on marlin, 3/3 on cutlass — plus
+> a fabricated "Midtown" that tripped the place check. Report
+> `moe_backend_ab_20260820.json`. Different checkpoint, different answer:
+> Nemotron-H's MLP layout is not Lightning's, and the compose comment on the
+> production service already said CUTLASS is the supported path for it.
+> Verify per checkpoint; do not generalise this either way.
+
 `humming` (the card's H100/Ampere choice) is in the valid list and remains
 untested here. Given that the failure modes on this silicon are "silent
 garbage" and "shape error at load", it needs a correctness check first.
