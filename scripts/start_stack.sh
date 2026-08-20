@@ -42,6 +42,14 @@ probe() {
 }
 
 if [[ $STATUS_ONLY -eq 0 ]]; then
+  # Order matters. A transient unit of the same name (from `systemd-run`, the
+  # way this stack used to be started) lives in /run and shadows the installed
+  # one; systemd only notices the file on disk on a daemon-reload that happens
+  # AFTER the transient unit is gone. Reloading first and stopping second --
+  # the obvious order -- leaves systemd insisting the unit does not exist.
+  systemctl --user stop ud-backend-noagent.service ud-frontend.service 2>/dev/null
+  systemctl --user reset-failed ud-backend-noagent.service ud-frontend.service 2>/dev/null
+
   say "installing units into ${UNIT_DIR}"
   mkdir -p "$UNIT_DIR"
   for unit in ud-backend-noagent.service ud-frontend.service ud-stack.target; do
@@ -49,11 +57,6 @@ if [[ $STATUS_ONLY -eq 0 ]]; then
     echo "  $unit"
   done
   systemctl --user daemon-reload
-
-  # A transient unit of the same name left by an older session shadows the
-  # installed one until it is gone.
-  systemctl --user stop ud-backend-noagent.service ud-frontend.service 2>/dev/null
-  systemctl --user reset-failed ud-backend-noagent.service ud-frontend.service 2>/dev/null
 
   say "starting backend + frontend"
   if ! systemctl --user start ud-backend-noagent.service ud-frontend.service; then
