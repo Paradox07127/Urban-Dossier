@@ -198,12 +198,17 @@ services:
       #           Acceptance 3.16 at draft length 7.
       #
       # So the two disagree: DSpark accepts more tokens per step, DFlash is
-      # the one aimed at this hardware. Acceptance length is not throughput
-      # once the drafter's own forward pass is paid for, and a drafter tuned
-      # for GB10's unified memory is tuned for far less bandwidth than this
-      # card has. NVIDIA's guidance is to benchmark DFlash per workload rather
-      # than assume. We inherited DSpark from the DGX Spark days and have
-      # never measured DFlash here -- see MODEL_CANDIDATES.md.
+      # the one aimed at this hardware. NVIDIA's guidance is to benchmark
+      # DFlash per workload rather than assume.
+      #
+      # Measured here 2026-08-20, and DSpark keeps the slot on merit rather
+      # than inheritance: at THIS draft length DFlash kills the engine
+      # (CUDA device-side assert; the draft proposes token id -1), and at
+      # draft length 1 -- the only length where it runs -- DSpark is 1.8x
+      # faster at both C1 and C4. vLLM 0.27.1 registers both architectures,
+      # so this is a runtime bug, not a missing implementation. Do not swap
+      # /draft to the DFlash checkpoint without re-measuring on a newer vLLM.
+      # Table and evidence in MODEL_CANDIDATES.md.
       - --speculative_config.model
       - /draft
       - --speculative_config.num_speculative_tokens

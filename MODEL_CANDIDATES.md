@@ -559,6 +559,48 @@ The risk is in overriding the flag, not in leaving it alone.
 untested here. Given that the failure modes on this silicon are "silent
 garbage" and "shape error at load", it needs a correctness check first.
 
+### DFlash: measured, and unusable (2026-08-20)
+
+The section below argued DFlash *might* be the right drafter for this box —
+its card names the RTX 5090, i.e. this silicon class, while DSpark targets
+DGX Spark's GB10. We inherited DSpark from the DGX days and had never
+measured the alternative. Now we have. **DSpark stays, and not on a
+tiebreak.**
+
+| Drafter | draft len | C1 tok/s | C4 tok/s | errors |
+|---|---|---|---|---|
+| DSpark | 3 (ours) | **518.1** | **820.2** | 0 |
+| DSpark | 1 | 322.2 | 801.2 | 0 |
+| **DFlash** | **3** | — | — | **engine dead** |
+| DFlash | 1 | 178.2 | 450.0 | 0 |
+
+`ab_bench --warmup`, same card, every other flag byte-identical, one
+endpoint at a time. Reports `drafter_*_20260820.json`.
+
+**At the vendor's own draft length 3, DFlash kills the engine**:
+`torch.AcceleratorError: CUDA error: device-side assert triggered`, then
+`EngineDeadError` and every subsequent request 500s. The scheduler dump names
+the cause — `scheduled_spec_decode_tokens={...: [-1, -1, -1]}`, i.e. the
+draft proposed token id −1 three times and something indexed with it. Not an
+unsupported-architecture problem: vLLM 0.27.1 registers **both**
+`Qwen3DSparkModel` and `DFlashDraftModel`, and the weights load cleanly.
+
+Two things worth carrying forward:
+
+- **A smoke test would have passed it.** One short non-streaming completion
+  through DFlash at draft 3 returned a correct answer; the engine died on
+  the benchmark's sustained generation. `--async-scheduling` is *not* the
+  trigger — removing it produced the identical assert, which is what that
+  single successful request briefly made it look like.
+- **Draft length 1 is the only length that survives, and there DSpark is
+  1.8× faster** at both C1 (322.2 vs 178.2) and C4 (801.2 vs 450.0). The
+  matched-length control matters: comparing DFlash@1 against DSpark@3 gives
+  2.9×, which would have charged the draft-length difference to the drafter.
+
+So DFlash is not merely blocked by a bug — at the one setting where it runs
+it is behind. Revisit only if a later vLLM fixes the assert, and re-measure
+rather than assuming the card's acceptance numbers transfer.
+
 ### The three draft paths, and why ours may be the wrong one
 
 Lightning ships three, and they are not interchangeable:
@@ -626,11 +668,15 @@ before today is a cold-start number; do not compare one to a warmed run.
 
 ### Optimization space, ranked, none of it measured
 
-1. **DFlash instead of DSpark** — the DGX-era inheritance, table above.
-   Needs the checkpoint downloaded; cheapest real experiment available, and
-   the only one where the vendor's own advice is "benchmark it".
+1. ~~**DFlash instead of DSpark**~~ — **MEASURED 2026-08-20, and the answer
+   is no. DSpark stays.** See "DFlash: measured, and unusable" below.
 2. **Draft length above 3.** Both drafter cards report acceptance at draft
    length **7**; we run 3, and the GB200 profile uses 5. Free to try.
+   First data point, from the DFlash work: dropping DSpark from 3 to 1 costs
+   **38% at C1** (518.1 → 322.2 tok/s) and **nothing at C4** (820.2 → 801.2).
+   Speculation is worth most exactly where we live — one interactive user —
+   so going *up* from 3 is the direction worth measuring, and C1 is the
+   number that will move.
 3. **Native MTP.** Ships inside the checkpoint, no download, no second model
    resident. The card recommends it for medium-to-high concurrency, so at our
    single-user load DSpark should win — but the SM 12.0 report saw MTP cost
