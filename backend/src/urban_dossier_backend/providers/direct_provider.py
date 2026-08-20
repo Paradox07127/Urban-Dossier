@@ -1549,6 +1549,29 @@ class DirectQueryDataProvider(DataProvider):
             "_park_names": [r.get("NAME311") or r.get("SIGNNAME") or "unnamed park" for r in _parks_rows if r.get("NAME311") or r.get("SIGNNAME")],
         }, gaps
 
+    @staticmethod
+    def _flag_summary(subject: str, house: Any, street: Any, date_value: Any = None) -> str:
+        """Label a building flag using only the fields that survive to here.
+
+        The compact ready layer drops display-only address columns on purpose
+        (see ``_query_ready_radius_rows``), so ``HouseNumber``/``StreetName``
+        come back NULL for every row it serves. The previous spelling appended
+        " at {house} {street}" unconditionally and then stripped, which turned
+        every flag into "Class B violation at" -- a sentence cut off mid-clause
+        with nothing after the preposition. Address is appended only when there
+        is one, and the date carries the row's identity when there is not, so
+        the flag still distinguishes itself from its neighbours.
+        """
+        address = " ".join(
+            part for part in (str(house or "").strip(), str(street or "").strip()) if part
+        )
+        if address:
+            return f"{subject} at {address}"
+        parsed = parse_date(date_value)
+        if parsed is not None:
+            return f"{subject} · {parsed.isoformat()}"
+        return subject
+
     def _query_building(self, con: Any, latitude: float, longitude: float, radius_m: int) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
         building_radius = min(max(radius_m, 100), 250)
         metrics = {"open_class_c_250m": 0, "open_class_b_250m": 0, "open_class_a_250m": 0, "aep_count_250m": 0}
@@ -1580,7 +1603,12 @@ class DirectQueryDataProvider(DataProvider):
                     "kind": "housing_violation",
                     "latitude": float(row["__lat"]),
                     "longitude": float(row["__lon"]),
-                    "summary": f"Class {row.get('Class') or '?'} violation at {row.get('HouseNumber') or ''} {row.get('StreetName') or ''}".strip(),
+                    "summary": self._flag_summary(
+                        f"Class {row.get('Class') or '?'} violation",
+                        row.get("HouseNumber"),
+                        row.get("StreetName"),
+                        row.get("InspectionDate"),
+                    ),
                     "score_hint": _vhint,
                 })
 
@@ -1600,7 +1628,12 @@ class DirectQueryDataProvider(DataProvider):
                     "kind": "aep",
                     "latitude": float(row["__lat"]),
                     "longitude": float(row["__lon"]),
-                    "summary": f"AEP building at {row.get('NUMBER') or ''} {row.get('STREET') or ''}".strip(),
+                    "summary": self._flag_summary(
+                        "AEP building",
+                        row.get("NUMBER"),
+                        row.get("STREET"),
+                        row.get("AEP_START_DATE"),
+                    ),
                     "score_hint": 15,
                 })
         return metrics, evidence, {"building_flags": building_flags, "_raw_violation_rows": open_rows}
