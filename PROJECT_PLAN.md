@@ -818,7 +818,7 @@ LLM_MOE_BACKEND=flashinfer_cutlass
 
 ### 17.3 已知技术风险与后续实验
 
-1. FP8 KV 启动日志显示 checkpoint 没有完整 q/prob scaling factor；性能配置可保留，但在正式发布前必须用固定业务问题集与 BF16 KV 做答案质量 A/B。
+1. ~~FP8 KV 启动日志显示 checkpoint 没有完整 q/prob scaling factor；性能配置可保留，但在正式发布前必须用固定业务问题集与 BF16 KV 做答案质量 A/B。~~ **已解除 2026-08-20**：A/B 已跑，FP8 KV 无可测质量回退，FP8 保留为生产配置。方法与逐用例结果见 EXPANSION_PLAN 工作项 4.2。分辨率的诚实边界：本用例集含一个抖动子集（7 个用例在三轮内会自己翻转），因此这次 A/B 能排除大幅回退，不能排除小幅回退。
 2. vLLM 尚无 RTX PRO 6000 Blackwell Workstation Edition 对应的 Mamba SSU tuning 文件，目前使用默认 Triton 配置。等待官方配置或通过可重复 benchmark 验证自定义调优，不直接手写生产参数。
 3. 当前专用 sandbox 依赖“默认 agent”路由兼容方案；OpenClaw 升级后重新测试 header/model selector，成功后移除该 workaround。
 4. 现有 `/api/agent/chat` 已接入专项 agent，但 P0 目标仍是统一为带结构化 trace/evidence 的 `/api/agent/ask`，避免长期维护两套入口。

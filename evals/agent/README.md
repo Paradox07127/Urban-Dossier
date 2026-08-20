@@ -187,6 +187,22 @@ request errored or any prompt did not complete — a partial set skews every
 per-second number in the report. Both write their report either way:
 partial numbers are worth reading, just not worth deciding on.
 
+## Known open defects the set reproduces
+
+Cases that fail for a reason in the product, not in the model. Keep them
+failing rather than relaxing them: that is the point of having them.
+
+- **`fault-score-tool-flaky` — the agent does not retry a tool that errors
+  once.** The case injects one error on the first `score_neighborhood` call
+  and expects a second attempt (`min_tool_calls: 2`). The agent makes one
+  call and gives up, and the answer that follows has no citation either.
+  Failed 3/3 on **both** endpoints of the 2026-08-20 FP8/BF16 A/B, i.e. it is
+  deterministic and model-independent — the only case in that run that was.
+  A single transient tool error is a thing that happens in production, so
+  this is a real robustness gap, not a harness artifact.
+
+This is why `--require-pass-k` is off by default.
+
 ## LLM judge (semantic assertions)
 
 The deterministic graders check what a regex can see, and that is not the
