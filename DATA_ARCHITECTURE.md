@@ -10,7 +10,8 @@ Baseline: v3.7.8 data pipeline, updated 2026-08-02.
 
 The original DGX checklist assumed a flat `~/nyc_open_data` directory, a second
 tree of `*.cleaned.csv` files, optional in-process cuDF for serving, and cuVS as
-a deployment success criterion. That is no longer the project contract.
+a deployment success criterion. That is no longer the project contract — and
+since 2026-08-20 cuVS has no consumer at all, RAG having been retired.
 
 The current architecture changes are:
 
@@ -28,8 +29,10 @@ The current architecture changes are:
    query path.
 6. DuckDB is the reference serving engine on every profile. RAPIDS/cuDF is an
    optional batch adapter selected only after a platform-local benchmark.
-7. The catalog/document vector index is independent from analytical facts.
-   Current small-corpus retrieval does not require cuVS on DGX or x86.
+7. ~~The catalog/document vector index is independent from analytical facts.~~
+   **Retired 2026-08-20.** There is no vector index: RAG was removed after
+   measuring the corpus at ~400 tokens against a 32,768-token window. See
+   README § "RAG: retired".
 
 These are data-contract changes, not x86-only tuning changes. A DGX Spark build
 must reproduce them before its data layer is considered compatible.
@@ -66,7 +69,8 @@ Serving
 
 Parquet is the canonical analytical interchange format. It is not Agent
 memory. Dataset descriptions, field meanings, update cadence, source URLs, and
-sample queries remain in `rag/catalog.json`. Analysis results must eventually
+sample queries were removed with the RAG subsystem on 2026-08-20 (see
+README § "RAG: retired"). Analysis results must eventually
 carry `snapshot_id`, methodology version, and evidence references.
 
 ## 3. Portable storage layout
@@ -243,13 +247,13 @@ Properties `enfh-gkve`, and Public Restrooms `i7jb-7jku`.
 | Online queries | DuckDB | DuckDB | DuckDB reference path |
 | Batch dataframe | pandas/Polars | isolated RAPIDS container when justified | RAPIDS ARM64/container/conda only after GB10 validation |
 | GPU serving requirement | none | none for data API | none for data API |
-| Vector index for current catalog | CPU exact/FAISS | CPU exact/FAISS is sufficient | CPU exact/FAISS is sufficient |
-| Large future vector corpus | CPU HNSW/remote option | evaluate cuVS | evaluate cuVS |
 | Distributed dataframe | not used | not used | not used on single GB10 unless profiling proves need |
 
 Unified memory on DGX Spark can reduce CPU/GPU transfer costs, but it does not
 change dataset schemas, score definitions, manifests, or publication gates.
-Do not turn cuDF/cuVS availability into a correctness condition.
+Do not turn cuDF availability into a correctness condition. (cuVS went with
+the RAG subsystem on 2026-08-20; nothing in the project consumes a vector
+index any more.)
 
 ## 8. Current validated reference snapshot
 

@@ -30,7 +30,6 @@ module can load without that stack.
 from __future__ import annotations
 
 import copy
-import dataclasses
 import json
 import logging
 import os
@@ -220,11 +219,6 @@ class SearchAddressArgs(_StrictArgs):
     query: str = Field(min_length=3, max_length=200)
     limit: int = Field(default=5, ge=1, le=10)
 
-
-class RetrieveDatasetDocsArgs(_StrictArgs):
-    query: str = Field(min_length=3, max_length=500)
-    dataset_filter: list[str] | None = None
-    top_k: int = Field(default=5, ge=1, le=20)
 
 
 # --------------------------------------------------------------------------- #
@@ -495,39 +489,6 @@ def _search_address(args: SearchAddressArgs) -> dict[str, Any]:
     return _steer_geocode(payload, args.query)
 
 
-def _retrieve_dataset_docs(args: RetrieveDatasetDocsArgs) -> dict[str, Any]:
-    """RAG retrieval against the dataset documentation index.
-
-    The rag package is built by a parallel agent. Import lazily so this
-    module loads even when rag/ is empty during early development. At
-    runtime, raise a clear error if rag.retrieve is unavailable.
-    """
-
-    try:
-        from rag import retrieve  # type: ignore[import-not-found]
-    except ImportError as exc:
-        raise NotImplementedError(
-            "Tool retrieve_dataset_docs requires the rag package "
-            "(rag.retrieve) to be importable. The rag package is being built "
-            "by a parallel agent. Once available, expose: "
-            "rag.retrieve(query: str, dataset_filter: list[str] | None, "
-            "top_k: int) -> {'hits': list[{dataset_id, snippet, score}], "
-            "'query': str}."
-        ) from exc
-
-    chunks = retrieve(
-        query=args.query,
-        dataset_filter=args.dataset_filter,
-        top_k=args.top_k,
-    )
-    # rag.retrieve returns list[RetrievedChunk] (dataclass). The agent loop
-    # serializes tool results to JSON for the LLM, so flatten into the
-    # documented {"hits": [...], "query": str} contract here.
-    return {
-        "query": args.query,
-        "hits": [dataclasses.asdict(chunk) for chunk in chunks],
-    }
-
 
 # --------------------------------------------------------------------------- #
 # Helpers
@@ -690,26 +651,6 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["query"],
         },
     ),
-    _fn(
-        "retrieve_dataset_docs",
-        "Semantic search across the dataset documentation index. Use this "
-        "whenever you are unsure which dataset to query, or you need column "
-        "semantics. Optional dataset_filter restricts the search to a list "
-        "of dataset ids.",
-        {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "minLength": 3, "maxLength": 500},
-                "dataset_filter": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "default": None,
-                },
-                "top_k": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5},
-            },
-            "required": ["query"],
-        },
-    ),
 ]
 
 
@@ -725,7 +666,7 @@ _CORE_TOOLS = {
 # the same place five times and analysed nothing -- a real Qwen3.8 failure on
 # 2026-08-14 that the identical-arguments repeat guard could not see, because
 # each query string was different.
-LOOKUP_TOOLS = frozenset({"search_address", "retrieve_dataset_docs"})
+LOOKUP_TOOLS = frozenset({"search_address"})
 
 ANALYSIS_TOOLS = frozenset(
     {
@@ -821,48 +762,6 @@ def _elasticity_state() -> dict[str, Any]:
     )
 
 
-def _rag_state() -> dict[str, Any]:
-    base = Path(os.getenv("RAG_INDEX_DIR", "index"))
-    explicit = os.getenv("RAG_INDEX_FILENAME")
-    candidates = (
-        [base / explicit]
-        if explicit
-        else [base / "corpus.cuvs", base / "corpus.faiss"]
-    )
-    for path in candidates:
-        meta = path.with_suffix(path.suffix + ".meta.json")
-        index_exists = (path.is_file() and path.stat().st_size > 0) or (
-            path.suffix == ".cuvs"
-            and Path(str(path) + ".vectors.npy").is_file()
-            and Path(str(path) + ".vectors.npy").stat().st_size > 0
-        )
-        metadata_valid = False
-        if meta.is_file():
-            try:
-                payload = json.loads(meta.read_text(encoding="utf-8"))
-                metadata_valid = (
-                    int(payload.get("dim", 0)) > 0
-                    and isinstance(payload.get("metadata"), list)
-                    and bool(payload["metadata"])
-                )
-            except (OSError, ValueError, TypeError, json.JSONDecodeError):
-                metadata_valid = False
-        if index_exists and metadata_valid:
-            return _artifact_state(
-                True,
-                "ready",
-                release_gate="rag_index",
-                artifact=str(path),
-                metadata=str(meta),
-            )
-    return _artifact_state(
-        False,
-        "rag_index_missing",
-        release_gate="rag_index",
-        required_any=[str(path) for path in candidates],
-    )
-
-
 def tool_availability() -> dict[str, dict[str, Any]]:
     """Return the runtime release decision for every stable tool name."""
 
@@ -876,7 +775,6 @@ def tool_availability() -> dict[str, dict[str, Any]]:
             ),
             "walking_isochrone": _walking_state(),
             "simulate_intervention": _elasticity_state(),
-            "retrieve_dataset_docs": _rag_state(),
         }
     )
     return {name: states[name] for name in sorted(states)}
@@ -944,7 +842,6 @@ _TOOL_REGISTRY: dict[str, tuple[type[BaseModel], Callable[[Any], dict[str, Any]]
     "walking_isochrone": (WalkingIsochroneArgs, _walking_isochrone),
     "simulate_intervention": (SimulateInterventionArgs, _simulate_intervention),
     "search_address": (SearchAddressArgs, _search_address),
-    "retrieve_dataset_docs": (RetrieveDatasetDocsArgs, _retrieve_dataset_docs),
 }
 
 

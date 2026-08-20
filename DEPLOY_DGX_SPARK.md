@@ -14,12 +14,12 @@
 Target: NVIDIA GB10 Grace Blackwell (Acer Veriton GN100), ARM64, 128 GiB unified memory.
 Run-through this list end-to-end after `git pull` on the box. Each section is independently checkable; do not skip ordering.
 
-Current status (reviewed 2026-08-12): the Nemotron launcher provides only
-`demo`, `balanced`, and `long-context` profiles. The Qwen embedding profile
-described below is still unimplemented and has not been validated on ARM64.
-Do not copy the x86 Docker compose service into this checklist or run the
-nonexistent `--profile embedding`; complete that launcher work and its GB10
-smoke test before enabling RAG ingestion on this profile.
+Current status (reviewed 2026-08-12; RAG items removed 2026-08-20): the
+Nemotron launcher provides only `demo`, `balanced`, and `long-context`
+profiles. The embedding profile this checklist used to require was never
+implemented on ARM64, and no longer needs to be: RAG was retired on
+2026-08-20 (see README § "RAG: retired"), so there is no second inference
+service, no vector index, and no ingest step on this profile either.
 
 ---
 
@@ -29,8 +29,8 @@ smoke test before enabling RAG ingestion on this profile.
 - [ ] `python3 --version` >= 3.12
 - [ ] `node --version` >= 22
 - [ ] At least 80 GiB free in `/` (model + index + Parquet)
-- [ ] vLLM service NOT running yet (`pgrep -f vllm` empty), or already running on `:8000` (LLM) and `:8001` (embeddings) with the new profiles
-- [ ] No legacy `ollama` process running (`pgrep ollama` empty) — embeddings now go through vLLM, see Phase 1
+- [ ] vLLM service NOT running yet (`pgrep -f vllm` empty), or already running on `:8000` (LLM) with the new profiles
+- [ ] No legacy `ollama` process running (`pgrep ollama` empty)
 - [ ] `URBAN_DOSSIER_RAW_DATA_ROOT` points to a categorized raw root containing all 18 CSVs
 - [ ] Raw and ready manifests pass with 18/18 CSV and 44/44 Parquet files; do not reuse a workstation manifest
 - [ ] Branch is `main`, latest pulled
@@ -39,23 +39,6 @@ smoke test before enabling RAG ingestion on this profile.
 ---
 
 ## Phase 1 — System dependencies
-
-### Embedding model (Qwen3-Embedding-4B served by a second vLLM instance)
-- [ ] Download model: `huggingface-cli download Qwen/Qwen3-Embedding-4B`
-- [ ] Add a dedicated ARM64 embedding launcher/profile that binds `:8001` and
-      uses vLLM's pooling/embedding runner; `start_vllm.sh` does not currently
-      implement this profile
-- [ ] Start the new profile only after its dry-run output and vLLM version
-      compatibility have been reviewed on GB10
-- [ ] Verify: `curl -s http://localhost:8001/v1/models | jq '.data[].id'` returns `Qwen/Qwen3-Embedding-4B`
-- [ ] Verify dim by sending a test embedding request:
-      `curl -s http://localhost:8001/v1/embeddings -H 'Content-Type: application/json' -d '{"model":"Qwen/Qwen3-Embedding-4B","input":"test"}' | jq '.data[0].embedding | length'`
-- [ ] Confirm the returned dimension matches `rag/embed.py`'s expected width before running ingest
-
-### cuVS (optional for a future large vector corpus)
-- [ ] Try `pip install cuvs-cu13`
-- [ ] If the wheel is not available, try `conda install -c rapidsai cuvs` (RAPIDS conda channel)
-- [ ] For the current small catalog corpus, CPU exact/FAISS is valid; require cuVS only after a measured scale or latency benefit
 
 ### scipy (new, pattern detector)
 - [ ] `pip install 'scipy>=1.11'` — confirm ARM64 wheel installs cleanly (manylinux_2_28_aarch64 or source build)
@@ -66,7 +49,6 @@ smoke test before enabling RAG ingestion on this profile.
 
 - [ ] `cd Urban-Dossier`
 - [ ] `pip install -r backend/requirements.txt` (now includes scipy)
-- [ ] `pip install -r rag/requirements.txt` (faiss-cpu, sentence-transformers, etc.)
 - [ ] `bash skills/urban_dossier_analyst/bootstrap.sh` (creates `.venv`, installs openai/httpx/pydantic)
 - [ ] `cd interactive-map-explorer && npm install && npm run build && cd ..`
 - [ ] `npm install` (root, for tile server)
@@ -96,17 +78,6 @@ smoke test before enabling RAG ingestion on this profile.
 
 ---
 
-## Phase 4 — Optional RAG index build
-
-- [ ] `PYTHONPATH=. python -m rag.ingest rag/catalog.json --index-dir rag/index/ 2>&1 | tee rag/ingest.log`
-- [ ] Record ingest time for the current approximately 90 catalog chunks; batch embedding requests if the corpus grows
-- [ ] Verify index files and metadata sidecar were created for the selected backend
-- [ ] Record the selected backend; FAISS-CPU is acceptable for the current catalog, while cuVS requires a separate scale/latency benchmark
-- [ ] Smoke test: `PYTHONPATH=. python -c "from rag import retrieve; r = retrieve('rodent complaints', top_k=3); [print(x.dataset_id, x.score) for x in r]"`
-- [ ] Expected: at least one hit with `dataset_id == "safety_rodent"` ranking high
-
----
-
 ## Phase 5 — NemoClaw skill registration
 
 - [ ] `nemoclaw onboard` (if not already done)
@@ -132,8 +103,8 @@ smoke test before enabling RAG ingestion on this profile.
 - [ ] Start Uvicorn with explicit `URBAN_DOSSIER_RAW_DATA_ROOT` and `URBAN_DOSSIER_READY_ROOT`; do not require `URBAN_DOSSIER_GPU_ACCEL=1`
 - [ ] Verify: `/api/health` returns 200 and `provider_ready: true`; GPU availability is reported separately and may be false for the reference DuckDB environment
 - [ ] Smoke test pattern detector (calls into Nemotron + scipy): hit `POST /api/analyze-point` with a known dense Brooklyn point — check log for "Pattern detector" entries, no exceptions
-- [ ] Smoke test agent endpoint: `curl -X POST http://localhost:8090/api/agent/ask -H 'Content-Type: application/json' -d '{"message":"What datasets cover noise complaints?","max_iterations":3}'`
-- [ ] Expected: response includes `tools_called` with `retrieve_dataset_docs` invocation, `evidence` cites at least one dataset
+- [ ] Smoke test agent endpoint: `curl -X POST http://localhost:8090/api/agent/ask -H 'Content-Type: application/json' -d '{"message":"How many rodent inspections are in the dataset?","max_iterations":3}'`
+- [ ] Expected: response includes `tools_called` with a `query_dataset` invocation and `evidence` citing the dataset. A first call with a wrong `dataset_id` is acceptable — the error carries `available_datasets` and the agent is expected to re-issue.
 - [ ] If `503: skill module not found` — check `Phase 5` was completed, restart uvicorn (no hot-reload for sys.path-injected modules)
 
 > Note (in-process tool dispatcher): the agent loop tool dispatcher prefers in-process Python calls (~µs latency) when the FastAPI backend module is importable, falling back to HTTP only when the agent runs inside a NemoClaw sandbox process that cannot import the backend. To confirm the in-process path is live, grep the backend log for `dispatcher=in-process` after the smoke test above.
@@ -161,7 +132,7 @@ On Mac:
 ## Phase 9 — Integration smoke tests (end-to-end)
 
 - [ ] **Test 1 — direct backend**: click point, verify report renders with non-empty patterns list
-- [ ] **Test 2 — RAG retrieval**: agent ask "find me datasets about housing violations" → should cite `building_violations` and `building_aep`
+- [ ] **Test 2 — dataset vocabulary**: agent ask "how many open housing violations are near here" → should reach `query_dataset` with `housing_violations` and cite it
 - [ ] **Test 3 — Tool dispatch**: agent ask "score this neighborhood: 40.6892, -74.0445" → should call `score_neighborhood`, return numeric scores
 - [ ] **Test 4 — Pattern detection (Layer 3)**: trigger an analyze-point on a known multi-issue area (e.g., Bushwick) → check pattern_detector log for LLM-named patterns vs auto-named
 - [ ] **Test 5 — ReAct termination**: agent ask "compare Bushwick and Park Slope safety" → trace should show ≤8 iterations, terminate cleanly. (Tool 2 `compare_neighborhoods` currently raises NotImplementedError — agent should adapt and use 2× `score_neighborhood` instead)
@@ -174,18 +145,12 @@ The following three measurements are required. Capture the raw numbers, paste th
 
 - [ ] **vLLM Nemotron P50 latency on a 256-token completion.** Issue 30 sequential `chat/completions` calls with `max_tokens=256` against `:8000`, sort the wall-clock times, record the P50. Log file: `docs/perf/vllm-256tok-p50.log`.
 - [ ] **Data-engine comparison on published Parquet.** Compare DuckDB and the candidate RAPIDS path on the same projection/filter/groupby workload, including cold and warm latency. Log file: `docs/perf/data-engine-comparison.log`.
-- [ ] **`nvidia-smi` GPU memory peak during a full `agent_loop` run with all 8 tools active.** Start `nvidia-smi --query-gpu=memory.used --format=csv -l 1 > docs/perf/nvsmi-agent-peak.log &`, run an agent query that exercises every tool (`score_neighborhood`, `compare_neighborhoods`, `query_dataset`, `find_similar_neighborhoods`, `walking_isochrone`, `simulate_intervention`, `search_address`, `retrieve_dataset_docs`), stop the logger, record the maximum value. This is the falsifiability number cited in README "Why DGX Spark".
+- [ ] **`nvidia-smi` GPU memory peak during a full `agent_loop` run with all 7 tools active.** Start `nvidia-smi --query-gpu=memory.used --format=csv -l 1 > docs/perf/nvsmi-agent-peak.log &`, run an agent query that exercises every tool (`score_neighborhood`, `compare_neighborhoods`, `query_dataset`, `find_similar_neighborhoods`, `walking_isochrone`, `simulate_intervention`, `search_address`), stop the logger, record the maximum value. This is the falsifiability number cited in README "Why DGX Spark".
 - [ ] Save outputs to `docs/perf-baseline-YYYY-MM-DD.md` and update README with the three captured numbers.
 
 ---
 
 ## Known issues / hardware verification opens
-
-### From RAG agent (A)
-- [ ] Confirm vLLM `:8001` returns the expected embedding dimension for `Qwen/Qwen3-Embedding-4B` on ARM64 (already in Phase 1)
-- [ ] Confirm `cuvs-cu13` is the right wheel name; might need RAPIDS conda channel
-- [ ] Decide CrossEncoder device: `cuda:0` (shares with vLLM, may contend) vs `cpu` (safe default in code) — benchmark
-- [ ] Embedding throughput: 75 sequential HTTP calls during ingest ~30s. If ingest grows, switch the rag client to vLLM's batched embeddings endpoint
 
 ### From Agent skill agent (B)
 - [ ] `priority_order=["amenities","transit","safety"]` is hardcoded default — decide if it should be a tool argument
@@ -206,10 +171,6 @@ The following three measurements are required. Capture the raw numbers, paste th
 
 - [x] Dataset count and the shared 18-source contract are documented in `DATA_ARCHITECTURE.md`
 - [ ] Add a `## Master Agent Skill` section to README pointing to `skills/urban_dossier_analyst/SKILL.md`
-- [ ] Add a `## RAG Pipeline` section pointing to `rag/README.md`
-- [ ] After the DGX embedding launcher exists and passes its ARM64 smoke test,
-      update Quick Start with the actual command for the second vLLM instance
-      on `:8001`
 - [ ] Capture screenshot of agent ReAct trace, embed in README
 
 ---
@@ -217,9 +178,8 @@ The following three measurements are required. Capture the raw numbers, paste th
 ## Rollback (if v2 breaks demo)
 
 - [ ] Stop backend: `pkill -f 'urban_dossier_backend.app'`
-- [ ] Stop the embedding vLLM instance: `pkill -f 'vllm.*8001'` (leave the LLM instance on `:8000` running unless rolling that back too)
 - [ ] `git stash` v2 changes (or `git checkout <last-stable-tag>`)
-- [ ] Restart with old `start.sh` flow — v1 path uses no scipy/RAG/skill loop, will Just Work
+- [ ] Restart with old `start.sh` flow — v1 path uses no scipy or skill loop, will Just Work
 
 ---
 

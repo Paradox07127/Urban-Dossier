@@ -25,26 +25,6 @@ jobs:
             -not -path "*/index/*" \
             -print0 | xargs -0 python -m py_compile
 
-  catalog-validate:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Validate rag/catalog.json structure
-        run: |
-          python - <<'PY'
-          import json, sys
-          c = json.load(open("rag/catalog.json"))
-          assert isinstance(c, list) and len(c) >= 17, f"expected >=17 datasets, got {len(c)}"
-          required = {"dataset_id", "dataset_name", "description", "core_columns"}
-          for entry in c:
-              missing = required - entry.keys()
-              assert not missing, f"{entry.get('dataset_id')}: missing {missing}"
-          print(f"catalog.json OK ({len(c)} datasets)")
-          PY
-
   shell-check:
     runs-on: ubuntu-latest
     steps:

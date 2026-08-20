@@ -67,7 +67,6 @@ catalogued but unpublished tool ran.
 | 5 | `walking_isochrone(latitude, longitude, minutes=10)` | GeoJSON polygon reachable on foot within N minutes. |
 | 6 | `simulate_intervention(latitude, longitude, intervention_type, count=1)` | What-if projection for adding bike_lane / park / toilet / linknyc / bus_stop. |
 | 7 | `search_address(query, limit=5)` | Geocode an address or place name to candidate lat/lon. |
-| 8 | `retrieve_dataset_docs(query, dataset_filter=None, top_k=5)` | RAG over dataset documentation - the primary anti-hallucination guard. |
 
 The 18 datasets behind these tools span four categories:
 
@@ -228,7 +227,9 @@ Hard rules the agent must obey:
 - **Never invent dataset names.** Only the 17 listed dataset ids and the
   five category aliases (`safety`, `transit`, `amenities`, `building`,
   `overall`) are valid.
-- **Never invent column names.** When unsure, call `retrieve_dataset_docs`.
+- **Never invent column names.** `query_dataset` returns the queried file's
+  real `columns` on every successful call, and names `available_datasets` in
+  its error when the id is wrong -- read those rather than guessing.
 - **Always cite the dataset.** Every numeric claim and every superlative
   ("most", "fewest", "highest") in the final answer must reference the
   underlying tool call and dataset.

@@ -201,9 +201,9 @@ ECharts 6 保留为报告导出的备选：其零依赖服务端 SVG 渲染可�
 
 - 两套 Agent 并存：[`agent_service.py`](backend/src/urban_dossier_backend/agent_service.py) 的 OpenClaw 专项 agent 为生产路径，[`agent_loop.py`](skills/urban_dossier_analyst/agent_loop.py) 的直连 vLLM ReAct 为实验路径；
 - 防幻觉机制已有实质实现：[`evidence.py`](backend/src/urban_dossier_backend/evidence.py) `verify_priority_actions()` 丢弃引用了不存在 `evidence_id` 的行动项；
-- **RAG 子系统建成但未接线**：[`rag/`](rag/) 下 ingest / embed / vector_index / retrieve / rerank 五件套共约 1,214 行实现完整，`rag/catalog.json` 有 18 条 12 字段元数据（含 `gotchas`、`join_keys`、`sample_queries`），但 backend 与 scripts 中无任何 `import rag`，索引从未构建；
+- ~~**RAG 子系统建成但未接线**~~ **已退役 2026-08-20**：`rag/` 五件套、`retrieve_dataset_docs` 工具与 `embeddings` 服务已删除（`git log -- rag/` 可回溯）。判据是实测：15 个可查数据集的完整真实 schema（106 列，从 Parquet 直接生成）约 400 token，上下文窗口 32,768；而手写的 `rag/catalog.json` 与 `query_dataset` 实际接受的 id **零重叠**，建索引只会把 agent 引向不存在的 dataset_id。理由与门槛见 README「RAG: retired」；
 - [`skills/`](skills/) 中已有完整 prep-data 流水线（discover → clean → report，含 profile / clean / validate 脚本），是数据接入的现成逻辑来源；
-- [`tools.py`](skills/urban_dossier_analyst/tools.py) 中 `compare_neighborhoods`、`walking_isochrone`、`simulate_intervention`、`retrieve_dataset_docs` 为 `NotImplementedError` 桩。
+- [`tools.py`](skills/urban_dossier_analyst/tools.py) 中 `compare_neighborhoods`、`walking_isochrone`、`simulate_intervention` 曾为 `NotImplementedError` 桩（`retrieve_dataset_docs` 已随 RAG 退役删除）。
 
 ### 3.3 数据接入的外部可行性（2026-08-03 实测）
 
@@ -242,7 +242,7 @@ ECharts 6 保留为报告导出的备选：其零依赖服务端 SVG 渲染可�
 | 3.5 | Socrata 接入管线 | Discovery 遍历 → catalog 入库 → `:updated_at` 水位线增量；复用 [`download_socrata_snapshot.py`](scripts/download_socrata_snapshot.py) 的分页校验与断点续传 | 新数据集经 raw-audit 才发布；失败导入进 quarantine |
 | 3.6 | 自动 profile 与语义类型推断 | 含 NYC 空间列检测（lat/lon、BBL、BIN、ZIP、NTA、community board）→ 自动 H3 索引 | 前导零字段不被降级为整数；空间列检出即可出图 |
 | 3.7 | 受控 text-to-SQL | 只读 DuckDB + SELECT 白名单 + 列名校验 + 失败回灌一次 | 所有数值来自 DuckDB 执行结果 |
-| 3.8 | catalog RAG 接线 | 启用现成的 [`rag/`](rag/) 五件套，用于数据集发现与字段理解 | 自然语言描述能召回正确数据集与字段 |
+| ~~3.8~~ | ~~catalog RAG 接线~~ | **已取消 2026-08-20**：RAG 退役。数据集发现改由 `query_dataset` 的错误契约承担——错误里带 `available_datasets` 全量合法 id，实测 agent 一次往返即自纠。字段语义由每次成功调用返回的真实 `columns` 提供 | — |
 | 3.9 | legacy skills 收编 | prep-data 流水线迁移为受控 job；桩工具从模型可见列表移除 | 未实现工具不暴露给模型 |
 
 ### 3.6 接入数据的产品边界
@@ -297,7 +297,7 @@ ECharts 6 保留为报告导出的备选：其零依赖服务端 SVG 渲染可�
 | 5.1 | 确认 NVFP4 MoE 实际启用的后端（读 vLLM 启动日志判断 CUTLASS 或 Marlin 回退） | 下次启动 LLM 时顺带完成；若在走 Marlin 回退则存在未取的性能 **已完成 2026-08-20**：生产 Nano 实际走的就是 `FLASHINFER_CUTLASS`（启动日志 `Using 'FLASHINFER_CUTLASS' NvFp4 MoE backend`、`FlashInferCutlassNvFp4LinearKernel for NVFP4 GEMM`、`arch=sm120`），**没有回退到 Marlin，不存在未取的性能**。查证过程中发现一个更值得答的问题并已一并做掉：MODEL_CANDIDATES 关于 Lightning 的结论是"SM 12.0 上强制 flashinfer_cutlass 正是乱码来源"，而 gpu.env 恰恰对生产 Nano 强制了它。遂做正确性 A/B（同卡共存、除 `--moe-backend` 外参数逐字相同，eval 1.1 ×3，报告 `moe_backend_ab_20260820.json`）：**该结论不适用于 Nano（Nemotron-H）**，cutlass 质量更好——pass_rate 0.931 vs marlin 0.862、pass^3 0.793 vs 0.655；marlin 反而更快（274.6 vs 241.8 tok/s）但质量更差，且 `multiturn-followup-referent` 在 marlin 上 3/3 全败、cutlass 上 3/3 全过（本轮唯一确定性分裂），另有 marlin 编造地名 "Midtown" 触发 place 软检查。**生产维持 cutlass** |
 | 5.2 | vLLM sleep mode 编排：Level 1 权重卸载至 CPU RAM（128 GB 内存充裕） | 采用模型舰队方案后 |
 | 5.3 | 预处理从 pandas 全量物化改为 DuckDB / Polars streaming（吃满 32 核） | 数据集扩展导致刷新耗时上升时 |
-| 5.4 | cuVS 评估门槛上调至百万级向量 | catalog 向量规模实测超过阈值时；当前约 90 chunks，扩展后仍在万级 |
+| ~~5.4~~ | ~~cuVS 评估门槛上调至百万级向量~~ | **已取消 2026-08-20**：随 RAG 退役,本项目已无向量语料,cuVS 没有消费者 |
 | 5.5 | 改写 [`DATA_ARCHITECTURE.md`](DATA_ARCHITECTURE.md) 与 [`PROJECT_PLAN.md`](PROJECT_PLAN.md) 中的 cuSpatial 条目：保留 GeoParquet metadata，移除 cuSpatial 动机 | **已完成 2026-08-03** |
 | 5.6 | 系统盘容量清理（`/` 已用 89%） | 任意时间；数据盘 `/mnt/data` 1.7 TB 可用，不受影响 |
 
@@ -330,7 +330,7 @@ Phase 1a 与 1b 可并行，因为两者文件所有权互斥（后端评分 vs 
 
 以下问题在计划步骤中不得以模糊措辞掩盖，须单独决策后再进入相关阶段：
 
-1. **模型舰队 vs 单大模型独占**。96 GB 下 Nemotron-3-Super-120B（约 77 GB 独占）与"Nano-30B + VLM + embedding + ASR"舰队（约 59 GB，余 35 GB 给 KV 弹性）不可兼得。影响 Phase 3 与 Phase 4 全部排期。可用 sleep mode 做分时折中，但需先确认切换延迟在产品可接受范围内。
+1. **模型舰队 vs 单大模型独占**。96 GB 下 Nemotron-3-Super-120B（约 77 GB 独占）与"Nano-30B + VLM + embedding + ASR"舰队（约 59 GB，余 35 GB 给 KV 弹性）不可兼得。**注（2026-08-20）**：RAG 退役后 embedding 已不再是舰队成员，上述 59 GB 估算需相应下修后再决策。影响 Phase 3 与 Phase 4 全部排期。可用 sleep mode 做分时折中，但需先确认切换延迟在产品可接受范围内。
 2. **building 类别定位**：正式第四维度或独立 Risk Flag。PROJECT_PLAN P0-02 已要求二选一，且是 1.6 权重结构决策的前提。
 3. **四类扩六类后的权重结构**。倾向扩类后等权上线并由敏感性分析兜底，但需产品确认。
 4. **tract 级指标是否最终下沉到 H3 r9**。首版按 1.5 节规则只在 NTA 视图呈现；是否引入带 provenance 的面积/人口加权分配，取决于 1.4 敏感性分析对方差稀释的量化结果。

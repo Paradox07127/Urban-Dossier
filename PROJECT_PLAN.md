@@ -50,7 +50,7 @@ flowchart LR
 - CPU/GPU fallback：保留思路，但改造成显式 Adapter，而不是散落的条件导入。
 - 确定性分析优先于 LLM：分数、趋势和证据必须由分析引擎计算。
 - Evidence 与 schema version：保留并升级为完整 provenance 和 methodology contract。
-- FAISS/cuVS 双路径：保留为 Mac 与 CUDA 环境下的不同实现。
+- ~~FAISS/cuVS 双路径~~：随 RAG 退役（2026-08-20）取消，本项目已无向量语料。
 
 ### 2.3 主要架构债务
 
@@ -185,13 +185,13 @@ backend/src/urban_dossier/
   api/                  # HTTP、认证、请求/响应序列化
   application/          # AnalyzeLocation、Compare、Watchlist、AskAgent
   domain/               # 核心模型与纯业务规则
-  ports/                # LLM、Embedding、VectorIndex、GeoStore、SessionStore
+  ports/                # LLM、GeoStore、SessionStore
   adapters/
     duckdb/
     sqlite/
     mac/
     cuda/
-  jobs/                 # ingest、overview、baseline、RAG index、export
+  jobs/                 # ingest、overview、baseline、export
 ```
 
 先在现有 backend 中渐进迁移，不做大爆炸式改目录。
@@ -324,8 +324,6 @@ cache key 至少包括：
 
 - `AnalyticsAdapter`
 - `LLMAdapter`
-- `EmbeddingAdapter`
-- `VectorIndexAdapter`
 - `SessionStore`
 - `ArtifactStore`
 
@@ -333,13 +331,16 @@ cache key 至少包括：
 
 ### 6.2 Profile 矩阵
 
-| Profile | 分析 | LLM | Embedding/Vector | 用途 |
-| --- | --- | --- | --- | --- |
-| `test` | fixture + DuckDB | stub | in-memory/FAISS fixture | CI 与契约验证 |
-| `mac` | DuckDB/Parquet/H3 | MLX 或 llama.cpp 的 OpenAI-compatible endpoint | CPU embedding + FAISS | 主开发环境 |
-| `cuda-x86` | DuckDB 在线查询；cuDF/cuML 用于适合的批处理 | vLLM | cuVS 或 FAISS | 主生产环境 |
-| `dgx-spark` | DuckDB reference；RAPIDS 仅在 GB10 实测胜出后启用 | DGX-specific vLLM | 当前小语料 CPU exact/FAISS；大语料再评估 cuVS | 独立 ARM64/统一内存部署方案 |
-| `jetson-edge` | 预计算结果/轻量查询 | 小模型或远端兼容 endpoint | FAISS/轻量 index | 后续可选边缘部署 |
+RAG 退役（2026-08-20）后原表的 Embedding/Vector 列已无消费者，整列移除；
+各 profile 的其余取舍不变。
+
+| Profile | 分析 | LLM | 用途 |
+| --- | --- | --- | --- |
+| `test` | fixture + DuckDB | stub | CI 与契约验证 |
+| `mac` | DuckDB/Parquet/H3 | MLX 或 llama.cpp 的 OpenAI-compatible endpoint | 主开发环境 |
+| `cuda-x86` | DuckDB 在线查询；cuDF/cuML 用于适合的批处理 | vLLM | 主生产环境 |
+| `dgx-spark` | DuckDB reference；RAPIDS 仅在 GB10 实测胜出后启用 | DGX-specific vLLM | 独立 ARM64/统一内存部署方案 |
+| `jetson-edge` | 预计算结果/轻量查询 | 小模型或远端兼容 endpoint | 后续可选边缘部署 |
 
 平台验收原则：相同 fixture、snapshot 和 methodology 下，Mac、x86 Linux
 与 DGX Spark 的确定性结果应完全一致或在声明的浮点容差内一致。
@@ -361,7 +362,6 @@ cache key 至少包括：
 - 数据下载与 schema validation；
 - H3/NTA 聚合；
 - baseline 与 percentile；
-- RAG index；
 - 大型 Watchlist refresh；
 - HTML/PDF artifact；
 - 全城 anomaly/change detection。
@@ -415,7 +415,7 @@ provenance；文档/方法说明可以单独建立小型向量索引，禁止逐
 缓存聚合，DuckDB 实测约 4–12 ms，cuDF 约 8–19 ms，因此 FastAPI 继续使用
 DuckDB；RAPIDS 保持隔离的批处理/实验容器。单 GPU、96 GB VRAM 下暂不引入
 Dask-RAPIDS；KvikIO/GDS 只在重复 multi-GB GPU I/O 被 profiler 证明为瓶颈时
-启用；当前约 90 个 catalog/RAG chunks 不使用 cuVS。
+启用。cuVS 已随 RAG 退役（2026-08-20）从计划中移除——本项目不再有向量语料。
 
 Gold overview 已在同一快照上发布：NYC Planning NTA 2020 26B 边界共 262
 个唯一多边形；四个 H3 r8 图层包含 1,171-1,232 个 cell；overall、safety、
@@ -430,7 +430,6 @@ transit、amenities 分别直接覆盖 251、248、248、251 个 NTA。FastAPI �
 2. 定期更新时将大 CSV 清洗器从全量 pandas materialization 改为 DuckDB 或 Polars streaming；GPU 批处理可使用 cuDF-Polars streaming engine。
 3. 为 bike/Open Streets 等线面数据补 GeoParquet metadata，使 GDAL/QGIS/DuckDB spatial 等标准工具链可直接读取。（原文以"引入 cuSpatial"为动机；该库已于 2025-07-28 归档、终版 v25.04，动机作废，空间计算保留在 DuckDB spatial + h3。）
 4. 将 Agent 常用问题固化为 Gold 表和参数化 query templates，避免每次扫描 indexed facts。
-5. 数据和查询规模达到十万级以上向量时再评估 cuVS；当前小索引继续用 CPU exact/FAISS。
 
 ### 7.5 跨平台数据契约
 
@@ -441,7 +440,7 @@ Bronze/Silver/Gold/Serving 分层、18 个 source datasets、44 个 ready Parque
 
 完整规范和迁移差异见 [`DATA_ARCHITECTURE.md`](DATA_ARCHITECTURE.md)。
 
-## 8. Agent 与 RAG 计划
+## 8. Agent 计划
 
 ### 8.1 单一 AgentOrchestrator
 
@@ -460,26 +459,27 @@ Agent 不负责：
 - 使用 stub 工具生成虚假结果；
 - 将文档检索结果当成城市事实。
 
-### 8.2 两层 RAG
+### 8.2 ~~两层 RAG~~ **已退役 2026-08-20**
 
-#### Catalog RAG
+原计划为 Catalog RAG（选数据集、理解字段、规划 join）与 Evidence Retrieval
+（检索已验证事实）两层。**两层都不再建设**，`rag/` 包、`retrieve_dataset_docs`
+工具与 `embeddings` 服务已删除。
 
-用于：
+判据是实测而非偏好：
 
-- 选择数据集；
-- 理解字段；
-- 规划 join；
-- 生成受限查询计划。
+- **规模**：15 个可查数据集的完整真实 schema（106 个列名，从 Parquet 直接
+  生成）约 400 token，上下文窗口 32,768——检索在解决一个不存在的规模问题；
+- **正确性**：手写的 `rag/catalog.json` 与 `query_dataset` 实际接受的 id
+  **零重叠**，索引一旦建成会主动把 agent 引向不存在的 dataset_id；
+- **替代方案已生效**：`query_dataset` 的错误里带 `available_datasets` 全量
+  合法 id，实测 agent 一次往返即自纠。
 
-#### Evidence Retrieval
+Catalog 层的职责由此转移到工具契约本身：错误带词表、成功带真实 `columns`。
+Evidence Retrieval 层的职责本就由 `evidence.py` 的 `verify_priority_actions()`
+和结构化 `evidence_table` 承担，不需要向量检索。
 
-用于：
-
-- 检索 AnalysisRun 中已经验证的事实；
-- 返回 `EvidenceRef`；
-- 将每个 claim 关联到 dataset snapshot 与查询范围。
-
-不要将原始事实表逐行 embedding。结构化数据事实仍由 DuckDB/H3 查询和预聚合生成。
+原则不变且更强：不要将原始事实表逐行 embedding；结构化数据事实由 DuckDB/H3
+查询和预聚合生成。重新评估的门槛见 README「RAG: retired」。
 
 ### 8.3 工具上线门槛
 
@@ -650,7 +650,6 @@ Simulation 上线前置条件：
 - Scoring/trend golden tests。
 - API contract tests。
 - Agent stub tests。
-- RAG retrieval tests。
 - TypeScript typecheck、frontend build 和 unit tests。
 - Node proxy/cache tests。
 - fixture 端到端 smoke test。
@@ -837,7 +836,7 @@ LLM_MOE_BACKEND=flashinfer_cutlass
 | vLLM 独立 GPU 容器 | 保留 | 与 Agent sandbox 解耦，便于独立调优和升级 |
 | NemoClaw + OpenShell | 保留 | 作为 Agent 运行、网络和策略隔离边界 |
 | 专项 OpenClaw Agent | 当前生产入口 | prompt/tool 开销小，端到端链路已经验证 |
-| RAG、cuVS、embedding | 可选 Adapter | 当前 UI/评分/专项 Agent 不依赖，不应阻塞主服务 |
+| ~~RAG、cuVS、embedding~~ | ~~可选 Adapter~~ | **已退役 2026-08-20**，见 8.2 |
 
 工作站与 DGX Spark 是并列 deployment profile。业务代码和契约共享，GPU
 镜像、内存比例、kernel/backend 与启动脚本分别维护：
@@ -870,9 +869,8 @@ LLM_MOE_BACKEND=flashinfer_cutlass
 - OpenClaw roster、workspace、后置 reconcile、token refresh 和 smoke test
   均已进入仓库。
 - 主 README 只描述跨平台架构并路由到两个独立部署 runbook。
-- Ollama 已从当前 backend/health 配置中移除；embedding vLLM 明确为可选。
-- FAISS-CPU 保留为 Mac/test/小型 RAG fallback，但不是当前生产主链路的
-  强制依赖或 CUDA 成功判据。
+- Ollama 已从当前 backend/health 配置中移除；embedding vLLM 已随 RAG 退役删除（2026-08-20）。
+- FAISS-CPU 曾作为 Mac/test/小型 RAG fallback 保留；随 RAG 退役（2026-08-20）一并移除，本项目已无向量检索依赖。
 
 ### 18.4 下一轮唯一建议起点
 

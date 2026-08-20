@@ -72,8 +72,11 @@ agent_loop = _load_submodule("agent_loop")
 
 
 class ToolsListShapeTest(unittest.TestCase):
-    def test_exactly_eight_tools(self) -> None:
-        self.assertEqual(len(tools.TOOLS), 8)
+    def test_exactly_seven_tools(self) -> None:
+        # 8 -> 7 when retrieve_dataset_docs went with the RAG subsystem
+        # (2026-08-20). The count is pinned so a tool cannot appear or vanish
+        # without a deliberate edit here.
+        self.assertEqual(len(tools.TOOLS), 7)
 
     def test_each_tool_has_required_keys(self) -> None:
         expected_names = {
@@ -84,7 +87,6 @@ class ToolsListShapeTest(unittest.TestCase):
             "walking_isochrone",
             "simulate_intervention",
             "search_address",
-            "retrieve_dataset_docs",
         }
         seen_names: set[str] = set()
         for entry in tools.TOOLS:
@@ -139,11 +141,6 @@ class PydanticArgModelsTest(unittest.TestCase):
     def test_search_address_args(self) -> None:
         m = tools.SearchAddressArgs(query="Empire State", limit=3)
         self.assertEqual(m.limit, 3)
-
-    def test_retrieve_dataset_docs_args(self) -> None:
-        m = tools.RetrieveDatasetDocsArgs(query="subway entrances")
-        self.assertEqual(m.top_k, 5)
-        self.assertIsNone(m.dataset_filter)
 
 
 # --------------------------------------------------------------------------- #

@@ -362,36 +362,6 @@ services:
       - qwen3_coder
     <<: *gpu
 
-  embeddings:
-    image: vllm/vllm-openai@sha256:6d8429e38e3747723ca07ee1b17972e09bb9c51c4032b266f24fb1cc3b22ed8f
-    profiles: [inference]
-    restart: unless-stopped
-    ipc: host
-    shm_size: 8g
-    ports:
-      - 127.0.0.1:${EMBEDDING_PORT:-8001}:8001
-    environment:
-      HF_HOME: /root/.cache/huggingface
-    volumes:
-      - ${URBAN_DOSSIER_STATE_ROOT:-/mnt/data/urban-dossier-state}/models/embedding:/model:ro
-      - *hf-cache
-    entrypoint: [vllm]
-    command:
-      - serve
-      - /model
-      - --runner
-      - pooling
-      - --served-model-name
-      - ${EMBEDDING_SERVED_NAME:-Qwen/Qwen3-Embedding-4B}
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8001"
-      - --trust-remote-code
-      - --gpu-memory-utilization
-      - ${EMBEDDING_GPU_MEMORY_UTILIZATION:-0.15}
-    <<: *gpu
-
   rapids-smoke:
     image: rapidsai/base@sha256:c6c8424ecefd77bdf3d4058b42175cdf9f005d3ff3d58f0b8ce18b779ed4c895
     profiles: [gpu-index]

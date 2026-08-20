@@ -32,7 +32,6 @@ const TOOL_LABELS: Record<string, string> = {
   find_similar_neighborhoods: 'similar-neighborhood search',
   walking_isochrone: 'walking routes',
   simulate_intervention: 'intervention projections',
-  retrieve_dataset_docs: 'dataset-document search',
 };
 
 /**

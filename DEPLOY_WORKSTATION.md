@@ -29,7 +29,6 @@ revalidated 2026-08-12:
 /mnt/data/Urban-Dossier/                 Git checkout
 /mnt/data/urban-dossier-state/datasets/raw/    downloaded source data
 /mnt/data/urban-dossier-state/models/llm/      Nemotron model mount
-/mnt/data/urban-dossier-state/models/embedding optional Qwen embedding model
 /mnt/data/urban-dossier-state/hf-cache/         shared Hugging Face cache
 /mnt/data/urban-dossier-state/runtime/          env files and Gateway token
 ```
@@ -37,7 +36,7 @@ revalidated 2026-08-12:
 Create the mutable directories once:
 
 ```bash
-mkdir -p /mnt/data/urban-dossier-state/{datasets/raw,models/llm,models/embedding,hf-cache,runtime}
+mkdir -p /mnt/data/urban-dossier-state/{datasets/raw,models/llm,hf-cache,runtime}
 chmod 700 /mnt/data/urban-dossier-state/runtime
 ```
 
@@ -87,8 +86,10 @@ The workstation data plane is deliberately layered:
 
 Parquet is the canonical analytical interchange format, not the Agent memory
 format. The Agent should query compact score/evidence tables first and drill
-into normalized facts only when it needs supporting rows. Dataset definitions,
-column meanings, update cadence, and source URLs remain in `rag/catalog.json`.
+into normalized facts only when it needs supporting rows. Column names and
+types come from the Parquet files themselves — `query_dataset` returns the
+queried file's real `columns` on every call, and names `available_datasets`
+when the id is wrong.
 
 The validated RAPIDS workstation profile is
 `nvcr.io/nvidia/rapidsai/base:26.06-cuda13-py3.12`. It reads the generated ZSTD
@@ -310,15 +311,8 @@ curl -fsS http://127.0.0.1:8000/health
 curl -fsS http://127.0.0.1:8000/v1/models | python3 -m json.tool
 ```
 
-The optional `embeddings` service is not currently part of the frontend/backend
-critical path. Start it only after mounting its model and following
-[`rag/README.md`](rag/README.md):
-
-```bash
-docker compose \
-  --env-file /mnt/data/urban-dossier-state/runtime/gpu.env \
-  -f deploy/compose.gpu.yml up -d embeddings
-```
+There is no second inference service. The `embeddings` service was removed
+with the RAG subsystem on 2026-08-20 — see README § "RAG: retired".
 
 ## 5. First-time NemoClaw/OpenClaw onboarding
 
@@ -529,7 +523,7 @@ the candidate, run the 8K C1/C4 benchmark and real Agent smoke test, then update
 | The installer prints `[ERROR] Pre-upgrade backup stopped the installer` but exits 0 | Its exit code does not reflect the abort. Read the log, not `$?`. |
 | `nemoclaw <name> status` says `Inference: unhealthy` (`invalid response body`) | **The route is fine; the consumer is not.** A plain `curl` through it works — `nemoclaw urban-dossier-agent exec -- curl -sS https://inference.local/v1/chat/completions -H 'Content-Type: application/json' -d '{"model":"...","messages":[{"role":"user","content":"Say OK"}],"max_tokens":400}'` returns a correct completion — so it is tempting to write the probe off as a false negative. Do not: `/api/agent/ask` fails the same way (see below), which says the probe is reporting something real about how OpenClaw reads these responses. |
 | `/api/agent/ask` returns 200 with `⚠️ Agent couldn't generate a response` | Seen 2026-08-20 on a freshly rebuilt sandbox (OpenClaw v2026.7.1) against Nano. The agent loop is *working* — the trace shows `search_address` and `score_neighborhood` returning real data over 3 iterations — and `nemoclaw urban-dossier-agent logs` shows three **streaming** `/v1/chat/completions` calls routed and allowed. So the model is reached and answers; OpenClaw then reports no usable response. Current hypothesis: it cannot read a Nemotron streaming response whose payload carries `reasoning`. Unconfirmed, and there is no pre-rebuild baseline for this route — the sandbox could not start beforehand. `scripts/test_openclaw_gateway.py` still returns `gateway-route-ok`, so that smoke test does not cover this. |
-| `urban-dossier-embeddings-1` crash-loops on `Invalid repository ID or local directory '/model'` | `models/embedding/` is empty; the weights were never downloaded. Only the standalone `rag/` subsystem uses them, so start the LLM alone — which is what `start_stack.sh --llm` does. |
+| `urban-dossier-embeddings-1` exists at all | A leftover from before RAG was retired on 2026-08-20. The service is gone from `deploy/compose.gpu.yml`; remove the container with `docker rm urban-dossier-embeddings-1`. |
 | `ud-frontend` dies with `ERR_DLOPEN_FAILED` | Wrong Node ABI; see section 6. Start it through `scripts/run_frontend.sh`. |
 
 ## 10. Shutdown

@@ -7,10 +7,8 @@ set -uo pipefail
 
 VLLM_HOST="${VLLM_HOST:-http://localhost:8000}"
 OPENCLAW_GATEWAY_HOST="${OPENCLAW_GATEWAY_HOST:-http://127.0.0.1:18789}"
-EMBEDDING_HOST="${EMBEDDING_HOST:-http://127.0.0.1:8001}"
 BACKEND_HOST="${BACKEND_HOST:-http://localhost:8090}"
 FRONTEND_HOST="${FRONTEND_HOST:-http://localhost:3456}"
-CHECK_EMBEDDINGS="${CHECK_EMBEDDINGS:-0}"
 
 PASS=0
 FAIL=0
@@ -41,12 +39,6 @@ check "OpenClaw health" "${OPENCLAW_GATEWAY_HOST}/health"  ""
 check "Backend health" "${BACKEND_HOST}/api/health"       "ok"
 check "Backend agent"  "${BACKEND_HOST}/api/agent/status" ""
 check "Frontend"       "${FRONTEND_HOST}/api/health"      ""
-
-if [[ "$CHECK_EMBEDDINGS" == "1" ]]; then
-  check "Embedding models" "${EMBEDDING_HOST}/v1/models" "data"
-else
-  printf "  [SKIP] %-30s %s\n" "Embedding models" "optional; set CHECK_EMBEDDINGS=1"
-fi
 
 echo "----------------------------"
 printf "Result: %d passed, %d failed\n" "$PASS" "$FAIL"

@@ -41,7 +41,7 @@ must expose those gaps rather than silently dropping the cases.
 
 ## Model-level: `business_eval.py`
 
-31 cases across eight categories (schema 1.1), run through the REAL
+30 cases across eight categories (schema 1.2), run through the REAL
 production loop (production system prompt, tool schemas, iteration caps,
 observation budgets) pointed at **any OpenAI-compatible endpoint** — the
 seam the service-level runner cannot reach, because the sandbox pins its
@@ -50,7 +50,7 @@ model. Tools dispatch over HTTP loopback to the live backend (`:8090`).
 | Category | Cases | What a failure means |
 |---|---|---|
 | `routing` | 4 | the deterministic intent gate drifted (no model involved) |
-| `tool_call` | 8 | wrong tool, wrong arguments, or geocoding skipped |
+| `tool_call` | 7 | wrong tool, wrong arguments, or geocoding skipped |
 | `evidence` | 7 | uncited claims, invented numbers, places named from memory, or fake confidence where data is absent |
 | `multi_step` | 2 | cannot chain two tools into one comparison |
 | `multi_turn` | 3 | loses the referent, the correction, or the format across turns |
@@ -124,8 +124,8 @@ through `extra_body` automatically.
 
 Statuses: `pass` / `warn` (only a soft check missed — numeric or place
 faithfulness) / `fail` / `skip` (case needs an availability-gated tool that
-is not released — `find_similar_neighborhoods` and `retrieve_dataset_docs`
-today) / `error` (harness or endpoint failure).
+is not released — `find_similar_neighborhoods` today) / `error` (harness
+or endpoint failure).
 
 Each endpoint summary states its own denominator and cost: `cases_executed`
 and `skipped_ids` alongside `pass_rate`, and `wall_total_s` with
@@ -327,9 +327,9 @@ than only in `agent_loop.py`:
 
 - **Repeat guard** — three identical `(tool, args)` calls in a row abort the
   run. It only sees identical arguments.
-- **No-progress guard** — three consecutive iterations calling only lookup
-  tools (`search_address`, `retrieve_dataset_docs`) with no analysis call
-  between them injects a directive naming the analysis tools; ignoring it
+- **No-progress guard** — three consecutive iterations calling only the
+  lookup tool (`search_address`) with no analysis call between them injects
+  a directive naming the analysis tools; ignoring it
   twice more forces an honest wrap-up instead of burning the rest of the
   budget. This is the failure the repeat guard cannot see: on 2026-08-14
   Qwen3.8 geocoded the same place five times with a different spelling each
@@ -341,13 +341,37 @@ read together with `metrics.tools_called` and the turn `kind` — a
 `wrapup_no_progress` turn means the agent was stopped, not that it chose to
 answer.
 
+## Retired: the RAG cases (2026-08-20)
+
+RAG was retired, so the six cases that asserted `retrieve_dataset_docs` went
+with it — one model-level (`tool-dataset-docs-rag`) and five service-level
+(`dataset_column_semantics`, `dataset_discovery_noise`,
+`thin_coverage_explanation`, `methodology_version`,
+`uncertainty_not_confidence`).
+
+Two of them were genuinely about dataset retrieval and are gone for good. The
+other three — coverage, methodology version, sensitivity-vs-confidence — were
+never really retrieval cases; they ask the agent to explain its own
+methodology, and were wired to `retrieve_dataset_docs` only because the RAG
+corpus was going to carry the methodology docs. That intent is worth having
+back as no-tool cases answered from the prompt and the payload. They were not
+rewritten here because inventing expectations nobody has measured is the
+failure mode this corpus exists to prevent: a new case has to be written
+against observed behaviour, not against hope.
+
 ## Maintenance
 
 - Changing a case, a threshold, or a grader is an eval-set version event:
   bump `schema_version` in the corpus you changed and note it here.
-  Comparisons are only valid within one version. Current: **1.1** (adds
-  `turns`, `fault_injection`, `place_faithfulness`); harness **2.0**, which
-  the report records as `harness_version`.
+  Comparisons are only valid within one version. Current: **1.2** (drops
+  the RAG-gated case when RAG was retired on 2026-08-20; 1.1 added `turns`,
+  `fault_injection`, `place_faithfulness`); harness **2.0**, which the report
+  records as `harness_version`.
+
+  1.2 changes the denominator: 31 cases became 30, so a 1.2 `pass_rate` is
+  not comparable with a 1.1 one even though no surviving case was touched.
+  The service-level corpus moved 1.0 → 1.1 in the same change, 24 cases to
+  19.
 - Numbers from schema 1.0 runs are **not** comparable with 1.1: the
   numeric-faithfulness grader was loosened to recognise derived figures, and
   every stored 1.0 artifact predates both the trajectory capture and the

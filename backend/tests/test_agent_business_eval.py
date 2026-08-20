@@ -14,10 +14,13 @@ evaluation = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(evaluation)
 
 
-def test_fixed_corpus_has_24_cases_and_all_business_intents():
+def test_fixed_corpus_has_19_cases_and_all_business_intents():
+    # 24 -> 19 at schema 1.1: the five cases gated on the retired RAG index
+    # were removed on 2026-08-20. All four intents still have coverage, which
+    # is the property this case actually defends.
     corpus = evaluation.load_corpus(ROOT / "evals" / "agent" / "business_cases.json")
 
-    assert len(corpus["cases"]) == 24
+    assert len(corpus["cases"]) == 19
     assert {case["intent"] for case in corpus["cases"]} == evaluation.VALID_INTENTS
 
 
@@ -34,7 +37,6 @@ def test_grade_case_accepts_required_order_and_evidence():
         "answer": "The comparison is supported by both score payloads.",
         "tools_called": [
             {"name": "search_address"},
-            {"name": "retrieve_dataset_docs"},
             {"name": "search_address"},
             {"name": "compare_neighborhoods"},
         ],
@@ -85,7 +87,7 @@ def test_empty_all_tools_means_no_tool_calls_expected():
 
 def test_validate_corpus_rejects_unknown_tool():
     corpus = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "cases": [
             {
                 "id": f"case-{number}",

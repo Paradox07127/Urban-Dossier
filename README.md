@@ -13,8 +13,8 @@ profiles instead of assuming one NVIDIA machine.
 
 | Profile | Role | Inference | Data/vector path | Status |
 | --- | --- | --- | --- | --- |
-| `cuda-x86` | Primary production/workstation | Docker vLLM + Nemotron NVFP4 | DuckDB/Parquet; optional cuVS | Base stack validated 2026-08-02; vLLM revalidated 2026-08-12 |
-| `dgx-spark` | GB10 deployment | DGX-specific vLLM launcher | RAPIDS/cuVS-capable | Preserved independently |
+| `cuda-x86` | Primary production/workstation | Docker vLLM + Nemotron NVFP4 | DuckDB/Parquet | Base stack validated 2026-08-02; vLLM revalidated 2026-08-12 |
+| `dgx-spark` | GB10 deployment | DGX-specific vLLM launcher | RAPIDS-capable | Preserved independently |
 | `mac` | Development and UI work | Optional MLX/llama.cpp endpoint | DuckDB + CPU vector index | Development profile |
 | `test` | CI/contract checks | Stub or disabled | Small fixtures | Planned baseline |
 
@@ -64,8 +64,7 @@ workstation:
 ```bash
 cd /mnt/data/Urban-Dossier
 
-# LLM only. The embedding service is optional and is not part of the current
-# frontend/backend critical path.
+# The production LLM. It is the only inference service this stack runs.
 docker compose \
   --env-file /mnt/data/urban-dossier-state/runtime/gpu.env \
   -f deploy/compose.gpu.yml up -d llm
@@ -110,8 +109,7 @@ bash scripts/download_datasets.sh /mnt/data/urban-dossier-state/datasets/raw
 Processed Parquet files used by the backend live under `data/ready/` in the
 repository. Raw downloads live outside Git on the second SSD. Dataset source
 IDs, URLs, filenames, and resume behavior are encoded in
-[`scripts/download_datasets.sh`](scripts/download_datasets.sh); semantic RAG
-metadata is in [`rag/catalog.json`](rag/catalog.json).
+[`scripts/download_datasets.sh`](scripts/download_datasets.sh).
 
 The overview map additionally needs NYC Planning's official NTA 2020 boundary
 and generated Gold score layers:
@@ -185,18 +183,30 @@ remaining promotion gates.
 The scripts in `scripts/vllm/` are the separate DGX Spark launch profile. See
 [`scripts/vllm/README.md`](scripts/vllm/README.md) before using them.
 
-## RAG and vector index status
+## RAG: retired 2026-08-20
 
-RAG is not currently on the dedicated agent's critical path. Its index adapter
-supports cuVS and FAISS:
+There is no retrieval subsystem, no embedding service, and no vector index.
+The `rag/` package, the `retrieve_dataset_docs` tool, and the `embeddings`
+service in `deploy/compose.gpu.yml` were removed; `git log -- rag/` still has
+them if the decision is ever revisited.
 
-- `cuVS`: preferred for a validated CUDA deployment and larger indexes;
-- `faiss-cpu`: valid Mac/test/small-corpus fallback, not required merely to run
-  the current frontend, deterministic backend, or dedicated agent.
+The measurement that settled it: the complete real schema of all 15 queryable
+datasets — every dataset id and all 106 columns, generated from the Parquet
+files themselves — is about **400 tokens**, against a 32,768-token context
+window. Retrieval was solving a scale problem this corpus does not have. The
+hand-written `rag/catalog.json` had meanwhile drifted to **zero** identifier
+overlap with what `query_dataset` actually accepts, so an index built from it
+would have sent the agent to dataset ids that do not exist.
 
-The optional embedding vLLM service is declared in `deploy/compose.gpu.yml` but
-is intentionally not started by the default LLM-only command. See
-[`rag/README.md`](rag/README.md) before enabling it.
+The failure it was meant to prevent — a wrong `dataset_id` — is handled by the
+tool contract instead: `query_dataset` returns `available_datasets` in its
+error, and the agent re-issues the call. Observed live, one wasted call, right
+answer.
+
+Reconsider if a future corpus needs more than a few thousand tokens of
+*descriptive* text to select from. CDC PLACES (~40 indicators) plus City Health
+Dashboard (37) in EXPANSION_PLAN 1.5 would be the first candidate, and even
+those estimate to roughly 3k tokens.
 
 ## Architecture rules
 
@@ -241,9 +251,8 @@ outstanding half of the convergence.
 | `query_dataset` | `/api/dataset/query` | working |
 | `walking_isochrone` | `/api/isochrone` | working, needs the walking graph built |
 | `simulate_intervention` | `/api/simulate` | working, needs the elasticity fit built |
-| `retrieve_dataset_docs` | `rag.retrieve` | unavailable until the vector index is built |
 
-The schema catalog keeps all eight names stable, while each Agent request sees
+The schema catalog keeps all seven names stable, while each Agent request sees
 only tools whose release artifacts pass validation. `/api/agent/status`
 publishes the sanitized decision and the UI hides suggestions that cannot run
 in the current deployment.
@@ -263,7 +272,6 @@ per host and ignored by Git — see [`DEPLOY_WORKSTATION.md`](DEPLOY_WORKSTATION
 | FastAPI | `127.0.0.1:8090` | proxied by Node |
 | vLLM LLM | `:8000` | loopback/Docker bridge policy |
 | OpenClaw Gateway | `127.0.0.1:18789` | authenticated loopback forward |
-| vLLM embeddings | `127.0.0.1:8001` | optional, currently stopped |
 
 ## Configuration
 

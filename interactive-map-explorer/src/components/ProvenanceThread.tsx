@@ -85,10 +85,6 @@ function summarize(entry: AgentTrace): { text: string; score?: number } {
       const n = Array.isArray(r.results) ? r.results.length : 0;
       return { text: `${n} address ${n === 1 ? 'match' : 'matches'}` };
     }
-    case 'retrieve_dataset_docs': {
-      const n = Array.isArray(r.hits) ? r.hits.length : 0;
-      return { text: `${n} documentation ${n === 1 ? 'snippet' : 'snippets'}` };
-    }
     default:
       return { text: 'result captured' };
   }

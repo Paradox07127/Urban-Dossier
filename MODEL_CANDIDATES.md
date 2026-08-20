@@ -95,7 +95,7 @@ python3 scripts/vllm/ab_bench.py \
   --output /tmp/ab_bench.json
 
 # Super alone (stop everything else on the GPU first):
-docker compose ... stop llm llm-lightning embeddings
+docker compose ... stop llm llm-lightning
 docker compose ... --profile candidate-super up -d llm-super
 python3 scripts/vllm/ab_bench.py \
   --endpoint super=http://127.0.0.1:8003 --output /tmp/super_bench.json
@@ -136,7 +136,7 @@ python3 scripts/vllm/ab_bench.py \
 - The production vLLM image is upgraded and digest-pinned, but the served model
   and NemoClaw/OpenShell route still point to Nano. Lightning promotion is
   therefore **not complete**.
-- The embedding service and Super service are optional and stopped in the
+- The Super service is optional and stopped in the
   2026-08-12 review snapshot; Nano `:8000` and Lightning `:8002` were online.
 - Validated image: `vllm/vllm-openai:v0.27.1` =
   `sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967`

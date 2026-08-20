@@ -14,6 +14,34 @@ hygiene. The project now also has a separately validated x86 NVIDIA workstation
 profile; platform-specific tuning remains isolated while both profiles share
 the same application and data contracts.
 
+### Removed — RAG retired (2026-08-20)
+
+- Removed the `rag/` package (ingest / embed / vector_index / retrieve /
+  rerank, plus `catalog.json`), the `retrieve_dataset_docs` tool, the
+  `embeddings` vLLM service in `deploy/compose.gpu.yml`, the `catalog-validate`
+  CI job, and the six eval cases gated on the RAG index. `git log -- rag/`
+  still has all of it.
+- The decision rests on three measurements, not on preference:
+  - the complete real schema of all 15 queryable datasets — 106 columns,
+    generated from the Parquet files — is ~400 tokens against a 32,768-token
+    context window, so retrieval was solving a scale problem this corpus does
+    not have;
+  - `rag/catalog.json`'s dataset ids had drifted to **zero** overlap with what
+    `query_dataset` accepts, so an index built from it would have routed the
+    agent to identifiers that do not exist;
+  - the failure RAG was meant to prevent is already handled by the tool
+    contract — `query_dataset` returns `available_datasets` in its error and
+    the agent re-issues. Observed live: one wasted call, correct answer.
+- Eval corpora bumped for the changed denominator: model-level 1.1 → 1.2
+  (31 → 30 cases), service-level 1.0 → 1.1 (24 → 19). Cross-version
+  comparisons are invalid even though no surviving case was edited.
+- Historical measurement records in `MODEL_CANDIDATES.md` that mention the
+  retired tool were deliberately left intact: they describe runs that really
+  happened while it existed.
+- Reconsider only if a future corpus needs more than a few thousand tokens of
+  *descriptive* text to select from. Threshold and reasoning in README
+  § "RAG: retired".
+
 ### Added — x86 workstation and data publication (2026-08-02)
 
 - Added the x86 deployment runbook, Docker vLLM profile, dedicated NemoClaw /

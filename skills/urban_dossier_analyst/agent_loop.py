@@ -323,8 +323,6 @@ def _summarize_result(tool_name: str, result: dict[str, Any]) -> str:
         return f"{len(result.get('neighbors', []))} neighbor(s) returned"
     if tool_name == "query_dataset":
         return f"{result.get('total', 0)} row(s) for dataset_id={result.get('dataset_id')}"
-    if tool_name == "retrieve_dataset_docs":
-        return f"{len(result.get('hits', []))} doc snippet(s)"
     return "tool result captured"
 
 

@@ -84,8 +84,8 @@ if [[ $STATUS_ONLY -eq 0 ]]; then
 
   if [[ $WITH_LLM -eq 1 ]]; then
     say "starting vLLM (production Nano, :8000)"
-    # The embeddings service shares this compose profile but has no weights on
-    # this host (models/embedding is empty), so start the LLM service alone.
+    # `llm` by name rather than the whole profile: the profile also carries
+    # candidate-model services that must not come up on a normal start.
     docker compose --env-file "$STATE_ROOT/runtime/gpu.env" \
       -f "$REPO_ROOT/deploy/compose.gpu.yml" --profile inference up -d llm
     echo "  weights take ~1-2 min to load; probed below"

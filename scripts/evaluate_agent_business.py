@@ -31,7 +31,6 @@ VALID_TOOLS = {
     "walking_isochrone",
     "simulate_intervention",
     "search_address",
-    "retrieve_dataset_docs",
 }
 
 
@@ -42,11 +41,16 @@ def load_corpus(path: Path) -> dict[str, Any]:
 
 
 def validate_corpus(corpus: dict[str, Any]) -> None:
-    if corpus.get("schema_version") != "1.0":
-        raise ValueError("business corpus schema_version must be '1.0'")
+    if corpus.get("schema_version") != "1.1":
+        raise ValueError("business corpus schema_version must be '1.1'")
     cases = corpus.get("cases")
-    if not isinstance(cases, list) or not 20 <= len(cases) <= 30:
-        raise ValueError("business corpus must contain 20 to 30 cases")
+    # Floor lowered 20 -> 15 at schema 1.1. Retiring RAG took five cases with
+    # it (24 -> 19), a real 21% loss of coverage rather than a tidy-up: three
+    # of the five asked the agent to explain its own methodology and are worth
+    # re-adding as no-tool cases. The floor is a guard against the corpus
+    # being gutted, so it is lowered deliberately and not removed.
+    if not isinstance(cases, list) or not 15 <= len(cases) <= 30:
+        raise ValueError("business corpus must contain 15 to 30 cases")
 
     ids: set[str] = set()
     for index, case in enumerate(cases):
@@ -234,7 +238,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES)
     source = parser.add_mutually_exclusive_group()
-    source.add_argument("--base-url", help="Live service root, for example http://127.0.0.1:8001")
+    source.add_argument("--base-url", help="Live service root, for example http://127.0.0.1:8090")
     source.add_argument("--responses", type=Path, help="Previously collected JSONL responses")
     parser.add_argument("--output", type=Path, default=ROOT / "evals" / "results" / "agent-business.jsonl")
     parser.add_argument("--token")
