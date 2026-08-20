@@ -187,6 +187,57 @@ request errored or any prompt did not complete — a partial set skews every
 per-second number in the report. Both write their report either way:
 partial numbers are worth reading, just not worth deciding on.
 
+## LLM judge (semantic assertions)
+
+The deterministic graders check what a regex can see, and that is not the
+same as the answer being right: in the 2026-08-15 3-way run, an
+otherwise-correct refusal that called East Village coordinates "Upper West
+Side" passed every check. Cases opt into a semantic check with:
+
+```json
+"expect": {
+  "judge": {"criteria": "<what must hold, in plain language>",
+            "mode": "soft"}
+}
+```
+
+and a run supplies the judge endpoint:
+
+```bash
+# live: judge each attempt as it is graded
+python3 scripts/vllm/business_eval.py --endpoint a=... --judge http://127.0.0.1:8000
+
+# cheapest use: re-judge a finished run's stored answers -- one LLM call
+# per judged case, no agent runs
+python3 scripts/vllm/business_eval.py --regrade run.responses.jsonl \
+    --judge http://127.0.0.1:8000 --output rejudged.json
+```
+
+Rules, all deliberate:
+
+- **`grade_case` stays pure.** The judge is a separate layer; a run without
+  `--judge` grades exactly as before, and the graders stay unit-testable
+  without a model.
+- **Escalation only tightens.** `mode: soft` (default) downgrades a `pass`
+  to `warn`; `mode: hard` fails the case and records `judge: <reason>` as a
+  failure. A judge *pass* never upgrades anything, and a judge *error*
+  (endpoint down, malformed verdict) never changes status — an unavailable
+  judge cannot turn a run green or red. The verdict or error is recorded
+  under `judge` in the case record either way.
+- **Verdicts persist.** Live-run verdicts are written into the responses
+  JSONL, so a plain `--regrade` (no `--judge`) carries them at zero model
+  cost.
+- **The judge model is recorded** in the report header (`judge: {url,
+  model}`). Judging a model with itself is acceptable for
+  criterion-checking (the criterion names the ground truth), but say so
+  when reading results.
+- Single-turn cases only for now; a judge block on a multi-turn case is
+  ignored.
+
+Pilot cases: `robust-out-of-coverage` (must not attribute the LA
+coordinates to a named place) and `robust-ambiguous-place` (must not
+resolve "Main Street" without a tool actually resolving it).
+
 ## Multi-turn and fault injection (schema 1.1)
 
 A case carries either `prompt` or `turns`, never both. `turns` is a list of

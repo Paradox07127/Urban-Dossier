@@ -451,6 +451,139 @@ def grade_case(case: dict[str, Any], response: dict[str, Any]) -> dict[str, Any]
 
 
 # --------------------------------------------------------------------------- #
+# LLM judge
+# --------------------------------------------------------------------------- #
+#
+# The deterministic graders above check what a regex can see, and that is not
+# the same thing as the answer being right: an otherwise-correct refusal that
+# called East Village coordinates "Upper West Side" passed every check. Cases
+# opt in with an `expect.judge` block --
+#
+#   "judge": {"criteria": "<what must hold, in plain language>",
+#             "mode": "soft" | "hard"}          (mode defaults to soft)
+#
+# -- and a judge endpoint is supplied at the CLI (--judge URL). The judge is
+# a separate layer on purpose: grade_case stays pure and unit-testable
+# without a model, and a run without --judge grades exactly as before. Judge
+# verdicts are written into the --responses JSONL, so a later --regrade
+# without --judge carries them at zero model cost, while --regrade WITH
+# --judge re-judges stored answers -- one cheap LLM call per case instead of
+# a full agent run.
+
+JUDGE_SYSTEM = (
+    "You are grading one answer from an NYC urban-analysis agent against one "
+    "specific criterion. Judge ONLY the stated criterion -- not style, length, "
+    "or anything else. The tool results shown are the ground truth; the answer "
+    "may only claim what they (or the question itself) support.\n"
+    "Respond with a single JSON object and nothing else: "
+    '{"verdict": "pass" | "fail", "reason": "<one sentence>"}'
+)
+
+
+def build_judge_messages(
+    case: dict[str, Any], response: dict[str, Any]
+) -> tuple[str, str]:
+    """Assemble the judge's (system, user) messages. Pure."""
+    criteria = (case.get("expect", {}).get("judge") or {}).get("criteria", "")
+    digest = trace_digest(response.get("trace"))
+    user = (
+        f"CRITERION:\n{criteria}\n\n"
+        f"QUESTION:\n{case.get('prompt', '')}\n\n"
+        f"TOOL RESULTS (digest):\n{json.dumps(digest, ensure_ascii=False, default=str)}\n\n"
+        f"EVIDENCE:\n{json.dumps(response.get('evidence') or [], ensure_ascii=False, default=str)}\n\n"
+        f"ANSWER UNDER REVIEW:\n{response.get('answer') or ''}"
+    )
+    return JUDGE_SYSTEM, user
+
+
+def parse_judge_verdict(text: str) -> dict[str, Any]:
+    """Extract {"verdict", "reason"} from judge output. Pure.
+
+    Raises ValueError on anything that does not contain a JSON object with a
+    pass/fail verdict -- a judge that cannot follow its own output contract
+    must surface as a judge error, never as a grade.
+    """
+    parsed = _extract_json(text or "")
+    if not isinstance(parsed, dict):
+        raise ValueError(f"judge returned no JSON object: {text[:200]!r}")
+    verdict = str(parsed.get("verdict", "")).strip().lower()
+    if verdict not in ("pass", "fail"):
+        raise ValueError(f"judge verdict must be pass|fail, got {parsed.get('verdict')!r}")
+    return {"verdict": verdict, "reason": str(parsed.get("reason", "")).strip()}
+
+
+def apply_judge(record: dict[str, Any], judge: dict[str, Any]) -> dict[str, Any]:
+    """Fold a judge result into a graded record. Pure.
+
+    Escalation only ever tightens: a judge pass never upgrades a failed
+    record, and a judge ERROR (endpoint down, contract violation) never
+    changes status at all -- an unavailable judge must not be able to turn a
+    red run green or a green run red.
+    """
+    record["judge"] = judge
+    if judge.get("error") or judge.get("verdict") != "fail":
+        return record
+    reason = judge.get("reason") or "criterion not met"
+    if judge.get("mode") == "hard":
+        record["status"] = "fail"
+        record.setdefault("failures", []).append(f"judge: {reason}")
+    elif record.get("status") == "pass":
+        record["status"] = "warn"
+    return record
+
+
+def call_judge(
+    base_url: str, model: str, system: str, user: str, timeout: int = 180
+) -> str:
+    """One deterministic chat call to the judge endpoint. Impure, thin.
+
+    max_tokens is generous because reasoning models spend the budget thinking
+    before the JSON appears -- the agent's own Gateway turn failed at
+    stopReason=length for exactly this reason (2026-08-20).
+    """
+    payload = json.dumps(
+        {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0,
+            "max_tokens": 4096,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        f"{base_url}/v1/chat/completions",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as resp:
+        body = json.loads(resp.read().decode("utf-8"))
+    return body["choices"][0]["message"].get("content") or ""
+
+
+def judge_response(
+    case: dict[str, Any], response: dict[str, Any], judge_cfg: dict[str, str]
+) -> dict[str, Any]:
+    """Run the judge over one raw response. Returns the judge record.
+
+    Never raises: judge unavailability is data ({"error": ...}), because a
+    grading run must survive its judge the same way it survives its model.
+    """
+    spec = case.get("expect", {}).get("judge") or {}
+    mode = spec.get("mode", "soft")
+    try:
+        system, user = build_judge_messages(case, response)
+        verdict = parse_judge_verdict(
+            call_judge(judge_cfg["url"], judge_cfg["model"], system, user)
+        )
+    except Exception as exc:  # noqa: BLE001 - judge failure is a data point
+        return {"mode": mode, "model": judge_cfg.get("model"),
+                "error": f"{type(exc).__name__}: {exc}"}
+    return {**verdict, "mode": mode, "model": judge_cfg.get("model")}
+
+
+# --------------------------------------------------------------------------- #
 # Execution
 # --------------------------------------------------------------------------- #
 
@@ -886,7 +1019,9 @@ def summarize(results: list[dict[str, Any]], repeat: int) -> dict[str, Any]:
 
 
 def regrade_responses(
-    path: Path, cases_by_id: dict[str, dict[str, Any]]
+    path: Path,
+    cases_by_id: dict[str, dict[str, Any]],
+    judge_cfg: dict[str, str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Re-grade a stored --responses JSONL with the CURRENT graders.
 
@@ -894,6 +1029,11 @@ def regrade_responses(
     can be re-run over every past decision without paying for the model
     time again -- and, more importantly, without the models having drifted
     underneath the comparison.
+
+    Judge verdicts: with judge_cfg the judge is re-run live over each stored
+    answer (one cheap LLM call per case, no agent runs); without it, a
+    verdict stored in the JSONL row is re-applied deterministically, so a
+    plain regrade stays zero-model.
     """
 
     by_endpoint: dict[str, dict[str, list]] = {}
@@ -945,6 +1085,13 @@ def regrade_responses(
                 entry.get("wall_s", 0.0),
                 entry.get("usage") or {},
             )
+            if case.get("expect", {}).get("judge"):
+                if judge_cfg:
+                    record = apply_judge(
+                        record, judge_response(case, entry["response"], judge_cfg)
+                    )
+                elif entry.get("judge"):
+                    record = apply_judge(record, entry["judge"])
         else:
             continue
         bucket["attempts"].setdefault(case["id"], []).append(record)
@@ -1144,6 +1291,17 @@ def main() -> int:
         help="grade a previously collected --responses JSONL instead of "
              "calling any model. Costs no GPU time.",
     )
+    parser.add_argument(
+        "--judge", default=None, metavar="URL",
+        help="endpoint for the LLM judge (cases opt in via expect.judge). "
+             "With --regrade, re-judges stored answers -- one cheap LLM call "
+             "per case instead of a full agent run. Without this flag, judge "
+             "verdicts stored in the JSONL are carried through unchanged.",
+    )
+    parser.add_argument(
+        "--judge-model", default=None, metavar="NAME",
+        help="model name for --judge (default: discovered from its /v1/models)",
+    )
     args = parser.parse_args()
     if args.repeat < 1:
         parser.error("--repeat must be >= 1")
@@ -1163,6 +1321,17 @@ def main() -> int:
         }
     except (ValueError, json.JSONDecodeError, OSError) as exc:
         parser.error(f"--sampling: {exc}")
+
+    judge_cfg: dict[str, str] | None = None
+    if args.judge:
+        judge_url = args.judge.rstrip("/")
+        judge_model = args.judge_model
+        if judge_model is None:
+            try:
+                judge_model = get_model_id(judge_url)
+            except OSError as exc:
+                parser.error(f"--judge endpoint unreachable at {judge_url}: {exc}")
+        judge_cfg = {"url": judge_url, "model": judge_model}
 
     spec = json.loads(Path(args.cases).read_text(encoding="utf-8"))
     cases = spec["cases"]
@@ -1198,6 +1367,8 @@ def main() -> int:
         "tool_availability": sorted(available),
         "endpoints": {},
     }
+    if judge_cfg:
+        report["judge"] = dict(judge_cfg)
 
     routing_cases = [c for c in cases if c["category"] == "routing"]
     model_cases = [c for c in cases if c["category"] != "routing"]
@@ -1209,7 +1380,7 @@ def main() -> int:
     if args.regrade:
         by_id = {c["id"]: c for c in model_cases}
         for endpoint_name, endpoint_report in regrade_responses(
-            Path(args.regrade), by_id
+            Path(args.regrade), by_id, judge_cfg
         ).items():
             endpoint_report["results"] = (
                 list(routing_results) + endpoint_report["results"]
@@ -1283,6 +1454,16 @@ def main() -> int:
                         "failures": [f"{type(exc).__name__}: {exc}"],
                     }
                     raw = {"case_id": case["id"], "error": str(exc)}
+                if (
+                    judge_cfg
+                    and "response" in raw
+                    and case.get("expect", {}).get("judge")
+                ):
+                    judge = judge_response(case, raw["response"], judge_cfg)
+                    record = apply_judge(record, judge)
+                    # Into the JSONL row too, so a later plain --regrade can
+                    # carry this verdict without a model.
+                    raw["judge"] = judge
                 attempts.append(record)
                 if responses_fh is not None:
                     responses_fh.write(

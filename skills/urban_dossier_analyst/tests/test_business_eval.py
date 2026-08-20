@@ -21,6 +21,8 @@ sys.path.insert(0, str(REPO_ROOT / "scripts" / "vllm"))
 from business_eval import (  # noqa: E402
     FAULT_MODES,
     SAMPLING_PROFILES,
+    apply_judge,
+    build_judge_messages,
     case_turns,
     classify_numbers,
     failure_reasons,
@@ -30,6 +32,7 @@ from business_eval import (  # noqa: E402
     load_place_vocabulary,
     merge_attempts,
     merge_turn_records,
+    parse_judge_verdict,
     regrade_responses,
     resolve_sampling_spec,
     run_routing_case,
@@ -53,7 +56,7 @@ KNOWN_EXPECT_KEYS = {
     "answer_regex_all", "answer_regex_any", "answer_forbidden_regex",
     "citation_required", "evidence_list_required", "json_answer_keys",
     "max_sentences", "either", "no_numbers_without_tools",
-    "numeric_faithfulness", "place_faithfulness",
+    "numeric_faithfulness", "place_faithfulness", "judge",
 }
 
 
@@ -891,3 +894,85 @@ def test_summary_states_its_denominator_and_cost():
     assert summary["skipped_ids"] == ["c"]
     assert summary["wall_total_s"] == 10.0
     assert summary["output_tok_per_s"] == 60.0
+
+
+# --------------------------------------------------------------------------- #
+# LLM judge
+# --------------------------------------------------------------------------- #
+
+
+def test_parse_judge_verdict_accepts_plain_and_fenced_json():
+    assert parse_judge_verdict('{"verdict": "pass", "reason": "ok"}') == {
+        "verdict": "pass",
+        "reason": "ok",
+    }
+    fenced = 'Sure.\n```json\n{"verdict": "FAIL", "reason": "named UWS"}\n```'
+    assert parse_judge_verdict(fenced) == {"verdict": "fail", "reason": "named UWS"}
+
+
+def test_parse_judge_verdict_rejects_contract_violations():
+    with pytest.raises(ValueError):
+        parse_judge_verdict("I think it passes.")
+    with pytest.raises(ValueError):
+        parse_judge_verdict('{"verdict": "maybe", "reason": "?"}')
+    with pytest.raises(ValueError):
+        parse_judge_verdict("")
+
+
+def test_apply_judge_soft_fail_downgrades_pass_to_warn_only():
+    record = {"status": "pass", "failures": []}
+    out = apply_judge(record, {"verdict": "fail", "reason": "r", "mode": "soft"})
+    assert out["status"] == "warn"
+    assert out["failures"] == []  # soft never invents a hard failure
+    # ... and an already-failed record is not resurrected or altered.
+    record = {"status": "fail", "failures": ["x"]}
+    out = apply_judge(record, {"verdict": "fail", "reason": "r", "mode": "soft"})
+    assert out["status"] == "fail" and out["failures"] == ["x"]
+
+
+def test_apply_judge_hard_fail_fails_and_names_the_reason():
+    record = {"status": "pass", "failures": []}
+    out = apply_judge(record, {"verdict": "fail", "reason": "named UWS", "mode": "hard"})
+    assert out["status"] == "fail"
+    assert out["failures"] == ["judge: named UWS"]
+
+
+def test_apply_judge_pass_and_error_change_nothing():
+    for judge in (
+        {"verdict": "pass", "reason": "fine", "mode": "hard"},
+        {"error": "OSError: down", "mode": "hard"},
+    ):
+        record = {"status": "pass", "failures": []}
+        out = apply_judge(record, judge)
+        assert out["status"] == "pass" and out["failures"] == []
+        assert out["judge"] == judge  # the verdict/error is still recorded
+
+
+def test_build_judge_messages_carries_criterion_answer_and_evidence():
+    case = {
+        "prompt": "Score latitude 34.05, longitude -118.24.",
+        "expect": {"judge": {"criteria": "Must not name a specific city."}},
+    }
+    response = {
+        "answer": "Those coordinates are on the Upper West Side.",
+        "evidence": [{"source": "search_address", "detail": "0 results"}],
+        "trace": [{"iteration": 0, "tool_name": "search_address",
+                   "args": {"query": "34.05"}, "result": {"results": []}}],
+    }
+    system, user = build_judge_messages(case, response)
+    assert "single JSON object" in system
+    assert "Must not name a specific city." in user
+    assert "Upper West Side" in user
+    assert "search_address" in user
+
+
+def test_judge_cases_in_the_shipped_set_are_well_formed():
+    judged = [c for c in CASES["cases"] if c.get("expect", {}).get("judge")]
+    assert judged, "the shipped set should carry at least one judge pilot case"
+    for case in judged:
+        spec = case["expect"]["judge"]
+        assert spec.get("criteria", "").strip(), case["id"]
+        assert spec.get("mode", "soft") in ("soft", "hard"), case["id"]
+        assert "turns" not in case, (
+            f"{case['id']}: judge is single-turn only for now"
+        )
