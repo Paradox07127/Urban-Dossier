@@ -1,5 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
-import { Box, Layers, Pause, Play, Search, Shield, TramFront, UtensilsCrossed, X } from 'lucide-react';
+import {
+  Box,
+  Globe2,
+  Layers,
+  Map as MapIcon,
+  Pause,
+  Play,
+  Search,
+  Shield,
+  TramFront,
+  UtensilsCrossed,
+  X,
+} from 'lucide-react';
 import {
   classBreaks,
   classColor,
@@ -230,7 +242,7 @@ export default function InstrumentRail({
               aria-label="Show all of New York"
               className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
             >
-              <Layers className="h-4 w-4" />
+              <Globe2 className="h-4 w-4" />
             </button>
           </div>
         )}
@@ -255,7 +267,7 @@ export default function InstrumentRail({
                       : 'text-muted-foreground hover:bg-muted hover:text-foreground'
                   }`}
                 >
-                  {isSandbox ? <Box className="h-3.5 w-3.5" /> : <Layers className="h-3.5 w-3.5" />}
+                  {isSandbox ? <Box className="h-3.5 w-3.5" /> : <MapIcon className="h-3.5 w-3.5" />}
                   {isSandbox ? 'Model' : 'Map'}
                 </button>
               ))}
@@ -264,7 +276,7 @@ export default function InstrumentRail({
         )}
 
         {/* --- Lens ----------------------------------------------------- */}
-        <div className="p-2" role="group" aria-label="Colour the city by">
+        <div className="p-2" role="group" aria-label="Colour the city by one measure">
           <div className="ud-label mb-1.5 px-1">Colour by</div>
           <div className="flex flex-col gap-0.5">
             {LENSES.map(({ tag: t, label, icon: Icon }) => (
@@ -283,13 +295,25 @@ export default function InstrumentRail({
                 {label}
               </button>
             ))}
+          </div>
+        </div>
+
+        {/* --- Cross-views ---------------------------------------------
+            Not lenses. Each of these replaces the single-measure rendering
+            with a different construction -- two measures crossed, or one
+            measure over time -- and swaps the legend below for its own. They
+            are grouped apart because choosing one is a different decision
+            from choosing which measure to colour by. */}
+        <div className="border-t border-border p-2" role="group" aria-label="Cross-views">
+          <div className="ud-label mb-1.5 px-1">Cross-views</div>
+          <div className="flex flex-col gap-1">
             {bivariatePresentation && (
               <button
                 type="button"
                 onClick={() => onBivariateChange(!bivariate)}
                 aria-pressed={bivariate}
                 aria-label="Safety by Transit bivariate map"
-                className={`mt-1 flex items-center gap-2.5 rounded-md border px-2 py-1.5 text-left text-[13px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${
+                className={`flex items-center gap-2.5 rounded-md border px-2 py-1.5 text-left text-[13px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${
                   bivariate
                     ? 'border-foreground bg-foreground text-background'
                     : 'border-border text-foreground hover:bg-muted'
@@ -310,7 +334,7 @@ export default function InstrumentRail({
               onClick={() => onTimelineChange(!timeline)}
               aria-pressed={timeline}
               aria-label="Collision timeline map"
-              className={`mt-1 flex items-center gap-2.5 rounded-md border px-2 py-1.5 text-left text-[13px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${
+              className={`flex items-center gap-2.5 rounded-md border px-2 py-1.5 text-left text-[13px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${
                 timeline
                   ? 'border-foreground bg-foreground text-background'
                   : 'border-border text-foreground hover:bg-muted'
