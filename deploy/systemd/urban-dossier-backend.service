@@ -12,6 +12,16 @@ ExecStartPre=/mnt/data/Urban-Dossier/scripts/refresh_openclaw_gateway_token.sh
 ExecStart=/mnt/data/Urban-Dossier/.venv/bin/python /mnt/data/Urban-Dossier/.venv/bin/uvicorn urban_dossier_backend.app:app --app-dir /mnt/data/Urban-Dossier/backend/src --host 127.0.0.1 --port 8090
 Restart=on-failure
 RestartSec=3s
+# The ExecStartPre pair above is a hard gate: no gateway token, no agent, so
+# the unit refuses to start rather than serve a backend whose /api/agent/*
+# routes are dead.  Without a start limit that gate turns into an unbounded
+# retry -- when the gateway's mTLS material was rotated out from under the
+# client on 2026-08-15, this unit re-ran it 23150 times over two days and the
+# only visible symptom was a journal full of certificate errors.  Five
+# attempts is enough to ride out a slow gateway start; after that the unit
+# sits in `failed` where `systemctl --user status` shows it.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Install]
 WantedBy=default.target

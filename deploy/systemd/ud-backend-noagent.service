@@ -1,0 +1,25 @@
+[Unit]
+Description=Urban Dossier backend (no agent sandbox)
+After=network-online.target
+Wants=network-online.target
+PartOf=ud-stack.target
+
+[Service]
+Type=simple
+WorkingDirectory=/mnt/data/Urban-Dossier
+# backend.env ships URBAN_DOSSIER_AGENT_ENABLED=1 for the full-stack unit;
+# this one runs the same code with the agent off, so it needs neither the
+# OpenClaw gateway nor a sandbox to start.  The override is a second
+# EnvironmentFile and not an Environment= line for the reason documented in
+# noagent.env -- an Environment= override here would be silently discarded.
+EnvironmentFile=/mnt/data/urban-dossier-state/runtime/backend.env
+EnvironmentFile=/mnt/data/Urban-Dossier/deploy/systemd/noagent.env
+ExecStart=/mnt/data/Urban-Dossier/.venv/bin/python /mnt/data/Urban-Dossier/.venv/bin/uvicorn urban_dossier_backend.app:app --app-dir /mnt/data/Urban-Dossier/backend/src --host 127.0.0.1 --port 8090
+Restart=on-failure
+RestartSec=3s
+# A backend that cannot start will not be fixed by a 23000th attempt.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Install]
+WantedBy=ud-stack.target

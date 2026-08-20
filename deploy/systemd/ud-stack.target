@@ -1,0 +1,9 @@
+[Unit]
+Description=Urban Dossier local stack (backend + frontend)
+# The everyday development/demo topology: the deterministic DuckDB backend on
+# 8090 and the map frontend on 3456.  Deliberately does NOT pull in the agent
+# sandbox or vLLM -- those are started explicitly (scripts/start_stack.sh --llm).
+Wants=ud-backend-noagent.service ud-frontend.service
+
+[Install]
+WantedBy=default.target

@@ -351,7 +351,38 @@ writes the Gateway token to a mode-0600 runtime file.
 See [`deploy/openclaw/README.md`](deploy/openclaw/README.md) for the routing
 workaround and recovery details.
 
-## 6. Install the persistent FastAPI service
+## 6. Start the stack
+
+### The everyday path: one command
+
+```bash
+scripts/start_stack.sh          # backend :8090 + frontend :3456
+scripts/start_stack.sh --llm    # ... and the production vLLM on :8000
+scripts/start_stack.sh --status # report only, change nothing
+```
+
+This installs `ud-backend-noagent.service`, `ud-frontend.service` and
+`ud-stack.target` from `deploy/systemd/` into `~/.config/systemd/user/`,
+starts them, and probes every endpoint. It is idempotent — run it again after
+a reboot, a `git pull`, or a unit-file edit.
+
+`ud-backend-noagent` is the same FastAPI app as the unit in the next section
+with `URBAN_DOSSIER_AGENT_ENABLED=0`, which drops the OpenClaw gateway from
+the startup path. Use it whenever you are working on the map, the data plane
+or the frontend; use the full unit below only when you actually need the
+agent sandbox. Both bind 8090, so only one of them runs at a time.
+
+Two failures this path exists to prevent, both of which cost a session:
+
+- **The frontend must not run under `/usr/bin/node`.** `better-sqlite3` is a
+  native addon and loads only under the Node ABI it was built against; this
+  host has four Node installs and the one first on `PATH` is the wrong one.
+  `scripts/run_frontend.sh` probes for a Node that can require the addon.
+- **The topology has to live on disk.** It used to be reconstructed from
+  memory as a pair of `systemd-run` command lines, which meant it vanished on
+  reboot and came back subtly different each time.
+
+### Install the persistent full-stack (agent) service
 
 ```bash
 cp deploy/backend.env.example /mnt/data/urban-dossier-state/runtime/backend.env
@@ -377,7 +408,7 @@ curl -fsS http://127.0.0.1:8090/api/agent/status | python3 -m json.tool
 
 ```bash
 npm --prefix interactive-map-explorer run build
-node server.js
+scripts/run_frontend.sh   # NOT `node server.js` -- see section 6
 ```
 
 Open `http://<workstation-lan-ip>:3456` from another LAN device. `127.0.0.1`
