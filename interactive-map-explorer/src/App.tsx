@@ -3,22 +3,12 @@
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { motion, AnimatePresence, Reorder } from 'motion/react';
+import { motion, AnimatePresence } from 'motion/react';
 import {
-  AlertCircle,
-  Bus,
-  ChevronRight,
-  Download,
-  Globe,
   Loader2,
   Maximize2,
   Minimize2,
   Pin,
-  Search,
-  ShieldCheck,
-  Sun,
-  Utensils,
-  Wind,
   X,
 } from 'lucide-react';
 
@@ -33,17 +23,17 @@ import type {
   AgentStatus,
   BivariatePresentation,
   TimelinePresentation,
-  PriorityAction,
   RadiusMeters,
   Scores,
 } from './types';
 
-const EMPTY_HOTSPOTS: any[] = [];
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import MethodologyPanel from './components/MethodologyPanel';
-import VegaChart from './components/VegaChart';
+import Inspector from './components/Inspector';
 import { useComparison } from './features/compare/useComparison';
+
+// Stable identity: a fresh [] each render would restart the map's hotspot
+// layer on every state change.
+const EMPTY_HOTSPOTS: any[] = [];
 
 // --- Constants ---
 
@@ -54,14 +44,6 @@ const NYC_LANDMARKS: Record<string, [number, number]> = {
   'brooklyn bridge': [40.7061, -73.9969],
   'empire state': [40.7484, -73.9857],
 };
-
-const PRIORITY_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
-  Amenities: Utensils,
-  Transit: Bus,
-  Safety: ShieldCheck,
-};
-
-const RADIUS_OPTIONS: RadiusMeters[] = [200, 500, 1000];
 
 // --- Utils ---
 
@@ -141,11 +123,6 @@ function scoreTextStyle(score: number | null | undefined): React.CSSProperties {
      as-is. The previous multiply-by-0.7 darkening is what turned mid scores
      into mud. */
   return { color: `rgb(${r}, ${g}, ${b})` };
-}
-
-function scoreColor(score: number | null | undefined): string {
-  if (score == null) return 'text-muted-foreground';
-  return ''; // handled by inline style now
 }
 
 function summarizeEvidence(e: EvidenceEntry): string {
@@ -244,7 +221,7 @@ export default function App() {
   const [zoom, setZoom] = useState(NYC_OVERVIEW_ZOOM);
   const [selectedTarget, setSelectedTarget] = useState<SelectedTarget | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [priorities, setPriorities] = useState(['Amenities', 'Transit', 'Safety']);
+  const [priorities] = useState(['Amenities', 'Transit', 'Safety']);
   const [activePriority, setActivePriority] = useState<string | null>(null);
   const [selectedRadiusM, setSelectedRadiusM] = useState<RadiusMeters>(200);
   const [preview, setPreview] = useState<DetailPreviewResponse | null>(null);
@@ -255,6 +232,52 @@ export default function App() {
   const [exportLoading, setExportLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [panelExpanded, setPanelExpanded] = useState(false);
+  /* Inspector width, in px, at the md breakpoint and up. The presets the
+     expand button used to toggle between are the two ends of the same scale,
+     so it now sets this value rather than switching a class. */
+  const PANEL_MIN_W = 420;
+  const PANEL_DEFAULT_W = 680;
+  const [panelWidth, setPanelWidth] = useState(PANEL_DEFAULT_W);
+  const [panelDragging, setPanelDragging] = useState(false);
+
+  const clampPanelWidth = React.useCallback((width: number) => {
+    // Leave the map a usable strip no matter how far the handle is dragged.
+    const max = Math.max(PANEL_MIN_W, window.innerWidth - 360);
+    return Math.round(Math.min(max, Math.max(PANEL_MIN_W, width)));
+  }, []);
+
+  // A drag is a window-level gesture: the pointer routinely leaves the 6px
+  // handle mid-move, and releasing outside the window must still end it.
+  useEffect(() => {
+    if (!panelDragging) return;
+    const onMove = (event: PointerEvent) => {
+      event.preventDefault();
+      setPanelWidth(clampPanelWidth(window.innerWidth - event.clientX));
+    };
+    const onUp = () => setPanelDragging(false);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    // Without this the drag selects the panel's text as it passes over it.
+    const previousSelect = document.body.style.userSelect;
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+      document.body.style.userSelect = previousSelect;
+      document.body.style.cursor = '';
+    };
+  }, [panelDragging, clampPanelWidth]);
+
+  // A window that shrinks below the current width would push the map off
+  // screen entirely.
+  useEffect(() => {
+    const onResize = () => setPanelWidth((width) => clampPanelWidth(width));
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [clampPanelWidth]);
   const [refreshKey, setRefreshKey] = useState(0);
 
   // Report cache: keep both types per location
@@ -294,8 +317,6 @@ export default function App() {
     }, 900);
     return () => window.clearInterval(timer);
   }, [timeline, timelinePlaying, timelinePresentation]);
-
-  const reportRef = useRef<HTMLDivElement>(null);
 
   const renderTag = (activePriority ? activePriority.toLowerCase() : 'general') as 'general' | 'safety' | 'transit' | 'amenities';
   const display = useMemo(
@@ -465,10 +486,6 @@ export default function App() {
     setSearchQuery('');
   };
 
-  const handleSearchKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') handleSearch();
-  };
-
   const handleMapClick = (lat: number, lng: number) => {
     const currentZoom = zoomRef.current;
     setCenter([lat, lng]);
@@ -610,22 +627,10 @@ export default function App() {
   };
 
   const scores = preview?.scores ?? display?.scores;
-  const metricScores = preview?.metric_scores;
-  const buildingFlags = preview?.detail_items?.building_flags ?? [];
-  const evidenceTable = preview?.evidence_table ?? [];
-  const priorityActions = preview?.priority_actions ?? [];
 
-  // Extract hidden data for Neighborhood Insights
-  const enrichedContext = preview?.enriched_context as Record<string, any> | undefined;
-  const currentState = preview?.current_state as Record<string, any> | undefined;
-  const baselines = preview?.baselines as Record<string, any> | undefined;
-  const whyNow = preview?.why_now as Array<{ signal: string; trend_type: string }> | undefined;
+  // The map paints hotspots itself; everything else the inspector reads
+  // straight off the preview.
   const hotspots = preview?.detail_items?.hotspots as Array<any> | undefined;
-  const nearestParks = enrichedContext?.nearest_parks as string[] | undefined;
-  const treeHealth = enrichedContext?.tree_health as Record<string, number> | undefined;
-  const restaurantHL = enrichedContext?.restaurant_highlights as Record<string, any> | undefined;
-  const violationAge = enrichedContext?.violation_age as Record<string, number> | undefined;
-  const collisionBuckets = enrichedContext?.collision_time_buckets as Record<string, number> | undefined;
 
   const reportMarkdown = finalReport?.report_markdown || '';
   const reportBlocks = useMemo(
@@ -642,12 +647,15 @@ export default function App() {
   }, [scores?.overall]);
 
   return (
-    <div className="relative h-screen w-full overflow-hidden bg-background text-foreground font-sans">
+    <div
+      className="relative h-screen w-full overflow-hidden bg-background text-foreground font-sans"
+      style={{ '--ud-panel-w': `${panelWidth}px` } as React.CSSProperties}
+    >
       {/* Map */}
       <div
-        className={`absolute inset-0 transition-all duration-300 ease-in-out ${
-          display ? (panelExpanded ? 'md:pr-[55vw]' : 'md:pr-[680px]') : ''
-        }`}
+        className={`absolute inset-0 ease-in-out ${
+          panelDragging ? '' : 'transition-all duration-300'
+        } ${display ? 'md:pr-[var(--ud-panel-w)]' : ''}`}
       >
         <MapComponent
           center={center}
@@ -788,11 +796,49 @@ export default function App() {
                different points in that lag and the panel appeared to arrive
                twice. The CSS transition is only wanted for the expand toggle,
                which is a width change. */
-            className={`absolute right-0 top-0 h-full w-full min-h-0 backdrop-blur-xl border-l border-border shadow-xl z-20 flex flex-col transition-[width] duration-300 ${
-              panelExpanded ? 'md:w-[55vw]' : 'md:w-[680px]'
+            className={`absolute right-0 top-0 h-full w-full min-h-0 backdrop-blur-xl border-l border-border shadow-xl z-20 flex flex-col md:w-[var(--ud-panel-w)] ${
+              panelDragging ? '' : 'transition-[width] duration-300'
             }`}
             style={{ backgroundColor: `rgba(255,255,255,0.95)`, ...panelBgStyle }}
           >
+            {/* Drag to resize. A separator with keyboard support rather
+                than a bare div, because resizing is the only way to read the
+                wider charts and it must not be mouse-only. */}
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize inspector"
+              aria-valuenow={panelWidth}
+              aria-valuemin={PANEL_MIN_W}
+              tabIndex={0}
+              onPointerDown={(event) => {
+                event.preventDefault();
+                setPanelDragging(true);
+              }}
+              onDoubleClick={() => setPanelWidth(PANEL_DEFAULT_W)}
+              onKeyDown={(event) => {
+                const step = event.shiftKey ? 96 : 24;
+                if (event.key === 'ArrowLeft') {
+                  event.preventDefault();
+                  setPanelWidth((width) => clampPanelWidth(width + step));
+                } else if (event.key === 'ArrowRight') {
+                  event.preventDefault();
+                  setPanelWidth((width) => clampPanelWidth(width - step));
+                } else if (event.key === 'Home') {
+                  event.preventDefault();
+                  setPanelWidth(clampPanelWidth(PANEL_DEFAULT_W));
+                }
+              }}
+              className="absolute left-0 top-0 z-30 hidden h-full w-1.5 -translate-x-1/2 cursor-col-resize md:block focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-ring"
+              title="Drag to resize · double-click to reset"
+            >
+              <span
+                className={`pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 transition-colors ${
+                  panelDragging ? 'bg-foreground/40' : 'bg-transparent'
+                }`}
+              />
+            </div>
+
             {/* Panel header */}
             <div className="px-5 py-4 flex items-start justify-between border-b border-border/60 gap-3">
               <div className="min-w-0 flex-1">
@@ -808,7 +854,15 @@ export default function App() {
                   available={agentStatus?.enabled ?? false}
                 />
                 <button
-                  onClick={() => setPanelExpanded(!panelExpanded)}
+                  onClick={() => {
+                    const next = !panelExpanded;
+                    setPanelExpanded(next);
+                    setPanelWidth(
+                      clampPanelWidth(
+                        next ? window.innerWidth * 0.55 : PANEL_DEFAULT_W,
+                      ),
+                    );
+                  }}
                   className="p-2 hover:bg-muted rounded-md hidden md:flex"
                 >
                   {panelExpanded ? (
@@ -873,511 +927,33 @@ export default function App() {
                 )}
               </AnimatePresence>
 
-              <div className="p-5 space-y-5">
-                {/* Compare bar */}
-                {pinnedPreview && preview && comparisonActive && (
-                  <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold uppercase tracking-wider text-primary">Compare</span>
-                      <button onClick={clearComparison} className="text-xs text-muted-foreground hover:text-foreground">Clear pin</button>
-                    </div>
-                    <div className="grid grid-cols-3 gap-2 text-center text-xs">
-                      <div className="font-medium text-muted-foreground truncate" title={pinnedTitle}>{pinnedTitle}</div>
-                      <div></div>
-                      <div className="font-medium text-muted-foreground truncate" title={display?.title}>{display?.title}</div>
-                    </div>
-                    {(['overall', 'safety', 'transit', 'amenities'] as const).map((cat) => {
-                      const pScore = serverComparison?.point_a.scores?.[cat as keyof Scores];
-                      const cScore = serverComparison?.point_b.scores?.[cat as keyof Scores];
-                      const pVal = typeof pScore === 'number' ? pScore : null;
-                      const cVal = typeof cScore === 'number' ? cScore : null;
-                      // Backend-computed; local subtraction is not a fallback,
-                      // because a silently different delta path is worse than
-                      // a briefly absent chip. Chip colours are the ramp's own
-                      // poles -- green/red is banned here for the same reason
-                      // it is banned on the map.
-                      const rawDelta = serverComparison?.deltas?.[cat];
-                      const diff = typeof rawDelta === 'number' ? Math.round(rawDelta) : null;
-                      const deltaStops = serverComparison?.delta_map?.presentation.stops ?? [];
-                      const negativeColor = deltaStops[0]?.color ?? '#e66101';
-                      const positiveColor = deltaStops[deltaStops.length - 1]?.color ?? '#5e3c99';
-                      return (
-                        <div key={cat} className="grid grid-cols-3 gap-2 text-center text-sm tabular-nums">
-                          <span className="font-bold" style={scoreTextStyle(pVal)}>{pVal ?? '--'}</span>
-                          <span className="text-xs text-muted-foreground self-center capitalize">{cat}</span>
-                          <span className="font-bold" style={scoreTextStyle(cVal)}>
-                            {cVal ?? '--'}
-                            {diff != null && diff !== 0 && (
-                              <span
-                                className="text-[10px] ml-1"
-                                style={{ color: diff > 0 ? positiveColor : negativeColor }}
-                              >
-                                {diff > 0 ? '+' : ''}{diff}
-                              </span>
-                            )}
-                          </span>
-                        </div>
-                      );
-                    })}
-                    {serverComparison?.delta_map && (
-                      <div
-                        className="space-y-1.5 border-t border-primary/15 pt-2"
-                        aria-label="Comparison delta map legend"
-                      >
-                        <div className="flex items-center justify-between font-mono text-[10px] text-muted-foreground">
-                          <span>Map · B − A · {renderTag === 'general' ? 'overall' : renderTag}</span>
-                          <span>{serverComparison.delta_map.presentation.palette}</span>
-                        </div>
-                        <div className="flex h-2 overflow-hidden rounded-full border border-black/5">
-                          {serverComparison.delta_map.presentation.stops.map((stop) => (
-                            <span
-                              key={stop.value}
-                              className="flex-1"
-                              style={{ backgroundColor: stop.color }}
-                              title={`${stop.value > 0 ? '+' : ''}${stop.value}`}
-                            />
-                          ))}
-                        </div>
-                        <div className="flex justify-between font-mono text-[9px] text-muted-foreground/80">
-                          <span>B lower</span><span>same</span><span>B higher</span>
-                        </div>
-                      </div>
-                    )}
-                    {serverComparison?.chart_specs?.compare_scores && (
-                      <VegaChart chart={serverComparison.chart_specs.compare_scores} />
-                    )}
-                  </div>
-                )}
-
-                {/* The radius is a parameter of this reading, not of the map, so
-                    it sits with the number it produces. Changing it visibly
-                    changes the score directly beneath it. */}
-                <div className="mb-3 flex items-center justify-between">
-                  <span className="ud-label">Measured within</span>
-                  <div
-                    className="flex gap-0.5 rounded-md border border-border bg-muted/40 p-0.5"
-                    role="group"
-                    aria-label="Analysis radius"
-                  >
-                    {RADIUS_OPTIONS.map((r) => (
-                      <button
-                        key={r}
-                        type="button"
-                        onClick={() => setSelectedRadiusM(r)}
-                        aria-pressed={selectedRadiusM === r}
-                        className={`rounded-[4px] px-2.5 py-1 font-mono text-[11px] tabular-nums transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${
-                          selectedRadiusM === r
-                            ? 'bg-foreground text-background'
-                            : 'text-muted-foreground hover:text-foreground'
-                        }`}
-                      >
-                        {r} m
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Score cards — 2x2 grid */}
-                <div className="grid grid-cols-2 gap-3">
-                  {/* Overall score - spans full width */}
-                  <div
-                    className="col-span-2 rounded-md border px-5 py-4 flex items-center justify-between"
-                    style={scoreGradientStyle(scores?.overall)}
-                  >
-                    <div>
-                      <div className="text-sm font-semibold text-foreground">Overall score</div>
-                      <div className="text-xs text-muted-foreground">
-                        public tier for this address and its surroundings
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <span
-                        className="ud-display text-3xl leading-none"
-                        style={scoreTextStyle(scores?.overall)}
-                      >
-                        {preview?.score_uncertainty?.public_tier?.label ?? 'Not tiered'}
-                      </span>
-                      <div className="mt-1 font-mono text-[10px] text-muted-foreground">
-                        {preview?.score_uncertainty?.public_tier
-                          ? `95% range ${preview.score_uncertainty.score_range[0]}–${preview.score_uncertainty.score_range[1]} · point estimate ${formatScore(scores?.overall)}`
-                          : `point estimate ${formatScore(scores?.overall)} · uncertainty unavailable`}
-                      </div>
-                    </div>
-                  </div>
-                  {/* Category scores — one per cell */}
-                  {priorities.map((label) => {
-                    const scoreMap: Record<string, number | null | undefined> = {
-                      Amenities: scores?.amenities,
-                      Transit: scores?.transit,
-                      Safety: scores?.safety,
-                    };
-                    const Icon = PRIORITY_ICONS[label];
-                    const val = scoreMap[label];
-                    return (
-                      <div
-                        key={label}
-                        className="rounded-md border px-4 py-3 flex items-center gap-3"
-                        style={scoreGradientStyle(val)}
-                      >
-                        <Icon className="w-5 h-5 text-muted-foreground flex-shrink-0" />
-                        <div className="min-w-0">
-                          <div
-                            className="ud-display text-[1.75rem] tabular-nums leading-none"
-                            style={scoreTextStyle(val)}
-                          >
-                            {formatScore(val)}
-                          </div>
-                          <div className="text-xs text-muted-foreground mt-0.5">
-                            {label}
-                            {/* Evidence coverage: a one-source score must not
-                                dress like a five-source one. Shown only when
-                                thin, so full coverage stays quiet. */}
-                            {(() => {
-                              const cov = preview?.score_coverage?.[label.toLowerCase()];
-                              if (!cov || cov.available == null || cov.total == null) return null;
-                              if (cov.available >= cov.total) return null;
-                              return (
-                                <span
-                                  className="ml-1.5 font-mono text-[10px] tabular-nums text-amber-700 dark:text-amber-500"
-                                  title={`Missing: ${(cov.missing ?? []).join(', ')}`}
-                                >
-                                  {cov.available}/{cov.total} sources
-                                </span>
-                              );
-                            })()}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                  {typeof (metricScores?.nyccas_no ?? scores?.environment) === 'number' && (
-                    <div
-                      className="col-span-2 rounded-md border px-4 py-3 flex items-center gap-3"
-                      style={scoreGradientStyle(metricScores?.nyccas_no ?? scores?.environment)}
-                    >
-                      <Wind className="h-5 w-5 shrink-0 text-muted-foreground" />
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm font-semibold text-foreground">
-                          {environmentTier(metricScores?.nyccas_no ?? scores?.environment)}
-                        </div>
-                        <div className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
-                          NYCCAS 2023–24 annual-average model · context only, 0% of overall
-                        </div>
-                      </div>
-                      <div className="text-right font-mono text-[10px] text-muted-foreground">
-                        relative score {formatScore(metricScores?.nyccas_no ?? scores?.environment)}/100
-                      </div>
-                    </div>
-                  )}
-                  {typeof metricScores?.heat_vulnerability === 'number' && (
-                    <div
-                      className="col-span-2 rounded-md border px-4 py-3 flex items-center gap-3"
-                      style={scoreGradientStyle(metricScores.heat_vulnerability)}
-                    >
-                      <Sun className="h-5 w-5 shrink-0 text-muted-foreground" />
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm font-semibold text-foreground">
-                          {heatVulnerabilityTier(metricScores.heat_vulnerability)}
-                        </div>
-                        <div className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
-                          NYC DOHMH mortality-risk quintile · ZCTA 2020 · context only, 0% of overall
-                        </div>
-                      </div>
-                      <div className="text-right font-mono text-[10px] text-muted-foreground">
-                        relative score {formatScore(metricScores.heat_vulnerability)}/100
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {preview?.chart_specs?.score_composition && (
-                  <VegaChart chart={preview.chart_specs.score_composition} />
-                )}
-                {preview?.chart_specs?.score_distribution && (
-                  <VegaChart chart={preview.chart_specs.score_distribution} />
-                )}
-
-                {/* Building Risk Flag -- P0-02's resolution. Status colours
-                    per the dataviz rules: reserved semantics, shipped with an
-                    icon and a label, never colour alone. `none` renders as a
-                    quiet line and `unknown` says "no data" -- a flag that
-                    only ever appears when something is wrong trains people to
-                    forget it exists. */}
-                {preview?.building_risk_flag && (() => {
-                  const flag = preview.building_risk_flag;
-                  const STYLE: Record<string, { color: string; icon: string; label: string }> = {
-                    serious: { color: '#d03b3b', icon: '⬢', label: 'Serious building risk' },
-                    elevated: { color: '#ec835a', icon: '⬢', label: 'Elevated building risk' },
-                    watch: { color: '#b8860b', icon: '⬡', label: 'Building watch' },
-                    none: { color: 'var(--muted-foreground, #777)', icon: '○', label: 'No building risk signals' },
-                    unknown: { color: 'var(--muted-foreground, #777)', icon: '◌', label: 'Building risk: no data' },
-                  };
-                  const style = STYLE[flag.level] ?? STYLE.unknown;
-                  return (
-                    <div
-                      className="rounded-md border px-4 py-2.5 text-sm"
-                      style={{ borderColor: flag.level === 'none' || flag.level === 'unknown' ? undefined : style.color }}
-                      title={flag.reasons.join('; ')}
-                    >
-                      <span className="font-semibold" style={{ color: style.color }}>
-                        {style.icon} {style.label}
-                      </span>
-                      {flag.level !== 'none' && flag.level !== 'unknown' && (
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          {flag.reasons.join(' · ')}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
-
-                {/* Method footer: version + the door to item 1.6's page. */}
-                <div className="flex items-center justify-between font-mono text-[10px] text-muted-foreground/70">
-                  <span>
-                    {preview?.score_uncertainty
-                      ? `methodology v${preview.score_uncertainty.methodology_version} · percentile within NYC`
-                      : 'percentile within NYC'}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setMethodologyOpen(true)}
-                    className="underline decoration-dotted underline-offset-2 hover:text-foreground"
-                  >
-                    how scores work
-                  </button>
-                </div>
-
-                {/* Neighborhood Insights — surfacing hidden backend data */}
-                {!loading && preview && enrichedContext && (
-                  <div className="space-y-3">
-                    <h3 className="ud-label">
-                      Neighborhood Insights
-                    </h3>
-
-                    {/* Why Now — trend alerts */}
-                    {whyNow && whyNow.length > 0 && (
-                      <div className="rounded-xl border border-amber-300/50 bg-amber-50/50 dark:bg-amber-950/20 px-4 py-3">
-                        <div className="text-xs font-semibold text-amber-700 dark:text-amber-400 mb-1">Trend Alert</div>
-                        {whyNow.map((w, i) => (
-                          <div key={i} className="text-xs text-amber-800 dark:text-amber-300">
-                            {w.signal} — {w.trend_type}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Key stats grid */}
-                    <div className="grid grid-cols-2 gap-2">
-                      {/* EMS response time */}
-                      {currentState?.safety?.ems_avg_response_seconds != null && (
-                        <div className="rounded-lg border bg-card px-3 py-2">
-                          <div className="text-lg font-bold tabular-nums">
-                            {Math.round(currentState.safety.ems_avg_response_seconds / 60)}m {Math.round(currentState.safety.ems_avg_response_seconds % 60)}s
-                          </div>
-                          <div className="text-[10px] text-muted-foreground">EMS Response Avg</div>
-                        </div>
-                      )}
-                      {/* Fire response time */}
-                      {currentState?.safety?.fire_avg_response_seconds != null && (
-                        <div className="rounded-lg border bg-card px-3 py-2">
-                          <div className="text-lg font-bold tabular-nums">
-                            {Math.round(currentState.safety.fire_avg_response_seconds / 60)}m {Math.round(currentState.safety.fire_avg_response_seconds % 60)}s
-                          </div>
-                          <div className="text-[10px] text-muted-foreground">Fire Response Avg</div>
-                        </div>
-                      )}
-                      {/* Trees */}
-                      {currentState?.amenities?.tree_count_500m != null && (
-                        <div className="rounded-lg border bg-card px-3 py-2">
-                          <div className="text-lg font-bold tabular-nums">{currentState.amenities.tree_count_500m}</div>
-                          <div className="text-[10px] text-muted-foreground">
-                            Street Trees
-                            {treeHealth ? ` (${Object.entries(treeHealth).map(([k, v]) => `${v} ${k.toLowerCase()}`).join(', ')})` : ''}
-                          </div>
-                        </div>
-                      )}
-                      {/* Parks */}
-                      {currentState?.amenities?.park_acres_zip_proxy != null && currentState.amenities.park_acres_zip_proxy > 0 && (
-                        <div className="rounded-lg border bg-card px-3 py-2">
-                          <div className="text-lg font-bold tabular-nums">{currentState.amenities.park_acres_zip_proxy} ac</div>
-                          <div className="text-[10px] text-muted-foreground">
-                            Park Area{nearestParks?.length ? `: ${nearestParks.slice(0, 2).join(', ')}` : ''}
-                          </div>
-                        </div>
-                      )}
-                      {/* Restaurants */}
-                      {currentState?.amenities?.restaurant_count_500m != null && currentState.amenities.restaurant_count_500m > 0 && (
-                        <div className="rounded-lg border bg-card px-3 py-2">
-                          <div className="text-lg font-bold tabular-nums">{currentState.amenities.restaurant_count_500m}</div>
-                          <div className="text-[10px] text-muted-foreground">
-                            Restaurants
-                            {currentState.amenities.restaurant_critical_rate_500m > 0
-                              ? ` (${Math.round(currentState.amenities.restaurant_critical_rate_500m * 100)}% critical)`
-                              : ''}
-                          </div>
-                        </div>
-                      )}
-                      {/* Building violations age */}
-                      {violationAge?.avg_age_days != null && violationAge.avg_age_days > 0 && (
-                        <div className="rounded-lg border bg-card px-3 py-2">
-                          <div className="text-lg font-bold tabular-nums">
-                            {Math.round(violationAge.avg_age_days / 365)}yr
-                          </div>
-                          <div className="text-[10px] text-muted-foreground">
-                            Avg Violation Age
-                            {violationAge.older_than_2yr ? ` (${violationAge.older_than_2yr} &gt;2yr)` : ''}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Hotspot alert */}
-                    {hotspots && hotspots.length > 0 && (
-                      <div className="rounded-xl border border-red-300/50 bg-red-50/50 dark:bg-red-950/20 px-4 py-3">
-                        <div className="text-xs font-semibold text-red-700 dark:text-red-400">
-                          {hotspots.length} Incident Hotspot{hotspots.length > 1 ? 's' : ''} Detected
-                        </div>
-                        <div className="text-[10px] text-red-600 dark:text-red-300 mt-0.5">
-                          Spatial clustering of incidents found within analysis radius
-                        </div>
-                      </div>
-                    )}
-
-                    {preview?.chart_specs?.recent_trends && (
-                      <VegaChart chart={preview.chart_specs.recent_trends} />
-                    )}
-                  </div>
-                )}
-
-                {/* Priority actions */}
-                {!loading && priorityActions.length > 0 && (
-                  <div className="space-y-2">
-                    <h3 className="ud-label">
-                      Priority Actions
-                    </h3>
-                    <div className="space-y-2">
-                      {priorityActions.slice(0, 3).map((action) => (
-                        <div
-                          key={`${action.signal}-${action.rank}`}
-                          className="rounded-xl border border-border/50 bg-card px-4 py-3 hover:shadow-sm transition-shadow"
-                        >
-                          <div className="flex items-baseline gap-2">
-                            <span className="text-xs font-bold text-primary">#{action.rank}</span>
-                            <span className="text-sm font-medium">{action.action}</span>
-                          </div>
-                          <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-                            {action.signal_description}
-                          </p>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Report buttons — always visible */}
-                <div className="space-y-3">
-                  <h3 className="ud-label">
-                    Generate Report
-                  </h3>
-                  <div className="flex items-center gap-2">
-                    <Button
-                      type="button"
-                      onClick={() => handleGenerateReport('individual')}
-                      disabled={reportLoading || loading || !preview}
-                      variant={activeReportMode === 'individual' ? 'default' : 'outline'}
-                      size="sm"
-                      className="flex-1 rounded-lg h-9 text-xs font-medium"
-                    >
-                      {reportCache['individual'] ? 'View Individual' : 'Individual Report'}
-                    </Button>
-                    <Button
-                      type="button"
-                      onClick={() => handleGenerateReport('organization')}
-                      disabled={reportLoading || loading || !preview}
-                      variant={activeReportMode === 'organization' ? 'default' : 'outline'}
-                      size="sm"
-                      className="flex-1 rounded-lg h-9 text-xs font-medium"
-                    >
-                      {reportCache['organization'] ? 'View Organization' : 'Organization Report'}
-                    </Button>
-                  </div>
-                  <Button
-                    type="button"
-                    onClick={handleExportHtml}
-                    disabled={exportLoading || loading || !preview?.chart_specs}
-                    variant="outline"
-                    size="sm"
-                    className="w-full rounded-lg h-9 text-xs font-medium"
-                    aria-label="Download offline HTML report"
-                  >
-                    {exportLoading ? (
-                      <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
-                    ) : (
-                      <Download className="w-3.5 h-3.5 mr-1.5" />
-                    )}
-                    Download Offline HTML
-                  </Button>
-                </div>
-
-                {/* Error */}
-                {error && (
-                  <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive flex items-start gap-2">
-                    <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                    <span>{error}</span>
-                  </div>
-                )}
-
-                {/* Building signals */}
-                {buildingFlags.length > 0 && (
-                  <div className="space-y-2">
-                    <h3 className="ud-label">
-                      Building Signals
-                    </h3>
-                    <div className="space-y-2">
-                      {buildingFlags.slice(0, 3).map((flag, i) => (
-                        <div
-                          key={`${flag.bbl ?? 'building'}-${i}`}
-                          className="rounded-xl border border-border/50 bg-card px-4 py-3 text-sm"
-                        >
-                          <span className="font-medium">{flag.summary}</span>
-                          {flag.severity && (
-                            <span className="ml-2 text-xs text-muted-foreground uppercase">
-                              ({flag.severity})
-                            </span>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Evidence table */}
-                {evidenceTable.length > 0 && (
-                  <div className="space-y-2">
-                    <h3 className="ud-label">
-                      Evidence ({evidenceTable.length})
-                    </h3>
-                    <div className="space-y-2">
-                      {evidenceTable.slice(0, 6).map((e) => (
-                        <div
-                          key={e.evidence_id}
-                          className="rounded-xl border border-border/50 bg-card px-4 py-2.5"
-                        >
-                          <div className="flex justify-between gap-2 text-xs">
-                            <span className="font-medium text-primary">{e.source}</span>
-                            <span className="text-muted-foreground font-mono text-[10px]">
-                              {e.date}
-                            </span>
-                          </div>
-                          <p className="text-xs text-muted-foreground mt-1 leading-snug">
-                            {summarizeEvidence(e)}
-                          </p>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
+              <Inspector
+                preview={preview}
+                scores={scores}
+                loading={loading}
+                reportLoading={reportLoading}
+                exportLoading={exportLoading}
+                error={error}
+                selectedRadiusM={selectedRadiusM}
+                onRadiusChange={setSelectedRadiusM}
+                displayTitle={display?.title}
+                pinnedPreview={pinnedPreview}
+                pinnedTitle={pinnedTitle}
+                comparisonActive={comparisonActive}
+                serverComparison={serverComparison}
+                onClearComparison={clearComparison}
+                reportCache={reportCache}
+                activeReportMode={activeReportMode}
+                onGenerateReport={handleGenerateReport}
+                onExportHtml={handleExportHtml}
+                onOpenMethodology={() => setMethodologyOpen(true)}
+                formatScore={formatScore}
+                scoreGradientStyle={scoreGradientStyle}
+                scoreTextStyle={scoreTextStyle}
+                environmentTier={environmentTier}
+                heatVulnerabilityTier={heatVulnerabilityTier}
+                summarizeEvidence={summarizeEvidence}
+              />
               </>
               )}
             </div>

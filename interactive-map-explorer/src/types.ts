@@ -38,7 +38,13 @@ export interface PriorityAction {
 }
 
 export interface WhyNowItem {
+  /** Already carries the direction and the windows, e.g.
+   *  "collision is worsening (last 30 days 14 vs previous 30 days 9 (+55.6%))". */
   signal: string;
+  /** `worsening` | `elevated` for a trend, `pattern` for a detected pattern.
+   *  Declared because `extract_why_now` has always sent it; the panel used to
+   *  reach it through a cast that invented the field on the way past. */
+  trend_type?: string;
   evidence_ids: string[];
 }
 

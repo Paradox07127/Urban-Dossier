@@ -65,19 +65,38 @@ try {
   await search.fill('Empire State');
   await search.press('Enter');
 
-  await page.getByText('Overall score', { exact: true }).waitFor({ timeout: 30_000 });
-  await page.getByText(/95% range .* · point estimate/).waitFor({ timeout: 30_000 });
+  // --- Score tab: the headline and its two readings ------------------------
+  // The tier comes from the offline sensitivity artifact under production
+  // weighting; the score beside it is computed live under the reader's
+  // priority order. They are asserted as two separately labelled readings
+  // because printing them as "interval · point estimate" claimed a
+  // relationship they do not have.
+  await page.getByText('Citywide tier', { exact: true }).waitFor({ timeout: 30_000 });
+  await page.getByText(/95% interval \d+(\.\d+)?–\d+(\.\d+)?/).waitFor({ timeout: 30_000 });
+  await page.getByText('Your priority order', { exact: true }).waitFor({ timeout: 30_000 });
+  await page.getByText(/amenities \d\.\d\d · transit \d\.\d\d · safety \d\.\d\d/)
+    .waitFor({ timeout: 30_000 });
+  // Building carries weight 0 by decision, so the panel must say so where the
+  // score appears rather than let the grid imply a contribution.
+  await page.getByText(/building · 0% of score/i).waitFor({ timeout: 30_000 });
   await page.getByText(/server quantiles/).waitFor({ timeout: 30_000 });
+
+  // --- Context tab: city standing, the charts, the zero-weight indicators ---
+  await page.getByRole('tab', { name: 'Context' }).click();
+  await page.getByText('Context only', { exact: true }).waitFor({ timeout: 30_000 });
+  // The honesty claim, asserted once where it now governs both rows.
+  await page.getByText('0% of the score', { exact: true }).waitFor({ timeout: 30_000 });
   await page.getByText(/modeled NO/, { exact: false }).waitFor({ timeout: 30_000 });
-  await page.getByText('NYCCAS 2023–24 annual-average model · context only, 0% of overall', {
-    exact: true,
-  }).waitFor({ timeout: 30_000 });
+  await page.getByText('NYCCAS 2023–24 annual-average model', { exact: true })
+    .waitFor({ timeout: 30_000 });
   await page.getByText(/heat vulnerability · HVI [1-5]\/5/).waitFor({ timeout: 30_000 });
-  await page.getByText(
-    'NYC DOHMH mortality-risk quintile · ZCTA 2020 · context only, 0% of overall',
-    { exact: true },
-  ).waitFor({ timeout: 30_000 });
+  await page.getByText('NYC DOHMH mortality-risk quintile · ZCTA 2020', { exact: true })
+    .waitFor({ timeout: 30_000 });
   await page.locator('.vega-embed svg').first().waitFor({ timeout: 30_000 });
+
+  // --- Sources tab: evidence and the export the rest of this test drives ---
+  await page.getByRole('tab', { name: 'Sources' }).click();
+  await page.getByText('Evidence', { exact: true }).waitFor({ timeout: 30_000 });
   console.log('smoke: downloading and opening self-contained report offline');
   await page.evaluate(() => {
     window.__udDownloadLinks = [];
@@ -170,7 +189,10 @@ try {
   await page.getByRole('button', { name: 'Pin current location for comparison' }).click();
   await page.getByRole('textbox', { name: 'Find a place in New York' }).fill('Times Square');
   await page.getByRole('textbox', { name: 'Find a place in New York' }).press('Enter');
-  await page.getByText('Compare', { exact: true }).waitFor({ timeout: 30_000 });
+  // The pinned comparison lives under Context now -- it is a "compared with
+  // what" question, not part of the headline reading.
+  await page.getByRole('tab', { name: 'Context' }).click();
+  await page.getByText('Compared with pinned', { exact: true }).waitFor({ timeout: 30_000 });
   await page.getByText('Score comparison', { exact: true }).waitFor({ timeout: 30_000 });
   await page.getByLabel('Comparison delta map legend').waitFor({ timeout: 30_000 });
   await page.waitForFunction(
@@ -180,8 +202,20 @@ try {
   );
   await page.locator('.vega-embed svg').nth(2).waitFor({ timeout: 30_000 });
   console.log('smoke: validating rendered charts');
-  const captions = await page.locator('figure figcaption').allTextContents();
-  const renderedCharts = await page.locator('.vega-embed svg').count();
+  // Each tab renders only its own content, so the four charts are never in
+  // the DOM at the same instant. Walk the tabs and union what each one draws:
+  // the property under test is that all four render, not that one screen
+  // holds all four -- that it used to was the crowding this layout removed.
+  const captions = [];
+  let renderedCharts = 0;
+  for (const tabName of ['Score', 'Context', 'Signals', 'Sources']) {
+    await page.getByRole('tab', { name: tabName }).click();
+    await page.waitForTimeout(1_500);
+    captions.push(...(await page.locator('figure figcaption').allTextContents()));
+    renderedCharts += await page.locator('.vega-embed svg').count();
+  }
+  await page.getByRole('tab', { name: 'Context' }).click();
+  await page.waitForTimeout(1_000);
   const deltaMap = await page.evaluate(() => {
     const map = window.__udMap;
     const sourceData = map.getSource('comparisonDelta')._data.geojson;
