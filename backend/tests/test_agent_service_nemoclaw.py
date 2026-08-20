@@ -57,3 +57,34 @@ def test_gateway_targets_dedicated_agent_and_stable_session(monkeypatch):
         "x-openclaw-agent-id": "urban-dossier",
         "x-openclaw-session-key": "chat-123",
     }
+
+
+def test_gateway_output_budget_comes_from_the_module_constant(monkeypatch):
+    """The Gateway turn must not re-introduce a hardcoded 4096 output cap.
+
+    Nemotron Nano spends its output budget reasoning before it writes any of
+    the answer, so a final turn over tool results hit stopReason=length with
+    the answer never started and the user saw "Agent couldn't generate a
+    response" (2026-08-20). The budget is a tunable constant now; this pins
+    that the call reads it rather than a literal, and that the default is
+    above the value that demonstrably failed.
+    """
+    captured = {}
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(output_text="gateway-ok", output=[])
+
+    fake_client = SimpleNamespace(responses=FakeResponses())
+    monkeypatch.setattr(
+        agent_service,
+        "_get_openclaw_gateway_client",
+        lambda refresh=False: fake_client,
+    )
+    monkeypatch.setattr(agent_service, "OPENCLAW_MAX_OUTPUT_TOKENS", 12345)
+
+    _openclaw_gateway_agent("hello", "chat-123")
+
+    assert captured["max_output_tokens"] == 12345
+    assert agent_service.OPENCLAW_MAX_OUTPUT_TOKENS > 4096

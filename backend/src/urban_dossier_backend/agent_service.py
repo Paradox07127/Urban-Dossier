@@ -124,6 +124,20 @@ OPENCLAW_GATEWAY_TOKEN_FILE = os.environ.get(
     "/mnt/data/urban-dossier-state/runtime/openclaw-gateway.token",
 )
 AGENT_ENABLED = os.environ.get("URBAN_DOSSIER_AGENT_ENABLED", "1").strip() in ("1", "true", "yes")
+# Output budget for one Gateway turn. This was a hardcoded 4096 and that is not
+# enough for a reasoning model: Nemotron Nano spends the budget thinking before
+# it writes a word of the answer, so a final turn over tool results ended at
+# `stopReason=length` with the answer never started, and OpenClaw surfaced
+# "Agent couldn't generate a response" (observed 2026-08-20; the tools had run
+# and returned real data, which is what made it look like a routing or parsing
+# fault rather than a budget one).
+#
+# The ceiling is the served context: prompt + output must fit vLLM's
+# --max-model-len, 32768 today. 8192 doubles the budget while still leaving
+# 24K for the prompt. Raise it only alongside --max-model-len.
+OPENCLAW_MAX_OUTPUT_TOKENS = int(
+    os.environ.get("URBAN_DOSSIER_OPENCLAW_MAX_OUTPUT_TOKENS", "8192")
+)
 
 _openclaw_gateway_client = None
 _openclaw_gateway_client_lock = threading.Lock()
@@ -546,7 +560,7 @@ def _openclaw_gateway_agent(message: str, session_id: str) -> str | None:
                 # compatibility hint for older Gateway builds.
                 model=f"openclaw/{OPENCLAW_AGENT_ID}",
                 input=message,
-                max_output_tokens=4096,
+                max_output_tokens=OPENCLAW_MAX_OUTPUT_TOKENS,
                 extra_headers={
                     "x-openclaw-agent-id": OPENCLAW_AGENT_ID,
                     "x-openclaw-session-key": session_id,
