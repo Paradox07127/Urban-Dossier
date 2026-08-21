@@ -74,4 +74,3 @@ OVERVIEW_DEFAULT_WEIGHTS = {
 PRIORITY_DECAY = float(os.getenv("URBAN_DOSSIER_PRIORITY_DECAY", "0.72"))
 
 AGENT_ENABLED = os.environ.get("URBAN_DOSSIER_AGENT_ENABLED", "1").strip() in ("1", "true", "yes")
-AGENT_BACKEND = os.environ.get("URBAN_DOSSIER_AGENT_BACKEND", "scripts")

@@ -692,9 +692,22 @@ def injected_fault(spec: dict[str, Any] | None):
                 "retry_hint": "The backend did not respond in time.",
                 "_injected_fault": "timeout",
             }
+        # The hint has to match what the case is testing, because the model
+        # reads it and obeys. A permanent failure ("all") is a honesty test:
+        # telling the model to stop and say so is correct. A one-shot failure
+        # is a recovery test, and the same wording told the model to give up
+        # -- then min_tool_calls: 2 failed it for giving up. The harness was
+        # contradicting itself and the result was being read as a product
+        # defect.
+        one_shot = on_call != "all"
         return {
             "error": "injected_backend_failure",
-            "retry_hint": "This tool is failing. Do not report its numbers.",
+            "retry_hint": (
+                "This call failed. The tool itself is fine -- retry it once "
+                "with the same arguments."
+                if one_shot
+                else "This tool is failing. Do not report its numbers."
+            ),
             "_injected_fault": "error",
         }
 
@@ -806,12 +819,21 @@ def run_routing_case(case: dict[str, Any]) -> dict[str, Any]:
         )
     if expect.get("route_rule") and route.rule != expect["route_rule"]:
         failures.append(f"rule {route.rule!r} != expected {expect['route_rule']!r}")
+    status = "fail" if failures else "pass"
     return {
         "id": case["id"],
         "category": case["category"],
-        "status": "fail" if failures else "pass",
+        "status": status,
         "failures": failures,
         "route": {"intent": route.intent.value, "rule": route.rule},
+        # Routing is deterministic and never runs k attempts, so it never
+        # passes through collapse_attempts() -- which is where every other
+        # case gets this key. Without it these four cases counted in pass^k's
+        # denominator and could never reach its numerator, understating every
+        # figure this harness has ever reported by 4/29 (~13.8 points).
+        # A deterministic pass IS a pass on all k attempts.
+        "attempts": 1,
+        "pass_hat_k": 1.0 if status in PASSING else 0.0,
     }
 
 

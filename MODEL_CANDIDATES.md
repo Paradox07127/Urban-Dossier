@@ -608,6 +608,15 @@ Lightning ships three, and they are not interchangeable:
 | | What it is | Built for | SPEED-Bench acceptance @ draft 7 |
 |---|---|---|---|
 | **MTP** | multi-token prediction baked into the checkpoint at pretraining; no second model to download or hold in memory | medium-to-high concurrency, optimal draft length falling as concurrency rises | — |
+> **2026-08-21 retraction affecting the numbers below.** Every `pass^k`
+> figure on this page is understated by roughly 13.8 points: the four
+> deterministic routing cases counted in the denominator and could never
+> count in the numerator. A/B *comparisons* on this page stand — both sides
+> carried the same bias — but absolute `pass^k` values do not, and were not
+> recomputed. Separately, `fault-score-tool-flaky`'s failures were caused by
+> a contradictory hint in the fault injector, not by the model: after the
+> fix it passes 3/3. Details in `evals/agent/README.md` § Retracted.
+
 | **DSpark** | separate 967M dense drafter (615M non-embedding, GQA, sliding window 1024 on every layer) | compact Blackwell — **DGX Spark GB10** — and low-concurrency data centre | **3.75** |
 | **DFlash** | the other separate drafter | data centre GPUs and high-end local systems; its card names **GeForce RTX 5090** — consumer/workstation Blackwell, this box's silicon class | 3.16 |
 

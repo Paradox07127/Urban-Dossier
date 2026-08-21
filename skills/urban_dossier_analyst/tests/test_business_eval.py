@@ -120,6 +120,64 @@ def test_routing_cases_pass_against_live_router():
             assert result["status"] == "pass", (case["id"], result["failures"])
 
 
+def test_routing_results_carry_pass_hat_k():
+    """Routing cases must reach pass^k's numerator, not just its denominator.
+
+    They never run k attempts, so they never pass through collapse_attempts()
+    -- which is where every other case is stamped with this key. Without it
+    they counted in the denominator and could never count in the numerator,
+    understating every pass^k this harness reported by 4/29 (~13.8 points),
+    including the figures already cited in MODEL_CANDIDATES and
+    EXPANSION_PLAN.
+    """
+    for case in CASES["cases"]:
+        if case["category"] != "routing":
+            continue
+        result = run_routing_case(case)
+        assert "pass_hat_k" in result, case["id"]
+        assert result["pass_hat_k"] == (1.0 if result["status"] == "pass" else 0.0)
+
+
+def test_summary_pass_hat_k_matches_pass_rate_at_repeat_one():
+    """The documented invariant, which the routing gap silently broke."""
+    results = [
+        {"id": "a", "status": "pass", "pass_hat_k": 1.0},
+        {"id": "b", "status": "warn", "pass_hat_k": 1.0},
+        {"id": "c", "status": "fail", "pass_hat_k": 0.0},
+        {"id": "d", "status": "skip"},
+        {"id": "e", "category": "routing", "status": "pass", "pass_hat_k": 1.0},
+    ]
+    summary = summarize(results, repeat=1)
+    assert summary["pass_hat_k"] == summary["pass_rate"]
+
+
+def test_one_shot_and_permanent_faults_give_opposite_hints():
+    """The hint is read by the model, so it must match what the case asserts.
+
+    `fault-score-tool-flaky` fails one call and asserts min_tool_calls: 2 --
+    a recovery test. `fault-score-tool-down` fails every call and asserts the
+    model says so -- an honesty test. Both used to receive "Do not report its
+    numbers", so the flaky case penalised the model for obeying the harness,
+    and the resulting failure was being read as a product defect.
+    """
+    from urban_dossier_analyst import agent_loop
+
+    original = agent_loop.dispatch_tool
+    agent_loop.dispatch_tool = lambda name, args: {"ok": True}
+    try:
+        with injected_fault({"tool": "t", "mode": "error", "on_call": 1}):
+            one_shot = agent_loop.dispatch_tool("t", {})
+        with injected_fault({"tool": "t", "mode": "error", "on_call": "all"}):
+            permanent = agent_loop.dispatch_tool("t", {})
+    finally:
+        agent_loop.dispatch_tool = original
+
+    assert "retry" in one_shot["retry_hint"].lower()
+    assert "do not report" not in one_shot["retry_hint"].lower()
+    assert "do not report" in permanent["retry_hint"].lower()
+    assert one_shot["retry_hint"] != permanent["retry_hint"]
+
+
 # --- graders on synthetic responses -----------------------------------------
 
 

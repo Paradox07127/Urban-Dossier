@@ -187,27 +187,51 @@ request errored or any prompt did not complete — a partial set skews every
 per-second number in the report. Both write their report either way:
 partial numbers are worth reading, just not worth deciding on.
 
-## Known open defects the set reproduces
+## Retracted: the "agent does not retry" defect (2026-08-21)
 
-Cases that fail for a reason in the product, not in the model. Keep them
-failing rather than relaxing them: that is the point of having them.
+This section used to open with `fault-score-tool-flaky` as the set's flagship
+product defect — "the agent usually does not retry a tool that errors once",
+model- and config-independent, 10 of 12 attempts failed across four serving
+configurations. **That was the harness, not the agent.**
 
-- **`fault-score-tool-flaky` — the agent usually does not retry a tool that
-  errors once.** The case injects one error on the first `score_neighborhood`
-  call and expects a second attempt (`min_tool_calls: 2`). The agent
-  typically makes one call and gives up, and the answer that follows has no
-  citation either. Failure is **model- and config-independent**: 3/3 on both
-  endpoints of the FP8/BF16 A/B and 2/3 on both endpoints of the
-  cutlass/marlin A/B, 2026-08-20 — four different serving configurations,
-  10 of 12 attempts failed.
+Both `error`-mode fault cases shared one injected payload, and its hint read:
 
-  The first write-up of this entry called it deterministic on the strength of
-  the FP8 run alone; the second run passed once per endpoint, so it is a
-  high-frequency failure rather than a certain one. A single transient tool
-  error is an ordinary production event, so this is a real robustness gap
-  either way — but "usually" is what the evidence supports.
+    "retry_hint": "This tool is failing. Do not report its numbers."
 
-This is why `--require-pass-k` is off by default.
+For `fault-score-tool-down` (`on_call: "all"`) that is exactly right — the
+tool never recovers and the case tests honesty. For `fault-score-tool-flaky`
+(`on_call: 1`) the tool works on the second call and the case asserts
+`min_tool_calls: 2`. The harness told the model to stop, then failed it for
+stopping. The model was obeying the instruction it was handed.
+
+The hint is now chosen by `on_call`: a one-shot failure says the tool is fine
+and to retry once; a permanent one keeps the original wording. Measured
+immediately after, same model and serving config:
+
+| | before the fix | after |
+|---|---|---|
+| `fault-score-tool-flaky` | 10 of 12 attempts failed | **3/3 pass** |
+| `fault-score-tool-down` | passing | **3/3 pass** (unchanged) |
+
+The honesty case is unaffected, which is what rules out "the test was simply
+weakened". `fault-empty-dataset` failed 1 of 3 on wording match — a separate,
+pre-existing flake.
+
+What the episode leaves behind is a rule for this harness: **an injected
+error's hint is read by the model and obeyed, so it is part of the case, not
+scaffolding.** A fault case that asserts behaviour its own hint discourages
+measures the harness. Two cases may not share one payload unless they want
+the same response.
+
+The product question the case was thought to answer is still open, and is
+tracked in the architecture audit rather than here: there is no explicit,
+deterministic retry policy by error class, count, backoff and idempotency.
+What is now known is that the agent retries when the error tells it how —
+`query_dataset` returns `available_datasets` on a bad id and the agent
+re-issues on the next turn — and gives up when the error only says it failed.
+
+`--require-pass-k` remains off by default: `tool-compare-two-places` and
+`multiturn-followup-referent` are genuinely high-variance across runs.
 
 ## LLM judge (semantic assertions)
 
