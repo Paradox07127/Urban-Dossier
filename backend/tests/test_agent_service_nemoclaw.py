@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from urban_dossier_backend import agent_service
 from urban_dossier_backend.agent_service import (
     _decode_nemoclaw_payload,
+    _md_to_html,
     _openclaw_gateway_agent,
     _response_output_text,
 )
@@ -30,6 +31,86 @@ def test_response_output_text_prefers_sdk_convenience_property():
     response = SimpleNamespace(output_text=" dedicated response ", output=[])
 
     assert _response_output_text(response) == "dedicated response"
+
+
+def test_markdown_renderer_escapes_raw_html_but_keeps_supported_markup():
+    rendered = _md_to_html("## Safe <script>alert(1)</script>\n- **measured**")
+
+    assert "<script>" not in rendered
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in rendered
+    assert "<strong>measured</strong>" in rendered
+
+
+def test_refined_report_escapes_feedback_and_model_html(monkeypatch):
+    malicious = '<img src=x onerror="alert(1)">'
+    monkeypatch.setattr(agent_service, "AGENT_BACKEND", "nemoclaw")
+    monkeypatch.setattr(
+        agent_service,
+        "_openclaw_agent",
+        lambda *_args, **_kwargs: "## Summary\n" + malicious + " grounded prose " * 5,
+    )
+    session = SimpleNamespace(analysis_payload={}, generated_reports=[])
+
+    result = agent_service.refine_report(session, malicious)
+
+    assert malicious not in result["html"]
+    assert "&lt;img" in result["html"]
+
+
+def test_generate_report_fails_closed_when_openclaw_fails(monkeypatch):
+    monkeypatch.setattr(agent_service, "AGENT_BACKEND", "nemoclaw")
+    monkeypatch.setattr(agent_service, "_try_nemoclaw_report", lambda *_args: None)
+    monkeypatch.setattr(
+        agent_service,
+        "_fallback_script_report",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("direct fallback ran")),
+    )
+
+    result = agent_service.generate_report({})
+
+    assert result == {
+        "error": "OpenClaw report generation failed",
+        "error_code": "openclaw_unavailable",
+        "backend": "nemoclaw",
+    }
+
+
+def test_generate_poster_fails_closed_when_openclaw_fails(monkeypatch):
+    monkeypatch.setattr(agent_service, "AGENT_BACKEND", "nemoclaw")
+    monkeypatch.setattr(agent_service, "_run_script", lambda *_args, **_kwargs: (True, ""))
+    monkeypatch.setattr(agent_service, "_try_nemoclaw_poster", lambda *_args: None)
+    monkeypatch.setattr(
+        agent_service,
+        "_get_openai_client",
+        lambda: (_ for _ in ()).throw(AssertionError("direct vLLM ran")),
+    )
+
+    result = agent_service.generate_poster({})
+
+    assert result == {
+        "error": "OpenClaw poster generation failed",
+        "error_code": "openclaw_unavailable",
+        "backend": "nemoclaw",
+    }
+
+
+def test_refine_report_fails_closed_when_openclaw_fails(monkeypatch):
+    monkeypatch.setattr(agent_service, "AGENT_BACKEND", "nemoclaw")
+    monkeypatch.setattr(agent_service, "_openclaw_agent", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        agent_service,
+        "_run_script",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("scripts ran")),
+    )
+    session = SimpleNamespace(analysis_payload={}, generated_reports=[])
+
+    result = agent_service.refine_report(session, "focus on safety")
+
+    assert result == {
+        "error": "OpenClaw report refinement failed",
+        "error_code": "openclaw_unavailable",
+        "backend": "nemoclaw",
+    }
 
 
 def test_gateway_targets_dedicated_agent_and_stable_session(monkeypatch):

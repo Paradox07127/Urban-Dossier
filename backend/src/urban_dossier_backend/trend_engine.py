@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+from numbers import Real
 from typing import Any
 
 from .periods import canonical_quarter, current_quarter, is_consecutive_quarter, quarter_index
@@ -15,26 +17,27 @@ TREND_SIGNALS = {
 }
 
 
-def _coerce_number(value: Any) -> float:
-    """Coerce values_by_period entries to a float.
+def _coerce_number(value: Any) -> float | None:
+    """Coerce a finite numeric value without turning missing data into zero.
 
     The ready-quarterly provider intentionally sets last_30d/prev_30d/etc to None
-    when only quarterly aggregates are available. dict.get(key, default) only
-    applies the default when the key is absent, not when the value is None,
-    so we normalise here to avoid TypeError in arithmetic below.
+    when only quarterly aggregates are available. Missing observations must stay
+    missing: treating one absent side of a comparison as zero manufactures a
+    +/-100% trend from no measurement.
     """
-    if value is None:
-        return 0.0
+    if value is None or isinstance(value, bool):
+        return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
-        return 0.0
+        return None
+    return number if math.isfinite(number) else None
 
 
 def compute_recent_delta(values_by_period: dict[str, Any]) -> dict[str, Any]:
     recent = _coerce_number(values_by_period.get("last_30d"))
     previous = _coerce_number(values_by_period.get("prev_30d"))
-    if previous == 0:
+    if recent is None or previous in {None, 0}:
         return {"change_pct": None, "label": "no_baseline"}
     pct = (recent - previous) / previous * 100
     return {"change_pct": round(pct, 1), "label": "rising" if pct > 10 else "falling" if pct < -10 else "stable"}
@@ -43,7 +46,7 @@ def compute_recent_delta(values_by_period: dict[str, Any]) -> dict[str, Any]:
 def compute_seasonal_delta(values_by_period: dict[str, Any]) -> dict[str, Any]:
     current = _coerce_number(values_by_period.get("last_90d"))
     same_last_year = _coerce_number(values_by_period.get("same_90d_last_year"))
-    if same_last_year == 0:
+    if current is None or same_last_year in {None, 0}:
         return {"change_pct": None, "label": "no_baseline"}
     pct = (current - same_last_year) / same_last_year * 100
     return {"change_pct": round(pct, 1), "label": "rising" if pct > 15 else "falling" if pct < -15 else "stable"}
@@ -184,7 +187,14 @@ def _build_quarterly_series(values_by_period: dict[str, Any]) -> list[dict[str, 
             continue
         period = canonical_quarter(raw.get("period"))
         value = raw.get("value")
-        if period is None or (value is not None and not isinstance(value, (int, float))):
+        if period is None or (
+            value is not None
+            and (
+                not isinstance(value, Real)
+                or isinstance(value, bool)
+                or not math.isfinite(float(value))
+            )
+        ):
             continue
         coverage = raw.get("coverage")
         by_period[period] = {

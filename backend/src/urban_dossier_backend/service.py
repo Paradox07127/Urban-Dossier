@@ -191,15 +191,22 @@ def _build_detail_payload(
     hotspots = []
     try:
         from .hotspot_engine import detect_hotspots
-        # Collect all incidents with coordinates from detail_items
-        all_incidents = []
-        for inc in detail_items.get("recent_incidents", []):
-            if inc.get("latitude") and inc.get("longitude"):
-                all_incidents.append(inc)
-        # Also include building flags with coordinates
-        for flag in detail_items.get("building_flags", []):
-            if flag.get("latitude") and flag.get("longitude"):
-                all_incidents.append({**flag, "kind": "building_violation"})
+        # ``recent_incidents`` is a compact textual feed and intentionally has
+        # no coordinates. The map-point feed is the coordinate-bearing source
+        # and already includes building flags, so using it also avoids counting
+        # those flags twice.
+        hotspot_kinds = {
+            "transit": "collision",
+            "safety": "rodent",
+            "311": "311",
+            "housing_violation": "building_violation",
+            "aep": "building_violation",
+        }
+        all_incidents = [
+            {**point, "kind": hotspot_kinds[point["kind"]]}
+            for point in detail_items.get("map_points", [])
+            if point.get("kind") in hotspot_kinds
+        ]
 
         if all_incidents:
             hotspots = detect_hotspots(

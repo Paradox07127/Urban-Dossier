@@ -1,6 +1,6 @@
 ---
 name: nemoclaw-user-prep-data
-description: Use when the user mentions preparing data, cleaning data, exploring data quality, or describes a project goal with local data files. Handles the full data preparation pipeline autonomously with a single user confirmation point on the cleaning plan. Trigger keywords - prepare data, clean data, data quality, data preparation, look at my data, what's wrong with my data.
+description: "Run the end-to-end multi-file CSV preparation workflow in NemoClaw: discover, assess, propose a cleaning plan, execute after one confirmation, validate, and report. Use when the user wants the whole pipeline handled as one task. For an explicitly phased workflow, use the prep-data-discover, prep-data-clean, or prep-data-report skill instead."
 ---
 
 # NemoClaw User: Prep Data

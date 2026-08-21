@@ -1849,7 +1849,7 @@ class DirectQueryDataProvider(DataProvider):
         return context
 
     def get_point_signals(self, latitude: float, longitude: float, radius_m: int, time_window_days: int) -> dict[str, Any]:
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from concurrent.futures import ThreadPoolExecutor
 
         con = self._connect()
         target = self._nearest_location(con, latitude, longitude)

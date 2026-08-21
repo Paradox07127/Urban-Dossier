@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import datetime
+import html as html_lib
 import json
 import os
 import subprocess
@@ -13,12 +14,12 @@ import threading
 
 
 def _md_to_html(text: str) -> str:
-    """Minimal markdown-to-HTML: headings, bold, italic, bullets, paragraphs."""
+    """Render a small safe Markdown subset, escaping all raw HTML first."""
     lines = text.split("\n")
     out: list[str] = []
     in_ul = False
     for line in lines:
-        stripped = line.strip()
+        stripped = html_lib.escape(line.strip(), quote=False)
         # Headings
         if stripped.startswith("### "):
             if in_ul:
@@ -99,7 +100,11 @@ def _ensure_symgen_imports():
         _symgen_imported = True  # don't retry
 
 # Paths to blocksense skill scripts
-SKILL_BASE = os.environ.get("BLOCKSENSE_SKILL_PATH", os.path.expanduser("~/xhh_code"))
+_REPO_SKILLS = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
+    "skills",
+)
+SKILL_BASE = os.environ.get("BLOCKSENSE_SKILL_PATH", _REPO_SKILLS)
 REPORT_SCRIPTS = os.path.join(SKILL_BASE, "blocksense-report", "scripts")
 POSTER_SCRIPTS = os.path.join(SKILL_BASE, "blocksense-poster", "scripts")
 REPORT_TEMPLATE = os.path.join(SKILL_BASE, "blocksense-report", "templates", "report.html")
@@ -431,11 +436,19 @@ def is_agent_available() -> dict:
 
 
 def generate_report(payload: dict, focus: str | None = None) -> dict:
-    """Generate a neighborhood report via skill scripts + LLM.
+    """Generate a neighborhood report through the configured backend.
 
-    Tries NemoClaw CLI first if configured, falls back to direct script execution + vllm.
+    ``nemoclaw`` is fail-closed: an OpenClaw failure never bypasses the
+    sandbox through host vLLM. Direct script execution is available only when
+    ``AGENT_BACKEND`` is explicitly ``scripts``.
     Returns dict with 'html', 'markdown', or 'error'.
     """
+    if AGENT_BACKEND not in {"nemoclaw", "scripts"}:
+        return {
+            "error": f"Unsupported agent backend: {AGENT_BACKEND}",
+            "error_code": "unsupported_agent_backend",
+            "backend": AGENT_BACKEND,
+        }
     payload_path = _tmp_path(".json")
     segments_path = _tmp_path("-segments.json")
     narratives_path = _tmp_path("-narratives.json")
@@ -453,16 +466,21 @@ def generate_report(payload: dict, focus: str | None = None) -> dict:
             result = _try_nemoclaw_report(payload, focus)
             if result is not None:
                 return result
-            logger.warning("NemoClaw/OpenClaw report failed, falling back to scripts path")
+            logger.warning("NemoClaw/OpenClaw report failed; direct fallback is disabled")
+            return {
+                "error": "OpenClaw report generation failed",
+                "error_code": "openclaw_unavailable",
+                "backend": "nemoclaw",
+            }
 
-        # --- Scripts fallback path ---
+        # --- Explicit direct scripts path ---
         return _fallback_script_report(
             payload, payload_path, segments_path, narratives_path,
             html_path, md_path, focus,
         )
     except Exception as exc:
         logger.exception("generate_report failed")
-        return {"error": str(exc)}
+        return {"error": str(exc), "backend": AGENT_BACKEND}
     finally:
         _cleanup_files(*temps)
 
@@ -920,11 +938,18 @@ def _try_nemoclaw_poster(payload: dict, template: str) -> dict | None:
 
 
 def generate_poster(payload: dict, template: str = "offline") -> dict:
-    """Generate a poster from the analysis payload.
+    """Generate a poster through the configured backend.
 
-    Tries OpenClaw agent for headline/summary, falls back to direct vllm.
+    ``nemoclaw`` is fail-closed; direct host-vLLM generation is enabled only
+    by explicitly selecting ``AGENT_BACKEND=scripts``.
     Returns dict with 'html' or 'error'.
     """
+    if AGENT_BACKEND not in {"nemoclaw", "scripts"}:
+        return {
+            "error": f"Unsupported agent backend: {AGENT_BACKEND}",
+            "error_code": "unsupported_agent_backend",
+            "backend": AGENT_BACKEND,
+        }
     payload_path = _tmp_path(".json")
     highlights_path = _tmp_path("-highlights.json")
     html_path = _tmp_path("-poster.html")
@@ -951,11 +976,16 @@ def generate_poster(payload: dict, template: str = "offline") -> dict:
                 headline = nc_result["headline"]
                 summary = nc_result["summary"]
                 logger.info("Poster headline/summary via OpenClaw agent")
+            else:
+                logger.warning("OpenClaw poster failed; direct fallback is disabled")
+                return {
+                    "error": "OpenClaw poster generation failed",
+                    "error_code": "openclaw_unavailable",
+                    "backend": "nemoclaw",
+                }
 
-        # --- Direct vllm fallback ---
+        # --- Explicit direct vLLM path ---
         if not headline or not summary:
-            if AGENT_BACKEND == "nemoclaw":
-                logger.warning("OpenClaw poster failed, falling back to direct vllm")
             try:
                 client = _get_openai_client()
                 model_name = _resolve_model_name(client)
@@ -1024,7 +1054,7 @@ def generate_poster(payload: dict, template: str = "offline") -> dict:
         return {"html": html, "headline": headline, "summary": summary}
     except Exception as exc:
         logger.exception("generate_poster failed")
-        return {"error": str(exc)}
+        return {"error": str(exc), "backend": AGENT_BACKEND}
     finally:
         _cleanup_files(*temps)
 
@@ -1042,10 +1072,18 @@ def generate_poster(payload: dict, template: str = "offline") -> dict:
 def refine_report(session, feedback: str) -> dict:
     """Re-generate a report with user feedback incorporated.
 
-    Tries OpenClaw agent first if AGENT_BACKEND=nemoclaw, falls back to scripts path.
+    ``nemoclaw`` is fail-closed; the direct scripts path runs only when
+    ``AGENT_BACKEND`` is explicitly ``scripts``.
     Returns dict with 'html', 'markdown', or 'error'.
     """
     payload = session.analysis_payload
+
+    if AGENT_BACKEND not in {"nemoclaw", "scripts"}:
+        return {
+            "error": f"Unsupported agent backend: {AGENT_BACKEND}",
+            "error_code": "unsupported_agent_backend",
+            "backend": AGENT_BACKEND,
+        }
 
     # --- NemoClaw path ---
     if AGENT_BACKEND == "nemoclaw":
@@ -1069,14 +1107,19 @@ h1{{color:#565e74}}h2{{color:#0053dc;border-bottom:1px solid #e8e6dc;padding-bot
 ul{{padding-left:1.5em}}li{{margin-bottom:0.3em}}
 </style></head><body>
 <h1>BlockSense NYC — Refined Report</h1>
-<p><em>User feedback: {feedback}</em></p>
+<p><em>User feedback: {html_lib.escape(feedback)}</em></p>
 {_md_to_html(md)}
 <hr><small>Generated via OpenClaw agent | Nemotron 30B</small>
 </body></html>"""
             return {"html": html, "markdown": md, "backend": "nemoclaw"}
-        logger.warning("OpenClaw refine failed, falling back to scripts path")
+        logger.warning("OpenClaw refine failed; direct fallback is disabled")
+        return {
+            "error": "OpenClaw report refinement failed",
+            "error_code": "openclaw_unavailable",
+            "backend": "nemoclaw",
+        }
 
-    # --- Scripts fallback path ---
+    # --- Explicit direct scripts path ---
     payload_path = _tmp_path(".json")
     segments_path = _tmp_path("-segments.json")
     narratives_path = _tmp_path("-narratives.json")
@@ -1160,6 +1203,6 @@ ul{{padding-left:1.5em}}li{{margin-bottom:0.3em}}
         )
     except Exception as exc:
         logger.exception("refine_report failed")
-        return {"error": str(exc)}
+        return {"error": str(exc), "backend": AGENT_BACKEND}
     finally:
         _cleanup_files(*temps)

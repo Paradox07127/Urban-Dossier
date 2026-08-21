@@ -85,15 +85,37 @@ def _fallback_subscores(current_state: dict, baselines: dict) -> dict[str, dict[
 
     out: dict[str, dict[str, int | None] | None] = {}
 
-    if not _has_any_data(safety, ["collision_count_500m", "rodent_positive_500m", "sanitation_311_recent_count", "ems_avg_response_seconds", "fire_avg_response_seconds"]):
+    safety_available = _has_any_data(
+        safety,
+        [
+            "collision_count_500m",
+            "rodent_positive_500m",
+            "sanitation_311_recent_count",
+            "ems_avg_response_seconds",
+            "fire_avg_response_seconds",
+        ],
+    ) or _has_any_data(
+        transit, ["collision_count_500m", "ped_cyclist_injuries_1km"]
+    )
+    if not safety_available:
         out["safety"] = None
     else:
         collision_score = None
-        if safety.get("collision_count_500m") is not None:
+        # The direct provider retains collision observations under ``transit``
+        # for the legacy public payload, although collision scoring moved to
+        # safety in methodology 3.8. Prefer the canonical safety location, but
+        # keep the live provider shape usable when prepared score tables are
+        # absent or fail their publication gate.
+        collision = safety.get("collision_count_500m")
+        injuries = safety.get("ped_cyclist_injuries_1km")
+        if collision is None:
+            collision = transit.get("collision_count_500m")
+            injuries = transit.get("ped_cyclist_injuries_1km")
+        if collision is not None:
             collision_score = _clamp(
                 100.0
-                - min((safety.get("collision_count_500m", 0) / max(baselines["collision"].get("p75", 1), 1)) * 50, 60)
-                - min(safety.get("ped_cyclist_injuries_1km", 0) * 2, 15)
+                - min((collision / max(baselines["collision"].get("p75", 1), 1)) * 50, 60)
+                - min((injuries or 0) * 2, 15)
             )
         rodent_score = None
         if safety.get("rodent_positive_500m") is not None:

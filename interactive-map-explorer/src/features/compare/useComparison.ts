@@ -31,6 +31,8 @@ export function useComparison(
   const [pinnedPreview, setPinnedPreview] = useState<DetailPreviewResponse | null>(null);
   const [pinnedTitle, setPinnedTitle] = useState('');
   const [serverComparison, setServerComparison] = useState<CompareResponse | null>(null);
+  const [comparisonLoading, setComparisonLoading] = useState(false);
+  const [comparisonError, setComparisonError] = useState<string | null>(null);
   const comparisonActive = Boolean(
     pinnedPreview?.target &&
       preview?.target &&
@@ -39,11 +41,14 @@ export function useComparison(
 
   useEffect(() => {
     setServerComparison(null);
+    setComparisonError(null);
+    setComparisonLoading(false);
     const pointA = pinnedPreview?.target;
     const pointB = preview?.target;
     if (!pointA || !pointB || samePoint(pointA, pointB)) return;
 
     const controller = new AbortController();
+    setComparisonLoading(true);
     fetch('/api/compare-points', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -62,8 +67,16 @@ export function useComparison(
       .then((data: CompareResponse) => {
         if (!controller.signal.aborted) setServerComparison(data);
       })
-      .catch(() => {
-        if (!controller.signal.aborted) setServerComparison(null);
+      .catch((reason) => {
+        if (!controller.signal.aborted) {
+          setServerComparison(null);
+          setComparisonError(
+            reason instanceof Error ? reason.message : 'Comparison request failed',
+          );
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setComparisonLoading(false);
       });
     return () => controller.abort();
   }, [pinnedPreview, preview, radiusM, priorityOrder]);
@@ -77,7 +90,18 @@ export function useComparison(
     setPinnedPreview(null);
     setPinnedTitle('');
     setServerComparison(null);
+    setComparisonLoading(false);
+    setComparisonError(null);
   }, []);
 
-  return { pinnedPreview, pinnedTitle, serverComparison, comparisonActive, pin, clear };
+  return {
+    pinnedPreview,
+    pinnedTitle,
+    serverComparison,
+    comparisonActive,
+    comparisonLoading,
+    comparisonError,
+    pin,
+    clear,
+  };
 }

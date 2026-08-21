@@ -25,7 +25,7 @@ runtime provides, and the prompts name no model. See `MODEL_CANDIDATES.md`
 for what is currently deployed and what is under evaluation.
 
 The skill exposes a single Python entry point - `run_agent(user_message, ...)` -
-that drives a Thought-Action-Observation loop over a fixed set of 8 tools and
+that drives a Thought-Action-Observation loop over a fixed set of 7 tools and
 returns a structured, evidence-cited answer.
 
 ## When to Trigger
@@ -135,7 +135,7 @@ The loop terminates when **any** of the following holds:
 
 ```json
 {
-  "answer": "Astoria scores higher on amenities (0.78) than Williamsburg (0.71)...",
+  "answer": "Astoria scores higher on amenities (78) than Williamsburg (71)...",
   "evidence": [
     {"source": "score_neighborhood", "detail": "scores: ['amenities','safety','transit']"},
     {"source": "search_address", "detail": "1 address candidate(s) returned"}
@@ -170,13 +170,13 @@ Obs:    {"results": [{"latitude": 40.7081, "longitude": -73.9571, ...}]}
 
 Thought: Score both at 500m radius.
 Action: score_neighborhood(latitude=40.7720, longitude=-73.9300)
-Obs:    {"scores": {"amenities": 0.78, "safety": 0.66, "transit": 0.81, ...}}
+Obs:    {"scores": {"amenities": 78, "safety": 66, "transit": 81, ...}}
 
 Action: score_neighborhood(latitude=40.7081, longitude=-73.9571)
-Obs:    {"scores": {"amenities": 0.71, "safety": 0.59, "transit": 0.74, ...}}
+Obs:    {"scores": {"amenities": 71, "safety": 59, "transit": 74, ...}}
 
 Final: Astoria edges Williamsburg on every category for a young family
-       (amenities 0.78 vs 0.71, safety 0.66 vs 0.59, transit 0.81 vs 0.74)
+       (amenities 78 vs 71, safety 66 vs 59, transit 81 vs 74)
        [score_neighborhood for both points].
 ```
 
@@ -224,7 +224,7 @@ Final: I cannot project the intervention impact yet (the /api/simulate
 
 Hard rules the agent must obey:
 
-- **Never invent dataset names.** Only the 17 listed dataset ids and the
+- **Never invent dataset names.** Only the 18 listed dataset ids and the
   five category aliases (`safety`, `transit`, `amenities`, `building`,
   `overall`) are valid.
 - **Never invent column names.** `query_dataset` returns the queried file's

@@ -289,6 +289,7 @@ export default function App() {
   const [agentMode, setAgentMode] = useState(false);
   const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null);
   const [agentSessionId, setAgentSessionId] = useState<string | null>(null);
+  const [agentSessionKey, setAgentSessionKey] = useState<string | null>(null);
   /* Isochrone the agent computed for the current point, drawn on the map. */
   const [isochrone, setIsochrone] = useState<any | null>(null);
 
@@ -329,6 +330,8 @@ export default function App() {
     pinnedTitle,
     serverComparison,
     comparisonActive,
+    comparisonLoading,
+    comparisonError,
     pin: pinComparison,
     clear: clearComparison,
   } = useComparison(preview, selectedRadiusM, priorityOrder);
@@ -347,11 +350,18 @@ export default function App() {
       .catch(() => setAgentStatus(null));
   }, []);
 
+  const agentContextKey = selectedTarget
+    ? selectedTarget.position.join(':') + ':' + selectedRadiusM
+    : '';
+  const agentContextKeyRef = useRef(agentContextKey);
+  agentContextKeyRef.current = agentContextKey;
+
   // Create agent session on demand
   const createAgentSession = async (): Promise<string> => {
-    if (agentSessionId) return agentSessionId;
+    if (agentSessionId && agentSessionKey === agentContextKey) return agentSessionId;
     const target = selectedTarget;
     if (!target) throw new Error('No location selected');
+    const contextKey = agentContextKey;
     const res = await fetch('/api/agent/session', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -369,6 +379,10 @@ export default function App() {
     }
     const data = await res.json();
     if (!data.session_id) throw new Error('No session_id returned');
+    if (agentContextKeyRef.current !== contextKey) {
+      throw new DOMException('Location changed while creating agent session', 'AbortError');
+    }
+    setAgentSessionKey(contextKey);
     setAgentSessionId(data.session_id);
     return data.session_id;
   };
@@ -377,6 +391,7 @@ export default function App() {
   useEffect(() => {
     if (!selectedTarget) return;
     setAgentSessionId(null);
+    setAgentSessionKey(null);
     // Location changed — clear report cache
     setReportCache({});
     setActiveReportMode(null);
@@ -893,7 +908,8 @@ export default function App() {
             <div className="min-h-0 flex-1 overflow-y-auto relative">
               {agentMode ? (
                 <AgentPanel
-                  sessionId={agentSessionId}
+                  key={agentContextKey}
+                  sessionId={agentSessionKey === agentContextKey ? agentSessionId : null}
                   onCreateSession={createAgentSession}
                   analysisPayload={preview}
                   target={
@@ -940,6 +956,8 @@ export default function App() {
                 pinnedPreview={pinnedPreview}
                 pinnedTitle={pinnedTitle}
                 comparisonActive={comparisonActive}
+                comparisonLoading={comparisonLoading}
+                comparisonError={comparisonError}
                 serverComparison={serverComparison}
                 onClearComparison={clearComparison}
                 reportCache={reportCache}

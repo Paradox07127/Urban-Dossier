@@ -359,8 +359,10 @@ def simulate_intervention(
             import h3
 
             center = h3.latlng_to_cell(latitude, longitude, 9)
-            k = max(1, radius_m // 174)
-            cells = list(h3.grid_disk(center, k))
+            # Use the exact same centre-distance filter as point scoring. A
+            # raw grid_disk includes corner cells outside the requested radius
+            # and made scenario deltas aggregate a different neighbourhood.
+            cells = provider._h3_cells_for_radius(latitude, longitude, radius_m)
             placeholders = ", ".join(["?"] * len(cells))
             peer_rows = con.execute(
                 f'SELECT h3_r9 AS unit, "{count_column}" AS c, score AS s '

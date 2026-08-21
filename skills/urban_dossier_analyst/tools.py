@@ -1,17 +1,17 @@
 """Tool layer for the urban-dossier-analyst agent.
 
 Exposes:
-  - TOOLS:        list[dict] of 8 OpenAI-compatible tool schemas
+  - TOOLS:        list[dict] of 7 OpenAI-compatible tool schemas
   - dispatch_tool(name, args) -> dict: argument validation + execution wrapper
 
 Hard contract (other agents depend on this surface):
-  - Exactly 8 tool entries in TOOLS, names locked.
+  - Exactly 7 tool entries in TOOLS, names locked.
   - Every tool has a Pydantic args model.
   - dispatch_tool NEVER raises - errors are surfaced as
     {"error": str, "retry_hint": str} so the agent loop can feed them back to
     the LLM as observations.
 
-Dispatch modes for tools 1, 3, 4, 7:
+Dispatch modes:
   - In-process Python (preferred): when ``urban_dossier_backend.service`` is
     importable (true when ``agent_loop.run_agent`` runs inside the FastAPI
     process), the tool calls the underlying service function directly. This
@@ -22,7 +22,7 @@ Dispatch modes for tools 1, 3, 4, 7:
     fall back to ``httpx`` against ``http://localhost:8090/api/...`` with a
     30s timeout and 2 retries. Same path used in the v1 implementation.
 
-The eight schemas are stable, but each request receives only the subset whose
+The seven schemas are stable, but each request receives only the subset whose
 release artifacts pass validation. Optional RAG imports remain lazy so this
 module can load without that stack.
 """

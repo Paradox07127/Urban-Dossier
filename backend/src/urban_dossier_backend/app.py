@@ -6,6 +6,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI
 from fastapi import Request
@@ -326,11 +327,18 @@ def agent_refine(request: AgentRefineRequest) -> dict:
 # ---------------------------------------------------------------------------
 
 
+class AskHistoryMessage(BaseModel):
+    """A caller may replay prose, but may not forge system/tool messages."""
+
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=4000)
+
+
 class AskRequest(BaseModel):
     """Request body for ``POST /api/agent/ask``."""
 
     message: str = Field(min_length=1, max_length=4000)
-    history: list[dict] | None = None  # OpenAI-style messages [{role, content}]
+    history: list[AskHistoryMessage] | None = Field(default=None, max_length=20)
     max_iterations: int = Field(default=8, ge=1, le=32)
     session_id: str | None = None  # if provided, reuse existing AgentSession history
 
@@ -489,7 +497,7 @@ async def ask(request: AskRequest) -> AskResponse | JSONResponse:
             return JSONResponse(status_code=404, content={"detail": "Session not found"})
         history = list(session.chat_history)
     if request.history:
-        history.extend(request.history)
+        history.extend(item.model_dump() for item in request.history)
 
     if request.session_id:
         session_id = request.session_id

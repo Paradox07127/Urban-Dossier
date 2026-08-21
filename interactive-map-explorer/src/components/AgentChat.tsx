@@ -3,11 +3,11 @@ import { motion, AnimatePresence } from 'motion/react';
 import { ArrowUp } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import ProvenanceThread from './ProvenanceThread';
-import type { AgentChatMessage, AgentTrace } from '../types';
+import type { AgentChatMessage, AgentTrace, DetailPreviewResponse } from '../types';
 
 interface Props {
   sessionId: string | null;
-  analysisPayload: any;
+  analysisPayload: DetailPreviewResponse | null;
   onCreateSession: () => Promise<string>;
   /** Selected point, so the agent knows what "here" refers to. */
   target?: { latitude: number; longitude: number; label?: string } | null;

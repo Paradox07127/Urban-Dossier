@@ -18,9 +18,9 @@ This app is the current React frontend shell for Urban Dossier.
 
 Prerequisites:
 
-- Node.js
+- Node.js 24
 - the root `server.js` process for tiles and API proxy
-- the Python backend on port `8000`
+- the FastAPI backend on port `8090`
 
 Recommended flow:
 

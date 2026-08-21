@@ -10,12 +10,12 @@ BACKEND_ROOT = SRC_ROOT.parent
 REPO_ROOT = BACKEND_ROOT.parent
 
 
-def _discover_data_root() -> Path | None:
+def _discover_data_root() -> Path:
     env = os.getenv("URBAN_DOSSIER_DATA_ROOT")
     if env:
-        candidate = Path(env)
-        if candidate.exists():
-            return candidate
+        # Configuration is a location contract, not an availability probe.
+        # Callers decide whether a particular artifact exists.
+        return Path(env)
 
     parent = REPO_ROOT.parent
     # Search legacy Drive-download directory names (older envs).
@@ -27,26 +27,24 @@ def _discover_data_root() -> Path | None:
     # Fallback: repo-local data directory (v3.7.7+ preprocessing-first layout).
     # Even if processed/ is absent, we want CACHE_DIR to resolve so overview
     # tiles can be generated into repo_root/data/cache/overview.
-    local_data = REPO_ROOT / "data"
-    if local_data.exists():
-        return local_data
-    return None
+    return REPO_ROOT / "data"
 
 
 DATA_ROOT = _discover_data_root()
-PROCESSED_DIR = DATA_ROOT / "processed" if DATA_ROOT and (DATA_ROOT / "processed").exists() else None
-CACHE_DIR = DATA_ROOT / "cache" if DATA_ROOT else None
-if CACHE_DIR is not None:
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    (CACHE_DIR / "overview").mkdir(parents=True, exist_ok=True)
-PRECOMPUTED_DIR = CACHE_DIR / "precomputed" if CACHE_DIR else None
-REPORT_CACHE_DIR = CACHE_DIR / "reports" if CACHE_DIR else None
-OVERVIEW_DIR = CACHE_DIR / "overview" if CACHE_DIR else None
-DEMO_DIR = DATA_ROOT / "demo" if DATA_ROOT else None
+PROCESSED_DIR = (
+    DATA_ROOT / "processed" if (DATA_ROOT / "processed").exists() else None
+)
+# Keep configuration import side-effect free. Writers create their own target
+# directory; readers use existence checks.
+CACHE_DIR = DATA_ROOT / "cache"
+PRECOMPUTED_DIR = CACHE_DIR / "precomputed"
+REPORT_CACHE_DIR = CACHE_DIR / "reports"
+OVERVIEW_DIR = CACHE_DIR / "overview"
+DEMO_DIR = DATA_ROOT / "demo"
 # Official boundary downloads. nta_2020.geojson doubles as the coastline: the
 # NTA layer partitions NYC's dry land and contains no water polygons, so its
 # union is where the city stops and the harbour begins.
-BOUNDARIES_DIR = DATA_ROOT / "boundaries" if DATA_ROOT else None
+BOUNDARIES_DIR = DATA_ROOT / "boundaries"
 READY_DATA_DIR = Path(os.getenv("URBAN_DOSSIER_READY_ROOT", str(REPO_ROOT / "data" / "ready")))
 RAW_DATA_ROOT = Path(os.getenv("URBAN_DOSSIER_RAW_DATA_ROOT", str(Path.home() / "nyc_open_data")))
 

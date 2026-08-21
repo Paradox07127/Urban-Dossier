@@ -233,20 +233,39 @@ def _to_dict(obj: Any) -> dict[str, Any]:
 
 
 def _message_text(msg_dict: dict[str, Any]) -> str:
-    """Return the model's user-facing text.
+    """Return only model text intended for the user.
 
-    Nemotron is a reasoning model: vLLM puts the chain of thought in
-    ``reasoning`` (older builds: ``reasoning_content``) and the answer in
-    ``content``. When a response is cut off mid-reasoning ``content`` is None,
-    so falling back to the reasoning text is the difference between surfacing a
-    partial answer and returning nothing at all.
+    Reasoning models expose scratch work in ``reasoning`` or
+    ``reasoning_content``. Those fields belong in ``TurnTrace`` for operators,
+    but must never become the user-facing answer when ``content`` is empty or
+    a generation is truncated.
     """
 
-    for key in ("content", "reasoning", "reasoning_content"):
-        value = msg_dict.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
+    value = msg_dict.get("content")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
     return ""
+
+
+def _sanitize_history(history: list[dict] | None) -> list[Message]:
+    """Keep only bounded user/assistant prose from caller-supplied history.
+
+    Tool and system messages are created by this loop, not by API callers.
+    Filtering here protects direct ``run_agent`` users as well as the FastAPI
+    boundary and avoids replaying stale tool-call ids into a new run.
+    """
+
+    safe: list[Message] = []
+    for raw in (history or [])[-20:]:
+        item = _to_dict(raw)
+        role = item.get("role")
+        content = item.get("content")
+        if role not in {"user", "assistant"} or not isinstance(content, str):
+            continue
+        text = content.strip()
+        if text:
+            safe.append({"role": role, "content": text[:4000]})
+    return safe
 
 
 def _compact_observation(result: dict[str, Any], budget_chars: int) -> str:
@@ -429,8 +448,7 @@ def run_agent(
             "content": SYSTEM_PROMPT + tool_availability_prompt(availability),
         }
     ]
-    if history:
-        messages.extend(history)
+    messages.extend(_sanitize_history(history))
     messages.append({"role": "user", "content": user_message})
 
     trace: list[ToolCallTrace] = []
@@ -471,12 +489,10 @@ def run_agent(
         msg = choice.message
         msg_dict = _to_dict(msg)
         tool_calls = msg_dict.get("tool_calls") or []
-        # Keep these separate: ``content`` is a real user-facing answer, while
-        # ``fallback_text`` may be raw chain of thought. Reasoning is a last
-        # resort only -- never the preferred answer.
+        # Keep hidden reasoning only in ``turns``. It is never a fallback for
+        # user-facing content.
         raw_content = msg_dict.get("content")
         content = raw_content.strip() if isinstance(raw_content, str) else ""
-        fallback_text = _message_text(msg_dict)
         finish_reason = getattr(choice, "finish_reason", None)
         turns.append(
             _turn(iteration, msg_dict, finish_reason, tool_calls, kind="loop")
@@ -516,10 +532,8 @@ def run_agent(
                         f"{iterations} and the wrap-up call failed with "
                         f"{wrap_error}"
                     )
-                if not final_answer:
-                    final_answer = fallback_text
             else:
-                final_answer = fallback_text
+                final_answer = _message_text(msg_dict)
             break
 
         # Dispatch each requested tool call.

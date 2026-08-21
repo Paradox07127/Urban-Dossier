@@ -12,7 +12,7 @@ questions — keep both.
 
 ## Service-level: `evaluate_agent_business.py`
 
-24 fixed trajectories across evidence lookup, new analysis, product help
+19 fixed trajectories (schema 1.1) across evidence lookup, new analysis, product help
 and out-of-scope handling. Expectations cover tool presence and order,
 forbidden tools, structured evidence and answer guard terms. Collection is
 separated from grading: a live run writes one JSON object per case, and

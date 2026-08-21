@@ -1,13 +1,15 @@
-import { useState } from 'react';
+import { useState, type Key } from 'react';
 import { motion } from 'motion/react';
 import { MessageSquare, FileText, Image } from 'lucide-react';
 import AgentChat from './AgentChat';
 import AgentReport from './AgentReport';
+import type { DetailPreviewResponse } from '../types';
 
 interface Props {
+  key?: Key;
   sessionId: string | null;
   onCreateSession: () => Promise<string>;
-  analysisPayload: any;
+  analysisPayload: DetailPreviewResponse | null;
   target?: { latitude: number; longitude: number; label?: string } | null;
   onIsochrone?: (feature: any | null) => void;
   toolAvailability?: Record<string, { available: boolean; reason: string }>;

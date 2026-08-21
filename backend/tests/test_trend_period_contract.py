@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+import sys
 
 import pandas as pd
 
@@ -13,6 +14,7 @@ _spec = _ilu.spec_from_file_location(
     "preprocess_common", _P(__file__).resolve().parents[1] / "scripts" / "preprocess_common.py"
 )
 _pc = _ilu.module_from_spec(_spec)
+sys.modules[_spec.name] = _pc
 _spec.loader.exec_module(_pc)
 quarter_label = _pc.quarter_label
 from urban_dossier_backend.pattern_detector import (

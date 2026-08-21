@@ -97,6 +97,8 @@ export interface InspectorProps {
   pinnedPreview: DetailPreviewResponse | null;
   pinnedTitle: string;
   comparisonActive: boolean;
+  comparisonLoading: boolean;
+  comparisonError: string | null;
   serverComparison: CompareResponse | null;
   onClearComparison: () => void;
 
@@ -447,6 +449,8 @@ export default function Inspector(props: InspectorProps) {
     pinnedPreview,
     pinnedTitle,
     comparisonActive,
+    comparisonLoading,
+    comparisonError,
     serverComparison,
     onClearComparison,
     reportCache,
@@ -676,9 +680,22 @@ export default function Inspector(props: InspectorProps) {
                       Clear pin
                     </button>
                   </div>
+                  {comparisonLoading && (
+                    <p role="status" aria-live="polite" className="text-xs text-muted-foreground">
+                      Updating comparison…
+                    </p>
+                  )}
+                  {comparisonError && (
+                    <p role="alert" className="text-xs text-destructive">
+                      Live comparison unavailable; showing the two loaded snapshots.
+                    </p>
+                  )}
                   {(['overall', 'safety', 'transit', 'amenities'] as const).map((category) => {
-                    const a = serverComparison?.point_a.scores?.[category];
-                    const b = serverComparison?.point_b.scores?.[category];
+                    const a =
+                      serverComparison?.point_a.scores?.[category] ??
+                      pinnedPreview.scores?.[category];
+                    const b =
+                      serverComparison?.point_b.scores?.[category] ?? preview.scores?.[category];
                     const rawDelta = serverComparison?.deltas?.[category];
                     const delta = typeof rawDelta === 'number' ? Math.round(rawDelta) : null;
                     const stops = serverComparison?.delta_map?.presentation.stops ?? [];

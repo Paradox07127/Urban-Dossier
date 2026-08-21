@@ -4,8 +4,12 @@ Uses cuML DBSCAN on managed memory (unified memory) to share the 128GB pool
 with vllm. Falls back to scikit-learn on CPU if cuML is unavailable.
 """
 from __future__ import annotations
+
 import logging
+import math
 from typing import Any
+
+from .utils import haversine_m
 
 logger = logging.getLogger(__name__)
 
@@ -65,22 +69,50 @@ def detect_hotspots(
         }
         Sorted by incident_count descending.
     """
-    # Filter to valid coordinates
-    valid = [i for i in incidents
-             if i.get(lat_key) is not None and i.get(lon_key) is not None]
+    if eps_meters <= 0 or min_samples < 1:
+        raise ValueError("eps_meters and min_samples must be positive")
+
+    # Parse once and reject malformed, non-finite, or out-of-range coordinates.
+    # Passing NaN through makes both DBSCAN implementations reject the whole
+    # request instead of merely dropping the bad incident.
+    valid: list[dict[str, Any]] = []
+    lats: list[float] = []
+    lons: list[float] = []
+    for incident in incidents:
+        try:
+            lat = float(incident.get(lat_key))
+            lon = float(incident.get(lon_key))
+        except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(lat) and math.isfinite(lon)):
+            continue
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            continue
+        valid.append(incident)
+        lats.append(lat)
+        lons.append(lon)
 
     if len(valid) < min_samples:
         return []
 
-    # Convert eps from meters to approximate degrees (NYC latitude)
-    eps_deg = eps_meters / 111320.0
+    # Project to local metres before clustering. A degree of longitude is only
+    # cos(latitude) times a degree of latitude; treating them as equal
+    # under-clustered east-west NYC incidents by roughly 24 percent.
+    mean_lat = sum(lats) / len(lats)
+    mean_lon = sum(lons) / len(lons)
+    cos_lat = max(math.cos(math.radians(mean_lat)), 1e-12)
+    earth_radius_m = 6_371_008.8
+    points_m = [
+        (
+            earth_radius_m * math.radians(lon - mean_lon) * cos_lat,
+            earth_radius_m * math.radians(lat - mean_lat),
+        )
+        for lat, lon in zip(lats, lons)
+    ]
 
-    lats = [float(i[lat_key]) for i in valid]
-    lons = [float(i[lon_key]) for i in valid]
-
-    labels = _cluster_gpu(lats, lons, eps_deg, min_samples)
+    labels = _cluster_gpu(points_m, eps_meters, min_samples)
     if labels is None:
-        labels = _cluster_cpu(lats, lons, eps_deg, min_samples)
+        labels = _cluster_cpu(points_m, eps_meters, min_samples)
 
     if labels is None:
         return []
@@ -108,13 +140,12 @@ def detect_hotspots(
         center_lat = sum(c["lats"]) / n
         center_lon = sum(c["lons"]) / n
 
-        # Approximate radius: max distance from center
-        max_dist_m = 0
-        for lat, lon in zip(c["lats"], c["lons"]):
-            dlat = (lat - center_lat) * 111320
-            dlon = (lon - center_lon) * 111320 * 0.758  # cos(40.7°)
-            dist = (dlat**2 + dlon**2) ** 0.5
-            max_dist_m = max(max_dist_m, dist)
+        # Exact great-circle distance keeps the reported radius consistent
+        # with the clustering units and works outside the hard-coded NYC latitude.
+        max_dist_m = max(
+            haversine_m(center_lat, center_lon, lat, lon)
+            for lat, lon in zip(c["lats"], c["lons"])
+        )
 
         dominant_type = max(c["types"], key=c["types"].get) if c["types"] else None
 
@@ -132,29 +163,27 @@ def detect_hotspots(
     return result
 
 
-def _cluster_gpu(lats, lons, eps_deg, min_samples):
+def _cluster_gpu(points_m, eps_meters, min_samples):
     """GPU DBSCAN via cuML. Returns list of labels or None."""
     if not _CUML_AVAILABLE:
         return None
     try:
         _ensure_rmm()
-        df = cudf.DataFrame({"lat": lats, "lon": lons})
-        db = cuDBSCAN(eps=eps_deg, min_samples=min_samples)
-        labels_series = db.fit_predict(df[["lat", "lon"]])
+        df = cudf.DataFrame(points_m, columns=["x_m", "y_m"])
+        db = cuDBSCAN(eps=eps_meters, min_samples=min_samples)
+        labels_series = db.fit_predict(df[["x_m", "y_m"]])
         return labels_series.to_numpy().tolist()
     except Exception as e:
         logger.warning("cuML DBSCAN failed, falling back to CPU: %s", e)
         return None
 
 
-def _cluster_cpu(lats, lons, eps_deg, min_samples):
+def _cluster_cpu(points_m, eps_meters, min_samples):
     """CPU DBSCAN via scikit-learn. Returns list of labels or None."""
     try:
         from sklearn.cluster import DBSCAN
-        import numpy as np
-        X = np.column_stack([lats, lons])
-        db = DBSCAN(eps=eps_deg, min_samples=min_samples)
-        return db.fit_predict(X).tolist()
+        db = DBSCAN(eps=eps_meters, min_samples=min_samples)
+        return db.fit_predict(points_m).tolist()
     except ImportError:
         logger.warning("scikit-learn not available for CPU fallback")
         return None

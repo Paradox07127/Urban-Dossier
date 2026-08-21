@@ -42,6 +42,11 @@ DATASETS = (
 )
 
 
+# Inputs used to build supporting artifacts, not public catalog datasets. They
+# are allowed in a complete raw snapshot but stay visible in the audit report.
+AUXILIARY_FILES = {"transit/nyc_street_centerline.csv"}
+
+
 def read_header(path: Path) -> list[str]:
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         return next(csv.reader(handle))
@@ -123,14 +128,27 @@ def audit(raw_root: Path) -> dict[str, object]:
         status: sum(item.get("status") == status for item in results)
         for status in ("ok", "incompatible", "invalid", "missing")
     }
+    unexpected = sorted(actual_paths - expected_paths - AUXILIARY_FILES)
+    auxiliary = sorted(actual_paths & AUXILIARY_FILES)
+    missing = sorted(expected_paths - actual_paths)
+    status = (
+        "ok"
+        if not unexpected
+        and not missing
+        and counts["incompatible"] == 0
+        and counts["invalid"] == 0
+        else "invalid"
+    )
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "raw_root": str(raw_root.resolve()),
         "expected_dataset_count": len(DATASETS),
         "actual_csv_count": len(actual_paths),
-        "unexpected_csv_files": sorted(actual_paths - expected_paths),
-        "missing_csv_files": sorted(expected_paths - actual_paths),
+        "auxiliary_csv_files": auxiliary,
+        "unexpected_csv_files": unexpected,
+        "missing_csv_files": missing,
         "status_counts": counts,
+        "status": status,
         "datasets": results,
     }
 
@@ -147,6 +165,7 @@ def main() -> None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(payload + "\n", encoding="utf-8")
     print(payload)
+    raise SystemExit(0 if report["status"] == "ok" else 1)
 
 
 if __name__ == "__main__":
