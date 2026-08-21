@@ -1,10 +1,28 @@
 # Urban Dossier 项目完整性审计（2026-08-20）
 
+> **修订 2026-08-20（第二版）**：初版写成时，它所描述的 37 个文件改动尚未提交，
+> `453 passed` 这类证据只存在于单个工作区，随时可能丢失。这些改动已提交为
+> `fd5215b`，本报告与它同一提交，因此下文每条证据现在都可以按 commit 复现。
+> 第二版另外做了三件事：逐条复核了初版的断言并标注复核结果；把机制描述不准的
+> 条目改准（`SymGen`、`AGENT_BACKEND`）；补入初版写成后才测到的证据（真实模型
+> 评测、pass^k 指标缺陷、fault 用例自相矛盾），以及初版完全没有覆盖的 RAG 退役。
+> 复核方法与未覆盖范围见文末「复核记录」与「本报告未覆盖」。
+
 ## 结论
 
 当前仓库已经达到“本地工作站可运行、核心分析可验证、生产 agent 边界明确”的状态。数据、评分、双点对比、地图与 Vega 图表、OpenClaw agent、报告/海报入口均有实际接线；本轮修复后，完整 Python 测试、前端构建与浏览器烟测、数据发布门禁、依赖审计和在线五段健康检查均通过。
 
-它还不是无条件的正式发布完成态。主要剩余缺口是：报告 scripts 模式引用的 SymGen resolve/verify 实现不在仓库中；CI 目前只做 Python 语法和非阻断 shellcheck，没有执行本轮本地通过的行为测试；GPU/cuML、DGX 和 mac profile 未在本轮跨硬件复测。
+同日稍早（`52555ff`）RAG 子系统被整体退役：`rag/` 包、`retrieve_dataset_docs`
+工具、`embeddings` vLLM 服务与 6 个相关评测用例一并删除。本报告中的「7 个 tools」
+「19 个 service eval cases」都是退役后的数字。判据是实测——15 个可查数据集的完整
+真实 schema（106 列，从 Parquet 生成）约 400 token，上下文窗口 32,768；而
+`rag/catalog.json` 的 dataset id 与 `query_dataset` 实际接受的**零重叠**，建索引会
+把 agent 引向不存在的标识符。重启该话题的门槛记录在 README「RAG: retired」。
+
+它还不是无条件的正式发布完成态。主要剩余缺口是：报告路径引用的 SymGen
+resolve/verify 实现不在仓库中且**静默降级**；CI 目前只做 Python 语法和非阻断
+shellcheck，没有执行本轮本地通过的行为测试；GPU/cuML、DGX 和 mac profile 未在本轮
+跨硬件复测。
 
 ## 审计范围与结果
 
@@ -22,17 +40,24 @@
 
 ## 架构设计问题清单
 
+**级别读法（第二版新增）**：初版 24 条里有 16 条标 `高`，占三分之二，排序信息因此
+接近于零，而文末「建议顺序」其实只排了 7 项——作者心里有更细的优先级，表格没表达
+出来。第二版把 `高` 拆成两档，使表格与建议顺序对齐：
+
+- **阻断**：在正式对外发布前必须关闭，否则产品承诺无法兑现或回归无人拦截；
+- **高**：真实设计债务，但不阻断当前的工作站/演示用途。
+
 下表描述的是设计债务与发布约束，不是测试结果的重复表述。“部分缓解”表示已有保护或文档，但根因仍存在；行为测试通过只能证明当前受测路径未回归，不能把开放问题自动改写为已解决。
 
 | 级别 | 问题 | 影响 | 状态 |
 | --- | --- | --- | --- |
 | 高 | `/api/agent/ask` 与 report/poster/refine 形成两套编排：前者走 OpenClaw agent loop，后者还保留 scripts/OpenClaw 分支、独立提示词与验证逻辑。 | 工具选择、history、安全边界、错误语义和证据规则可能漂移；同一会话在 ask 与报告输出中可能采用不同事实链路。 | **开放**：本轮收紧了两条路径的输入与 fail-closed 行为，但尚未统一编排内核。 |
-| 高 | scripts 报告路径声明依赖 SymGen 的 `resolve_symgen.py` / `verify_narrative.py`，实现并不在仓库。 | 无法复现所声称的确定性数字解析与叙事核验；部署到新环境时会直接缺模块，或退化为没有同等级 grounding 的生成。 | **开放/发布阻断**：应补真实实现与契约测试，或删除 SymGen 声明并降低产品承诺。 |
+| 阻断 | 报告路径声明依赖 SymGen 的 `resolve_symgen.py` / `verify_narrative.py`，实现并不在仓库（导入自不存在的 `skills/blocksense-report/scripts`）。 | **不是崩溃，是静默降级**：两个调用点（`agent_service.py:690`、`:799`）都有 `if resolve_symgen is None: return` 守卫，导入失败只记一条 `logger.warning` 且不再重试，报告照常产出，产物里没有任何字段标明 grounding 未执行。对一个防幻觉管线而言，这比 ImportError 更危险——下游无法区分「已核验」和「跳过核验」。 | **开放/发布阻断**（复核 2026-08-20：属实，机制已改准）：应补真实实现与契约测试，或删除 SymGen 声明、并在报告产物中显式标注 grounding 状态。 |
 | 高 | 数据契约分散在 metric registry、预处理脚本、provider 表映射、validator 常量和文档中；部分 ready legacy 表没有逐文件、含输入哈希的完整 manifest。 | 新增或更名发布物容易出现“数据有效但门禁误报”或“文件存在但方法/输入已陈旧”；不能仅凭 Parquet 可读证明可发布。 | **部分缓解**：本轮修复 validator 清单漂移，NYCCAS、HVI、敏感性等新产物已有 publication gate；统一 catalog 和 legacy manifest 迁移仍开放。 |
-| 高 | CI 没有行为门禁，只做 Python compile，shellcheck 仍非阻断。 | 本地通过的评分、API、agent、前端构建和浏览器烟测不会在合并时自动阻止回归。 | **开放/发布阻断**：本轮测试结果是一次性证据，不等于 CI 缺口已解决。 |
+| 阻断 | CI 没有行为门禁，只做 Python compile，shellcheck 仍非阻断。 | 本地通过的评分、API、agent、前端构建和浏览器烟测不会在合并时自动阻止回归。 | **开放/发布阻断**：本轮测试结果是一次性证据，不等于 CI 缺口已解决。 |
 | 高 | backend 通过修改 `sys.path` 直接依赖仓库 `skills/` 下的 Python 包。 | 包边界、安装方式和运行目录耦合；wheel/container 或目录重组后可能 import 失败，也难以独立版本化与测试。 | **开放**：当前路径可运行，但尚未改成正式 package/dependency contract。 |
 | 中 | `SkillDataProvider` 仍是占位实现。 | 显式 `data_mode=skill` 不具备生产能力；`auto` 回落可能掩盖用户以为 skill 数据路径已启用的事实。 | **开放**：当前 fail/fallback 行为受测；应实现后再公开，或删除该模式。 |
-| 高 | `AGENT_BACKEND` 在两处入口的默认值相反，一处默认 scripts，另一处默认 nemoclaw。 | 同一套环境变量缺省部署可能走不同网络边界、模型和工具链；排障及安全审计结果不可移植。 | **开放**：本轮只强化显式模式下的 fail-closed，默认值尚未统一为单一配置源。 |
+| 中 | `AGENT_BACKEND` 有两份定义且默认值相反：`config.py:77` 默认 `scripts`，`agent_service.py:114` 默认 `nemoclaw`。 | 复核后**影响小于初版描述**：`config.AGENT_BACKEND` 全仓无任何消费者（已 grep 确认，仅 `agent_service` 的那份被使用），而它恰好是不安全的那个默认值。因此当前没有部署会因此走错边界；风险是潜伏的——将来任何人 import `config.AGENT_BACKEND` 都会静默拿到 `scripts`。 | **开放**（复核 2026-08-20：降级 高→中，结论改为删除而非统一）：直接删除 `config.py` 中的死定义，比「统一为单一配置源」更小且更彻底。 |
 | 中 | Agent session 仅保存在进程内存。 | 多 worker 间不可见，重启即丢失；负载均衡下 history/report 可能落到不同会话，无法提供可靠续聊或审计留痕。 | **开放**：前端切点/改半径时的 session 串线已修，但持久化和多进程一致性未解决。 |
 | 中 | `server.js`、`DirectQueryDataProvider` 和前端 `Map` 仍是超大单体。 | 数据查询、缓存、地图状态和接口逻辑高度耦合，修改影响面大，局部测试与所有权边界不清，重复/死代码更易累积。 | **开放**：本轮只做安全的局部清理；未进行大规模拆分。 |
 | 中 | Pydantic 请求/响应模型与 TypeScript 类型和消费逻辑手工双写。 | 字段新增、nullable、枚举或错误响应容易只更新一端；编译通过不能验证运行时 payload 完全一致。 | **开放**：已有若干契约测试，但尚未由 OpenAPI/codegen 生成单一类型来源。 |
@@ -52,8 +77,9 @@
 | 中 | hotspot 只使用 detail payload 中最多 60 个 `map_points`。 | 密集区域的截断样本可能改变 DBSCAN 簇数量、主类型与半径，不能视为全量空间统计。 | **部分缓解**：本轮修复坐标源、事件过滤、非法坐标和米制距离；60 条上限仍开放。 |
 | 高 | intervention elasticity 是观察数据上的相关关系，不是因果效应。 | “增加一个设施后分数提高 X”可能混入选址、密度和其他共同原因，不能作为政策效果预测。 | **开放且已披露**：响应标记 `causal=false` 并给 fit/caveat；在没有因果设计前不得提升措辞。 |
 | 高 | raw audit 对多数正式 CSV 只检查列、行数与可解析性，没有逐文件 hash、来源 snapshot ID、as-of 和 freshness SLA。 | 上游内容可在文件名和行数相同的情况下变化；门禁无法证明数据来源、时点或是否过期，结果难以完整复现。 | **部分缓解**：本轮修复 audit 状态、退出码和 auxiliary 模型；内容身份与新鲜度契约仍开放。 |
-| 高 | Agent eval 以路由和响应契约为主，语义事实性、证据充分性、数字一致性和拒答质量门禁不足。 | schema 与工具调用均通过的回答仍可能错误归因、过度概括或给出证据不支持的建议。 | **开放**：现有 19-case/确定性 routing 结果不代表语义质量问题已解决，需要固定模型与人工标注质量集。 |
-| 中 | transient tool error 缺少统一、确定性的重试策略。 | 网络抖动、Gateway 短暂失败或读超时时，相同请求可能随机失败；模型自行重试还可能重复昂贵调用或产生不同轨迹。 | **开放**：个别在线样例发生过重试并成功，但尚无按错误类型、次数、退避和幂等性定义的公共策略。 |
+| 高 | Agent eval 以路由和响应契约为主，语义事实性、证据充分性、数字一致性和拒答质量门禁不足。 | schema 与工具调用均通过的回答仍可能错误归因、过度概括或给出证据不支持的建议。 | **开放**（复核 2026-08-20，补入初版缺的模型侧证据）：初版引用的「19 cases 契约通过 / routing 4/4」是**离线契约测试，不含模型**。同日补跑了一轮真实模型评测（30 用例、生产循环、本地 Nano）：29 executed、pass_rate **0.931**、p50 15.2 s、wall_max 91.5 s，与退役 RAG 前的生产基线逐位一致（同为 29 executed / 0.931），说明退役未造成可测退化。但该套判分仍以正则与工具调用为主，**结论不变**：需要固定模型与人工标注质量集。 |
+| 中 | transient tool error 缺少统一、确定性的重试策略。 | 网络抖动、Gateway 短暂失败或读超时时，相同请求可能随机失败；模型自行重试还可能重复昂贵调用或产生不同轨迹。 | **开放**（复核 2026-08-20：结论不变，但支撑它的评测证据不可用）：实测规律是**错误带不带修复指令**决定重试与否——`query_dataset` 的错误附带 `available_datasets` 全量合法 id，agent 一次往返即自纠；而 `fault-score-tool-flaky` 注入的错误原文是 `retry_hint: 'This tool is failing. Do not report its numbers.'`，**在叫模型停止调用**，该用例却断言 `min_tool_calls: 2` 要求它重试。测试自带指令与自身断言互相矛盾，因此不能用它证明「agent 不会重试」。修 harness 应先于修产品。 |
+| 高 | 评测的 `pass^k` 指标被系统性低估约 13.8 个百分点，所有历史报告均受影响。 | 4 个 `routing` 用例走确定性意图路由、不经过模型，因此从不经过 `collapse_attempts()`，`pass_hat_k` 恒为 `None`——**却照样计入分母**。本轮实测 `pass^k` 报 23/29 = 0.793，实际应为 27/29 = 0.931。已核对 08-20 的 cutlass/marlin A/B 报告，同为 `{1.0: 23, None: 4, 0.0: 2}`，说明偏差存在于全部历史数字（0.793 / 0.724 / 0.690 / 0.655）。 | **开放**（第二版新增）：A/B 两侧偏差相同，故既有**比较结论仍成立**，失真的只是绝对值。但若要把 `pass^k` 用作发布门禁，必须先修：在 `run_routing_case()` 中补写该键，或把 routing 排除出 `pass^k` 分母。 |
 | 高 | GPU/cuML 与不同模型、DGX/mac/CPU fallback 的跨配置结果未验证。 | 聚类标签、数值精度、模型工具选择和输出质量可能随硬件/版本变化；当前工作站测试不能外推到发布矩阵。 | **开放/发布前验证项**：CPU 与当前模型路径受测；需固定数据、随机种子、依赖版本和模型质量集执行硬件矩阵。 |
 
 ## 数据快照
@@ -106,11 +132,34 @@
 - 浏览器烟测：4 个 Vega 图；comparison delta 5 features / 4 layers；985 个双变量 features；20 个 timeline periods；离线导出 3 charts、0 external requests。
 - 在线健康：vLLM、OpenClaw、FastAPI、agent status、Node/frontend 5/5。
 - 在线 agent：5 次迭代，3 次地址检索（含重试）+ 1 次比较工具，返回 4 条 evidence 和带 500 m 半径的 grounded 回答。
-- Agent eval：service corpus 19 cases 契约通过；deterministic routing 4/4。
+- Agent eval（离线契约）：service corpus 19 cases 通过；deterministic routing 4/4。
+- **Agent eval（真实模型，第二版补测）**：`model_cases` schema 1.2，30 用例经生产
+  循环打到本地 Nano `:8000`。29 executed / 1 skipped（`tool-find-similar`，门禁
+  未放行）；26 pass、1 warn、2 fail；`pass_rate` **0.931**；p50 15.22 s、
+  max 91.54 s、总 609 s；285.2 tok/s。报告存于
+  `/mnt/data/urban-dossier-state/evals/post_rag_retire_20260820.json`。
+  两个 fail 分别是 `tool-compare-two-places`（已知高频抖动，MODEL_CANDIDATES
+  记有「两模型均不稳定，单轮不足以定论」）与 `fault-score-tool-flaky`（见架构表
+  中 harness 自相矛盾一条）。
+- **与退役 RAG 前的对照**：cutlass 生产基线为 29 executed / `pass_rate` 0.931，
+  与本次逐位一致。该比较跨越了 schema 1.1→1.2，通常不成立；此处成立是因为被删
+  的用例在旧跑中本就是 skip，两侧 `cases_executed` 同为 29。
 - Python 环境：87 packages compatible。
 - 格式：`git diff --check` 通过。
+- **证据可复现性**：以上全部对应提交 `fd5215b`。初版写作时这些改动尚未提交，
+  证据只存在于单个工作区。
 
 ## 剩余风险与建议顺序
+
+> **第二版调整**：新增第 0 项。评测框架自身的两个缺陷会污染此后所有用评测数字
+> 做的判断，包括本报告给出的 0.931，所以它们排在产品修复之前。两项都是纯代码、
+> 有确定复现、不改变产品行为。
+
+0. **最先：修评测框架的两个缺陷。**（a）`fault-score-tool-flaky` 与
+   `fault-score-tool-down` 共用同一个注入 payload，而那句 `retry_hint` 在叫模型
+   停止调用，与 `flaky` 用例 `min_tool_calls: 2` 的断言直接矛盾——应按 `on_call`
+   分离 hint。（b）`pass^k` 的分母包含 4 个永远拿不到该键的 routing 用例，导致所有
+   历史 `pass^k` 低估约 13.8 个百分点。在这两项修好前，不要用评测数字设门禁。
 
 1. **高：报告 grounding 实现缺失。** `agent_service.py` 的 scripts 模式引用 `resolve_symgen.py` / `verify_narrative.py`，但仓库没有这两个实现；生产 OpenClaw 报告路径也没有同等级的确定性数字核验。发布报告功能前应补齐一个真实、测试覆盖的 grounding 实现，或删除所有 SymGen 声明并把报告明确标成仅基于所给 evidence 的模型摘要。
 2. **高：CI 不执行行为测试。** `.github/workflows/lint.yml` 目前只做 Python compile，shellcheck 还被 `|| true` 设为非阻断。本轮 453 个 Python tests、前端 build/smoke、Node contracts 和无数据 agent eval 应分层进入 CI；依赖真实数据/浏览器/服务的测试可单独作为 workstation release gate。
@@ -120,11 +169,47 @@
 6. **中低：可访问性与 bundle。** Modal 缺完整 focus trap/Escape，部分 icon-only 按钮缺 aria-label；Vega embed 约 855 KB、MapLibre 约 1.05 MB，已分 chunk 但仍值得按路由动态加载。
 7. **环境覆盖：** GPU/cuML、DGX Spark、mac profile 未在本轮实际运行；正式发布前分别执行硬件矩阵和固定模型质量集。
 
+## 复核记录（第二版）
+
+初版的断言逐条按 `fd5215b` 复核，方法与结果如下。**复核的是仓库，不是初版文本**。
+
+| 初版断言 | 复核方法 | 结果 |
+| --- | --- | --- |
+| `453 passed` | 在 `fd5215b` 上重跑完整套件 | ✅ 属实 |
+| 7 个 analyst tools | `len(tools.TOOLS)` | ✅ 7 |
+| 19 个 service eval cases | 读 `business_cases.json` | ✅ 19，schema 1.1 |
+| 前端依赖已精简、包名已改 | 读 `package.json` | ✅ 直接依赖 20 个，名为 `urban-dossier-frontend` |
+| SymGen 实现不在仓库 | 全仓 `find` + 读调用点 | ✅ 属实，但机制是静默降级而非崩溃（已改准） |
+| CI 只做 compile + 非阻断 shellcheck | 读 `.github/workflows/lint.yml` | ✅ 仅两个 job，shellcheck 带 `\|\| true` |
+| `SkillDataProvider` 是占位 | 读 `skill_provider.py` | ✅ 每个方法都 `raise RuntimeError` |
+| backend 依赖 `sys.path` 注入 skills | 读 `app.py:27-33` | ✅ 属实 |
+| Agent session 仅进程内存 | 读 `agent_session.py:37-40` | ✅ 内存 dict + 锁 |
+| `AGENT_BACKEND` 两处默认值相反 | 全仓 grep 消费者 | ⚠️ 属实但影响被高估，`config.py` 那份无人使用（已降级并改结论） |
+| 初版未提及 RAG 退役 | grep 全文，3 处 "rag" 均为 `cove**rag**e` 子串 | ❌ 覆盖缺口，已补 |
+
+## 本报告未覆盖
+
+明确声明边界，比留白更可信。以下均**未**在本轮验证：
+
+- **硬件矩阵**：GPU/cuML、DGX Spark、mac profile 一次都没跑；聚类标签、数值精度与
+  模型工具选择都可能随硬件与依赖版本变化。
+- **并发与多进程**：session 只在单进程内存中验证过。多 worker 下的可见性、负载
+  均衡后的续聊、以及重启后的留痕，均无测试。
+- **长会话**：没有测过 context 溢出边界。32K 窗口下多轮叠加工具观测何时触顶、
+  触顶后如何降级，未知。
+- **负载与稳定性**：没有压测、没有长稳跑；本轮最慢用例 91.5 s，但无并发场景数据。
+- **语义质量**：判分仍以正则与工具调用为主，没有人工标注质量集（见算法表对应条目）。
+
 ## 发布判断
 
 - 本地演示/工作站日常分析：**可用**。
 - 数据与算法发布门禁：**通过当前快照**。
 - 前端对比与可视化：**可用且已回归**。
-- Agent ask：**生产边界内可用**。
-- 报告/海报正式对外发布：**有条件可用**，需先决定并落实 grounding 契约。
+- Agent ask：**生产边界内可用**。真实模型评测 29 executed / `pass_rate` 0.931，
+  与退役 RAG 前的基线一致；但该分数出自以正则与工具调用为主的判分器，不等于语义
+  质量已验证。
+- 报告/海报正式对外发布：**有条件可用**，需先决定并落实 grounding 契约。注意
+  SymGen 缺失是静默降级——在补上标注前，无法从产物判断某份报告是否经过核验。
 - 跨平台正式 release：**尚未完成**，受 CI 与硬件矩阵缺口约束。
+- **把评测数字当门禁**：**尚不可**。`pass^k` 低估约 13.8 个百分点、且有一个 fault
+  用例的注入指令与自身断言矛盾；先修框架（建议顺序第 0 项），再谈门禁。
