@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from urban_dossier_backend.service import (
     parse_location_query,
+    strip_location_qualifiers,
     search_address_payload,
 )
 
@@ -143,6 +144,49 @@ def test_landmark_ranking_prefers_the_place_over_a_business_named_after_it():
     out = search_address_payload("Union Square", limit=3)["results"]
     assert out
     assert "HARLEM" not in out[0]["address"].upper()
+
+
+def test_a_postal_state_suffix_no_longer_empties_the_search():
+    """The bug that made the agent unusable on ordinary questions.
+
+    Every token must match, and the index stores no state abbreviation, so
+    "Times Square, New York, NY" asked for an address containing TIMES,
+    SQUARE and NY -- and got nothing. Models write the postal form by
+    reflex, so this defeated the geocoder for any question that named a
+    place, plain addresses included. Found 2026-08-22 by asking the live
+    agent to compare two landmarks; it burned five search_address calls and
+    honestly reported it could not resolve either.
+    """
+    for qualified, bare in (
+        ("Times Square, New York, NY", "Times Square"),
+        ("Times Square, NY", "Times Square"),
+        ("67 Wall Street, New York, NY", "67 Wall Street"),
+        ("Prospect Park, Brooklyn, NY", "Prospect Park, Brooklyn"),
+    ):
+        got = search_address_payload(qualified, limit=5)["results"]
+        expected = search_address_payload(bare, limit=5)["results"]
+        assert got, f"{qualified!r} returned nothing"
+        assert [r["address"] for r in got] == [r["address"] for r in expected]
+
+
+def test_qualifier_stripping_is_segment_anchored_not_word_removal():
+    """"New York Avenue" is a real Brooklyn street.
+
+    Dropping the words wherever they appear would delete it. Only a whole
+    trailing comma segment is a qualifier.
+    """
+    assert strip_location_qualifiers("New York Avenue, Brooklyn") == "New York Avenue, Brooklyn"
+    assert strip_location_qualifiers("Times Square, New York, NY") == "Times Square, New York"
+    assert strip_location_qualifiers("Union Square, NY 10003") == "Union Square"
+    assert strip_location_qualifiers("Broadway") == "Broadway"
+
+    results = search_address_payload("New York Avenue, Brooklyn", limit=5)["results"]
+    assert any("NEW YORK AVENUE" in r["address"].upper() for r in results)
+
+
+def test_a_query_that_is_only_qualifiers_still_reports_no_match():
+    """Stripping must not invent a match out of an empty query."""
+    assert search_address_payload("New York, NY", limit=5)["results"] == []
 
 
 def test_a_bare_borough_name_returns_nothing():

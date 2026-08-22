@@ -54,7 +54,7 @@ shellcheck，没有执行本轮本地通过的行为测试；GPU/cuML、DGX 和 
 | 中 | `/api/agent/ask` 与 report/poster/refine 仍是两套编排，但**第二套的分支已在 2026-08-22 收敛为一条**：scripts 模式、direct-vLLM 客户端（`_get_openai_client` / `_llm_chat` / `_llm_chat_multi`）与 SymGen 一并删除，`agent_service` 现在没有自己的模型客户端，所有模型调用都经 OpenClaw 网关进沙箱——沙箱边界从条件判断变成结构性事实。剩余差异是提示词与产物形态不同。 | 工具选择、history、安全边界、错误语义和证据规则可能漂移；同一会话在 ask 与报告输出中可能采用不同事实链路。 | **开放（已降级 高→中）**：分支已收敛、边界已结构化，但两套提示词与两种产物形态仍未统一到一个编排内核。 |
 | ~~阻断~~ | 报告路径声明依赖 SymGen 的 `resolve_symgen.py` / `verify_narrative.py`，实现并不在仓库（导入自不存在的 `skills/blocksense-report/scripts`）。 | **不是崩溃，是静默降级**：两个调用点（`agent_service.py:690`、`:799`）都有 `if resolve_symgen is None: return` 守卫，导入失败只记一条 `logger.warning` 且不再重试，报告照常产出，产物里没有任何字段标明 grounding 未执行。对一个防幻觉管线而言，这比 ImportError 更危险——下游无法区分「已核验」和「跳过核验」。 | **已关闭 2026-08-22**：选择了删除。`resolve_symgen` / `verify_narrative` 及其整条 direct-scripts 报告路径已移除（`agent_service.py` 1,208 → 768 行）。查证发现问题比初版描述的更实：提示词第 261 行要求模型对**所有**数字使用 `{{ref}}` 占位符并禁止裸数字，而解析器从不加载——该路径产出的报告里留着字面的 `{{rodent_count}}`，不是「少了核验」而是「数字没被填进去」。同时新增 `GROUNDING_NONE`：report/poster/refine 的每个成功响应都带 `grounding` 字段、HTML 页脚都带说明，产物因此能自述是否经过核验。实测确认（真实报告：`grounding.verified=false`、页脚在、无占位符）。 |
 | 高 | 数据契约分散在 metric registry、预处理脚本、provider 表映射、validator 常量和文档中；部分 ready legacy 表没有逐文件、含输入哈希的完整 manifest。 | 新增或更名发布物容易出现“数据有效但门禁误报”或“文件存在但方法/输入已陈旧”；不能仅凭 Parquet 可读证明可发布。 | **部分缓解**：本轮修复 validator 清单漂移，NYCCAS、HVI、敏感性等新产物已有 publication gate；统一 catalog 和 legacy manifest 迁移仍开放。 |
-| 阻断 | CI 没有行为门禁，只做 Python compile，shellcheck 仍非阻断。 | 本地通过的评分、API、agent、前端构建和浏览器烟测不会在合并时自动阻止回归。 | **开放/发布阻断**：本轮测试结果是一次性证据，不等于 CI 缺口已解决。 |
+| ~~阻断~~ | CI 没有行为门禁，只做 Python compile，shellcheck 仍非阻断。 | 本地通过的评分、API、agent、前端构建和浏览器烟测不会在合并时自动阻止回归。 | **已关闭 2026-08-22**：新增 `python-tests`（423 个数据无关测试）与 `frontend`（tsc / build / 图层顺序 / 三个 node 契约）两个 job。分界是实测出来的：把数据根指向空目录跑一遍，得到 427 通过 / 22 失败，那 22 个集中在 5 个文件，现由 `needs_data` 标记管理（清单与理由在 `conftest.py`）。工作站门禁跑全部 461 个并加 `--require-data`——**跳过一个 data 测试即判失败**，因为「路径写错导致静默变绿」正是本项目踩过的坑。浏览器烟测需要活服务与真实瓦片，留在工作站门禁。shellcheck 维持非阻断且注明原因：本机没装 shellcheck，无法验证改成阻断会不会直接让 main 变红。 |
 | 高 | backend 通过修改 `sys.path` 直接依赖仓库 `skills/` 下的 Python 包。 | 包边界、安装方式和运行目录耦合；wheel/container 或目录重组后可能 import 失败，也难以独立版本化与测试。 | **开放**：当前路径可运行，但尚未改成正式 package/dependency contract。 |
 | 中 | `SkillDataProvider` 仍是占位实现。 | 显式 `data_mode=skill` 不具备生产能力；`auto` 回落可能掩盖用户以为 skill 数据路径已启用的事实。 | **开放**：当前 fail/fallback 行为受测；应实现后再公开，或删除该模式。 |
 | 中 | `AGENT_BACKEND` 有两份定义且默认值相反：`config.py:77` 默认 `scripts`，`agent_service.py:114` 默认 `nemoclaw`。 | 复核后**影响小于初版描述**：`config.AGENT_BACKEND` 全仓无任何消费者（已 grep 确认，仅 `agent_service` 的那份被使用），而它恰好是不安全的那个默认值。因此当前没有部署会因此走错边界；风险是潜伏的——将来任何人 import `config.AGENT_BACKEND` 都会静默拿到 `scripts`。 | **开放**（复核 2026-08-20：降级 高→中，结论改为删除而非统一）：直接删除 `config.py` 中的死定义，比「统一为单一配置源」更小且更彻底。 |
@@ -176,7 +176,9 @@ shellcheck，没有执行本轮本地通过的行为测试；GPU/cuML、DGX 和 
 1. ~~**高：报告 grounding 实现缺失。**~~ **已完成 2026-08-22**：走了「删除声明 + 产物显式标注」这条路。原文如下——
 
 1. ~~高：报告 grounding 实现缺失。~~ `agent_service.py` 的 scripts 模式引用 `resolve_symgen.py` / `verify_narrative.py`，但仓库没有这两个实现；生产 OpenClaw 报告路径也没有同等级的确定性数字核验。发布报告功能前应补齐一个真实、测试覆盖的 grounding 实现，或删除所有 SymGen 声明并把报告明确标成仅基于所给 evidence 的模型摘要。
-2. **高：CI 不执行行为测试。** `.github/workflows/lint.yml` 目前只做 Python compile，shellcheck 还被 `|| true` 设为非阻断。本轮 453 个 Python tests、前端 build/smoke、Node contracts 和无数据 agent eval 应分层进入 CI；依赖真实数据/浏览器/服务的测试可单独作为 workstation release gate。
+2. ~~**高：CI 不执行行为测试。**~~ **已完成 2026-08-22**（见架构表对应条目）。原文如下——
+
+2. ~~高：CI 不执行行为测试。~~ `.github/workflows/lint.yml` 目前只做 Python compile，shellcheck 还被 `|| true` 设为非阻断。本轮 453 个 Python tests、前端 build/smoke、Node contracts 和无数据 agent eval 应分层进入 CI；依赖真实数据/浏览器/服务的测试可单独作为 workstation release gate。
 3. **中：`SkillDataProvider` 是占位实现。** `data mode=skill` 会失败，`auto` 会安全回落 direct。若不计划支持，应删除该模式；若计划支持，应先完成实现和契约测试再公开。
 4. **中：热点输入最多 60 个 map points。** 密集区域会被截断，适合 UI 提示而不是全量空间统计；应为热点提供独立、可分页的数据查询。
 5. **中：情景模拟是相关性模型。** Intervention elasticity 不能表述为因果预测，UI、报告和提示词必须继续保留此限制。
@@ -226,6 +228,6 @@ shellcheck，没有执行本轮本地通过的行为测试；GPU/cuML、DGX 和 
   产物带 `grounding` 字段并在页脚声明「数字取自所给 evidence，生成后未经独立复核」。
   这不是更强的保证，而是**诚实的、可被下游读取的**保证；要提升到「已核验」需要一个
   真实的 grounding 实现，届时把 `method` 从 `none` 改掉即可。
-- 跨平台正式 release：**尚未完成**，受 CI 与硬件矩阵缺口约束。
+- 跨平台正式 release：**尚未完成**，受硬件矩阵约束（CI 缺口已于 2026-08-22 关闭）。
 - **把评测数字当门禁**：**尚不可**。`pass^k` 低估约 13.8 个百分点、且有一个 fault
   用例的注入指令与自身断言矛盾；先修框架（建议顺序第 0 项），再谈门禁。

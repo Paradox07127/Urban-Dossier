@@ -6,6 +6,11 @@ jinja2>=3.1.6
 openai>=1.109.1
 scipy>=1.11
 httpx>=0.27
+# Runtime, not optional: timeline.py, scenarios.py and uncertainty.py all
+# import it. It was missing here until 2026-08-22 -- a fresh install from
+# this file would have failed at import, which is the class of thing the
+# new CI test job exists to catch.
+h3>=4.0
 # Pedestrian routing for POST /api/isochrone. networkx runs the Dijkstra
 # search, shapely builds the concave hull, pyproj converts it to an
 # equal-area projection so area_m2 is real square metres.

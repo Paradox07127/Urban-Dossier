@@ -14,6 +14,46 @@ hygiene. The project now also has a separately validated x86 NVIDIA workstation
 profile; platform-specific tuning remains isolated while both profiles share
 the same application and data contracts.
 
+### Fixed — the geocoder rejected the way people write addresses (2026-08-22)
+
+- `parse_location_query` requires every token to match, and the index stores
+  no state abbreviation, so any query ending `, NY` returned nothing --
+  including plain addresses. `67 Wall Street` found one row; `67 Wall Street,
+  New York, NY` found none. Models write the postal form by reflex, so this
+  defeated the agent for any question that named a place: asked to compare
+  Times Square with Prospect Park it spent five `search_address` calls and
+  honestly reported it could not resolve either.
+- Trailing qualifier segments (`, NY`, `, USA`, a bare ZIP, `NY 10036`) are now
+  stripped before parsing. Segment-anchored, not word removal: "New York
+  Avenue, Brooklyn" is a real street and keeps working, and `, New York` is
+  left alone because the borough alias already turns it into a Manhattan
+  filter.
+- Same question after the fix: two geocodes, one `compare_neighborhoods`, and
+  a cited answer (Times Square 28, Prospect Park 77).
+
+### Added — CI runs behaviour tests (2026-08-22)
+
+- New `python-tests` job runs the 423 tests that need only the repository, and
+  `frontend` runs typecheck, production build, the map layer-order contract
+  and the three Node contract tests. Previously CI compiled Python files and
+  ran a non-blocking shellcheck; nothing behavioural gated a merge.
+- The split is measured, not guessed: with the data roots pointed at an empty
+  directory the suite reports 427 passed / 22 failed, and those 22 live in
+  five files. They carry a `needs_data` marker whose registry and rationale
+  are in the new root `conftest.py`.
+- The workstation gate runs all 461 with `--require-data`, which fails on a
+  skipped data test. A skipped data test is how a wrong path goes green, and
+  that has happened here before (READY_DATA_DIR does not follow
+  URBAN_DOSSIER_DATA_ROOT; see pytest.ini).
+- `h3` was a runtime dependency of timeline.py, scenarios.py and
+  uncertainty.py but was missing from `backend/requirements.txt` -- a fresh
+  install would have failed at import. Added; this is the class of thing the
+  new job exists to catch.
+- shellcheck stays non-blocking, deliberately: it is not installed on the
+  workstation, so whether the scripts pass at `-S warning` is unverified, and
+  flipping an unverified check to blocking breaks main's CI rather than
+  catching anything.
+
 ### Removed — SymGen and the direct-scripts report path (2026-08-22)
 
 - Deleted `resolve_symgen` / `verify_narrative` and the whole direct-scripts

@@ -6,6 +6,24 @@ on:
   pull_request:
     branches: [main]
 
+# What CI can and cannot prove.
+#
+# `data/` is gitignored and lives only on the workstation, so a CI checkout can
+# run 423 of the 461 tests. The other 38 read the published Parquet layer; they
+# carry the `needs_data` marker (registry and rationale in conftest.py) and are
+# deselected here. Those are covered by the workstation release gate:
+#
+#   URBAN_DOSSIER_DATA_ROOT=/mnt/data/Urban-Dossier/data \
+#   URBAN_DOSSIER_READY_ROOT=/mnt/data/Urban-Dossier/data/ready \
+#     pytest backend/tests skills/urban_dossier_analyst/tests --require-data
+#
+# `--require-data` turns a skipped data test into a failure, so that gate
+# cannot go green because a path was wrong -- which has happened.
+#
+# Browser smokes (smoke:charts, smoke:camera) need a running backend, real
+# tilesets and a Chromium; they stay on the workstation gate too. What runs
+# here is everything that needs only the repository.
+
 jobs:
   python-syntax:
     runs-on: ubuntu-latest
@@ -25,11 +43,64 @@ jobs:
             -not -path "*/index/*" \
             -print0 | xargs -0 python -m py_compile
 
+  python-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install backend and test dependencies
+        run: |
+          set -e
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          pip install pytest numpy pandas
+      - name: Run the data-independent suite
+        run: |
+          set -e
+          pytest backend/tests skills/urban_dossier_analyst/tests \
+            -q -m "not needs_data"
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: interactive-map-explorer/package-lock.json
+      - name: Install
+        run: npm ci --prefix interactive-map-explorer
+      - name: Typecheck
+        run: npm --prefix interactive-map-explorer run lint
+      - name: Build
+        run: npm --prefix interactive-map-explorer run build
+      - name: Map layer order contract
+        run: npm --prefix interactive-map-explorer run check:layers
+      # These run in this job rather than their own: the offline-export test
+      # inlines the real Vega runtime from interactive-map-explorer/node_modules,
+      # so it needs the install above. Run standalone it fails on a missing
+      # vega.min.js, which looks like a broken contract and is not one.
+      - name: Offline HTML export contract
+        run: node --test scripts/test-html-report-export.js
+      - name: Methodology publication contract
+        run: node --test scripts/test-methodology-publication.js
+      - name: API cache key contract
+        run: node scripts/check-api-cache-key.js
+
   shell-check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Run shellcheck on bash scripts
+        # Still non-blocking. Making it a gate is a one-word change, but
+        # shellcheck is not installed on the workstation, so whether the
+        # scripts pass at -S warning today is unverified -- and flipping an
+        # unverified check to blocking breaks main's CI for everyone rather
+        # than catching anything. Verify locally first, then drop `|| true`.
         run: |
           sudo apt-get update -qq && sudo apt-get install -y shellcheck
           find . -type f -name "*.sh" \

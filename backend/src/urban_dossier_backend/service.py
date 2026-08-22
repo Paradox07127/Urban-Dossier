@@ -330,6 +330,47 @@ _BOROUGH_ALIASES: tuple[tuple[str, str | None], ...] = (
     ("NYC", None),
 )
 
+# Trailing "…, NY" / "…, USA" qualifiers, which a model writes by reflex and
+# the index never contains.
+#
+# These are dropped only when they form a WHOLE comma-separated segment, not
+# wherever their words appear. Blind token removal would break "New York
+# Avenue", a real Brooklyn street, and "NY" alone is exactly the token that
+# made every qualified query return nothing: parse_location_query requires
+# every token to match, so "Times Square, New York, NY" asked the index for
+# an address containing TIMES, SQUARE and NY.
+#
+# "NEW YORK" is deliberately absent -- _BOROUGH_ALIASES already turns it into
+# a MANHATTAN filter, which is information worth keeping.
+_QUALIFIER_SEGMENTS: frozenset[str] = frozenset(
+    {"NY", "N.Y.", "N Y", "USA", "U.S.A.", "US", "UNITED STATES"}
+)
+# A bare ZIP, or a state abbreviation followed by one ("NY 10036") -- the
+# shape a postal address ends in.
+_QUALIFIER_TAIL_RE = re.compile(
+    r"^(?:N\.?\s?Y\.?\s+)?\d{5}(?:-\d{4})?$"
+)
+
+
+def strip_location_qualifiers(query: str) -> str:
+    """Drop trailing city/state qualifier segments from a location query.
+
+    Segment-anchored on purpose: "New York Avenue, Brooklyn" keeps its street,
+    while "Times Square, New York, NY" loses only the state. A query that is
+    nothing but qualifiers is returned unchanged, so the caller's existing
+    "no tokens" path still reports no match rather than this function
+    inventing one.
+    """
+
+    parts = [part.strip() for part in (query or "").split(",")]
+    while len(parts) > 1:
+        tail = parts[-1].upper()
+        if tail in _QUALIFIER_SEGMENTS or _QUALIFIER_TAIL_RE.match(tail):
+            parts.pop()
+            continue
+        break
+    return ", ".join(part for part in parts if part)
+
 # Name columns of the datasets that carry landmark names, in preference
 # order. Both files ship latitude/longitude already.
 _LANDMARK_SOURCES: tuple[tuple[str, str, str], ...] = (
@@ -351,9 +392,17 @@ def parse_location_query(query: str) -> tuple[list[str], str | None]:
       what broke it.
     * Street ordinals are folded to bare numbers, because PLUTO stores
       "350 5 AVENUE" and everyone writes "350 5th Avenue".
+    * A trailing ", NY" (or USA, or a bare ZIP) is dropped before anything
+      else. Every token has to match, so a state abbreviation the index never
+      stores took every qualified query to zero results -- including plain
+      addresses: "67 Wall Street" found one row, "67 Wall Street, New York,
+      NY" found none. Models write the postal form by reflex, so in practice
+      this defeated the geocoder for any question that named a place.
     """
 
-    text = _ORDINAL_RE.sub(r"\1", (query or "").strip().upper())
+    text = _ORDINAL_RE.sub(
+        r"\1", strip_location_qualifiers(query).strip().upper()
+    )
     borough: str | None = None
     for alias, canonical in _BOROUGH_ALIASES:
         pattern = rf"(?:^|[^A-Z]){re.escape(alias)}(?:[^A-Z]|$)"
