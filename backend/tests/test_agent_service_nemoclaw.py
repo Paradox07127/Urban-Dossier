@@ -60,11 +60,6 @@ def test_refined_report_escapes_feedback_and_model_html(monkeypatch):
 def test_generate_report_fails_closed_when_openclaw_fails(monkeypatch):
     monkeypatch.setattr(agent_service, "AGENT_BACKEND", "nemoclaw")
     monkeypatch.setattr(agent_service, "_try_nemoclaw_report", lambda *_args: None)
-    monkeypatch.setattr(
-        agent_service,
-        "_fallback_script_report",
-        lambda *_args: (_ for _ in ()).throw(AssertionError("direct fallback ran")),
-    )
 
     result = agent_service.generate_report({})
 
@@ -75,16 +70,58 @@ def test_generate_report_fails_closed_when_openclaw_fails(monkeypatch):
     }
 
 
+def test_every_generated_artifact_declares_its_grounding(monkeypatch):
+    """The audit's release blocker was a claim with no field behind it.
+
+    SymGen promised deterministic numeric verification and never ran, and
+    nothing in the payload said so -- a caller could not tell a verified
+    number from an unverified one. Removing SymGen only closes that if the
+    artifacts now state it, so every success path carries `grounding`.
+    """
+    monkeypatch.setattr(agent_service, "AGENT_BACKEND", "nemoclaw")
+    monkeypatch.setattr(
+        agent_service,
+        "_openclaw_agent",
+        lambda *_args, **_kwargs: "## Safety\n" + "grounded prose " * 12,
+    )
+
+    report = agent_service.generate_report({})
+    assert report["grounding"] == agent_service.GROUNDING_NONE
+    assert report["grounding"]["verified"] is False
+    assert "not independently" in report["html"]
+
+    session = SimpleNamespace(analysis_payload={}, generated_reports=[])
+    refined = agent_service.refine_report(session, "focus on safety")
+    assert refined["grounding"] == agent_service.GROUNDING_NONE
+    assert "not independently" in refined["html"]
+
+
+def test_module_has_no_direct_model_client():
+    """The sandbox boundary is structural, not conditional.
+
+    These tests used to monkeypatch `_get_openai_client` to raise, proving the
+    direct path did not run on that call. The scripts mode and its host-vLLM
+    client were removed on 2026-08-22, so the stronger statement is available:
+    there is no client here to reach past OpenClaw with.
+    """
+    for name in (
+        "_get_openai_client",
+        "_llm_chat",
+        "_llm_chat_multi",
+        "_fallback_script_report",
+        "_apply_symgen_pipeline",
+        "resolve_symgen",
+    ):
+        assert not hasattr(agent_service, name), (
+            f"{name} is back; report/poster generation must stay inside the "
+            "OpenClaw sandbox"
+        )
+
+
 def test_generate_poster_fails_closed_when_openclaw_fails(monkeypatch):
     monkeypatch.setattr(agent_service, "AGENT_BACKEND", "nemoclaw")
     monkeypatch.setattr(agent_service, "_run_script", lambda *_args, **_kwargs: (True, ""))
     monkeypatch.setattr(agent_service, "_try_nemoclaw_poster", lambda *_args: None)
-    monkeypatch.setattr(
-        agent_service,
-        "_get_openai_client",
-        lambda: (_ for _ in ()).throw(AssertionError("direct vLLM ran")),
-    )
-
     result = agent_service.generate_poster({})
 
     assert result == {

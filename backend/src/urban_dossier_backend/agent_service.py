@@ -69,35 +69,10 @@ class _SafeEncoder(json.JSONEncoder):
         return super().default(obj)
 
 from .config import DEFAULT_OPENAI_BASE_URL, DEFAULT_OPENAI_API_KEY
-from .report import _resolve_model_name, _strip_thinking
+from .report import _strip_thinking
 
 logger = logging.getLogger(__name__)
 
-# SymGen anti-hallucination pipeline imports
-# These scripts live in the blocksense-report skill directory
-_symgen_imported = False
-resolve_symgen = None  # type: ignore[assignment]
-verify_narrative = None  # type: ignore[assignment]
-
-
-def _ensure_symgen_imports():
-    """Lazily import resolve_symgen and verify_narrative from blocksense scripts."""
-    global _symgen_imported, resolve_symgen, verify_narrative
-    if _symgen_imported:
-        return
-    scripts_dir = os.path.join(SKILL_BASE, "blocksense-report", "scripts")
-    if scripts_dir not in sys.path:
-        sys.path.insert(0, scripts_dir)
-    try:
-        from resolve_symgen import resolve_symgen as _resolve  # type: ignore[import-not-found]
-        from verify_narrative import verify_narrative as _verify  # type: ignore[import-not-found]
-        resolve_symgen = _resolve
-        verify_narrative = _verify
-        _symgen_imported = True
-        logger.info("SymGen pipeline loaded from %s", scripts_dir)
-    except ImportError as exc:
-        logger.warning("SymGen pipeline not available: %s", exc)
-        _symgen_imported = True  # don't retry
 
 # Paths to blocksense skill scripts
 _REPO_SKILLS = os.path.join(
@@ -105,13 +80,41 @@ _REPO_SKILLS = os.path.join(
     "skills",
 )
 SKILL_BASE = os.environ.get("BLOCKSENSE_SKILL_PATH", _REPO_SKILLS)
-REPORT_SCRIPTS = os.path.join(SKILL_BASE, "blocksense-report", "scripts")
 POSTER_SCRIPTS = os.path.join(SKILL_BASE, "blocksense-poster", "scripts")
-REPORT_TEMPLATE = os.path.join(SKILL_BASE, "blocksense-report", "templates", "report.html")
 POSTER_TEMPLATES_DIR = os.path.join(SKILL_BASE, "blocksense-poster", "templates")
 
-# Agent backend mode — "nemoclaw" = OpenClaw via sandbox, "scripts" = direct skill scripts + vllm
+# This module has no OpenAI/vLLM client. Every model call goes through the
+# OpenClaw gateway into the sandbox; there is no second code path to audit,
+# which is a stronger guarantee than a mode flag that could be flipped.
+#
+# Agent backend mode. Only "nemoclaw" remains: reports and posters run
+# through the OpenClaw sandbox. The "scripts" mode, which reached host
+# vLLM directly, was removed on 2026-08-22 with the SymGen path it served.
 AGENT_BACKEND = os.environ.get("URBAN_DOSSIER_AGENT_BACKEND", "nemoclaw")
+
+# How an artifact's numbers were grounded, stamped on every report and poster.
+#
+# The audit called the missing SymGen resolver a release blocker because the
+# product claimed deterministic numeric verification it did not perform. The
+# resolver is gone (2026-08-22); what replaces it is not a weaker claim but an
+# explicit one. A reader of a generated artifact could not previously tell a
+# verified number from an unverified one, and neither could a caller: nothing
+# in the payload said either way. Now everything says so, honestly, and a
+# future grounding implementation has a field to set rather than a silence to
+# break.
+GROUNDING_NONE = {
+    "verified": False,
+    "method": "none",
+    "note": (
+        "Numbers come from the evidence supplied to the model and are not "
+        "independently re-verified after generation."
+    ),
+}
+GROUNDING_NOTICE_HTML = (
+    "<hr><small>Generated via OpenClaw agent | Nemotron 30B<br>"
+    "Figures are taken from the supplied evidence and are not independently "
+    "re-verified after generation.</small>"
+)
 
 # NemoClaw 0.0.100 exposes the selected in-sandbox agent through its host CLI.
 # Keep the binary and sandbox configurable so development/test sandboxes do not
@@ -152,57 +155,6 @@ _openclaw_gateway_client_lock = threading.Lock()
 LLM_CALL_TIMEOUT = 60
 
 
-def _get_openai_client():
-    """Lazily create an OpenAI client for vllm calls."""
-    from openai import OpenAI
-    return OpenAI(
-        base_url=os.getenv("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL),
-        api_key=os.getenv("OPENAI_API_KEY", DEFAULT_OPENAI_API_KEY),
-        timeout=LLM_CALL_TIMEOUT,
-    )
-
-
-def _llm_chat(client, model_name: str, system_msg: str, user_msg: str,
-              temperature: float = 0.3, max_tokens: int = 300,
-              enable_thinking: bool = False) -> str:
-    """Single LLM chat call. Returns content string, or empty string on failure."""
-    try:
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": user_msg},
-            ],
-            temperature=temperature,
-            max_tokens=max_tokens,
-            extra_body={"chat_template_kwargs": {"enable_thinking": enable_thinking}},
-        )
-        content = response.choices[0].message.content
-        return _strip_thinking(content)
-    except Exception as exc:
-        logger.warning("Agent LLM call failed: %s", exc)
-        return ""
-
-
-def _llm_chat_multi(client, model_name: str, messages: list[dict],
-                    temperature: float = 0.4, max_tokens: int = 500,
-                    enable_thinking: bool = False) -> str:
-    """Multi-message LLM chat call (for conversation context). Returns content string."""
-    try:
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            extra_body={"chat_template_kwargs": {"enable_thinking": enable_thinking}},
-        )
-        content = response.choices[0].message.content
-        return _strip_thinking(content)
-    except Exception as exc:
-        logger.warning("Agent LLM multi-call failed: %s", exc)
-        return ""
-
-
 def _tmp_path(suffix: str) -> str:
     """Create a temp file path with blocksense prefix."""
     fd, path = tempfile.mkstemp(prefix="blocksense-", suffix=suffix)
@@ -235,42 +187,6 @@ def _run_script(script_path: str, args: list[str], timeout: int = 120) -> tuple[
     except FileNotFoundError:
         logger.warning("Script not found: %s", script_path)
         return False, f"Script not found: {script_path}"
-
-
-def _build_dimension_prompt(dimension: str, segment: dict, focus: str | None) -> str:
-    """Build a SymGen data-card prompt for one dimension.
-
-    The LLM is instructed to use {{field_name}} placeholders for ALL numbers.
-    These get resolved to real values by resolve_symgen after generation.
-    """
-    data_card = segment.get("data_card", {})
-    score = segment.get("score")
-
-    # Build reference list from data_card
-    ref_lines = []
-    for key, info in data_card.items():
-        if not isinstance(info, dict):
-            continue
-        ann = f' ({info["annotation"]})' if info.get("annotation") else ""
-        ref_lines.append(f"  {{{{{key}}}}} = {info.get('display', '?')}{ann}")
-
-    refs = "\n".join(ref_lines) if ref_lines else "  (no data available)"
-
-    prompt = (
-        f"=== {dimension.upper()} DATA CARD (score: {score if score is not None else '?'}/100) ===\n"
-        f"Available references -- you MUST use {{{{ref}}}} syntax for ALL numbers:\n"
-        f"{refs}\n"
-        f"\n"
-        f"RULES:\n"
-        f"- Write 2-3 sentences using ONLY the {{{{references}}}} listed above\n"
-        f'- Example: "With {{{{rodent_count}}}} confirmed rodent sites, the area shows {{{{rodent_trend}}}} activity."\n'
-        f"- Do NOT write any bare numbers -- always use {{{{field_name}}}}\n"
-        f"- If you need a fact not listed above, say \"data not available\" instead of guessing\n"
-    )
-    if focus and focus.lower() == dimension.lower():
-        prompt += f"\nFocus: Provide extra detail on {dimension} since the user specifically asked about it.\n"
-
-    return prompt
 
 
 def _score_band(score: int | float | None) -> str:
@@ -393,8 +309,8 @@ def is_agent_available() -> dict:
     """Check if agent mode is available."""
     if not AGENT_ENABLED:
         return {"enabled": False, "reason": "disabled by config"}
-    # Check if skill scripts exist
-    scripts_ok = os.path.isfile(os.path.join(REPORT_SCRIPTS, "extract_segments.py"))
+    # Poster rendering still shells out; report generation no longer does.
+    scripts_ok = os.path.isfile(os.path.join(POSTER_SCRIPTS, "render_poster.py"))
     # Check if NemoClaw CLI available (optional)
     nemoclaw_ok = False
     try:
@@ -436,53 +352,38 @@ def is_agent_available() -> dict:
 
 
 def generate_report(payload: dict, focus: str | None = None) -> dict:
-    """Generate a neighborhood report through the configured backend.
+    """Generate a neighborhood report through the OpenClaw sandbox.
 
-    ``nemoclaw`` is fail-closed: an OpenClaw failure never bypasses the
-    sandbox through host vLLM. Direct script execution is available only when
-    ``AGENT_BACKEND`` is explicitly ``scripts``.
-    Returns dict with 'html', 'markdown', or 'error'.
+    There is one backend. The direct-scripts path was removed on 2026-08-22:
+    it was already unreachable in the shipped configuration, and when it did
+    run it emitted literal ``{{placeholder}}`` text -- its prompt mandated
+    ``{{ref}}`` syntax for every number and the resolver meant to substitute
+    them has never existed in this repository.
+
+    Returns dict with 'html', 'markdown', 'grounding', or 'error'.
     """
-    if AGENT_BACKEND not in {"nemoclaw", "scripts"}:
+    if AGENT_BACKEND != "nemoclaw":
         return {
-            "error": f"Unsupported agent backend: {AGENT_BACKEND}",
+            "error": (
+                f"Unsupported agent backend: {AGENT_BACKEND!r}. "
+                "Only 'nemoclaw' remains."
+            ),
             "error_code": "unsupported_agent_backend",
             "backend": AGENT_BACKEND,
         }
-    payload_path = _tmp_path(".json")
-    segments_path = _tmp_path("-segments.json")
-    narratives_path = _tmp_path("-narratives.json")
-    html_path = _tmp_path("-report.html")
-    md_path = _tmp_path("-report.md")
-    temps = [payload_path, segments_path, narratives_path, html_path, md_path]
-
     try:
-        # Write payload to temp file
-        with open(payload_path, "w") as f:
-            json.dump(payload, f, cls=_SafeEncoder)
-
-        # --- NemoClaw path (OpenClaw agent inside sandbox) ---
-        if AGENT_BACKEND == "nemoclaw":
-            result = _try_nemoclaw_report(payload, focus)
-            if result is not None:
-                return result
-            logger.warning("NemoClaw/OpenClaw report failed; direct fallback is disabled")
-            return {
-                "error": "OpenClaw report generation failed",
-                "error_code": "openclaw_unavailable",
-                "backend": "nemoclaw",
-            }
-
-        # --- Explicit direct scripts path ---
-        return _fallback_script_report(
-            payload, payload_path, segments_path, narratives_path,
-            html_path, md_path, focus,
-        )
+        result = _try_nemoclaw_report(payload, focus)
+        if result is not None:
+            return result
+        logger.warning("OpenClaw report generation failed")
+        return {
+            "error": "OpenClaw report generation failed",
+            "error_code": "openclaw_unavailable",
+            "backend": "nemoclaw",
+        }
     except Exception as exc:
         logger.exception("generate_report failed")
         return {"error": str(exc), "backend": AGENT_BACKEND}
-    finally:
-        _cleanup_files(*temps)
 
 
 def _decode_nemoclaw_payload(stdout: str) -> str | None:
@@ -674,232 +575,15 @@ ul{{padding-left:1.5em}}li{{margin-bottom:0.3em}}
 </style></head><body>
 <h1>BlockSense NYC — Neighborhood Report</h1>
 {_md_to_html(md)}
-<hr><small>Generated via OpenClaw agent | Nemotron 30B</small>
+{GROUNDING_NOTICE_HTML}
 </body></html>"""
 
-    return {"html": html, "markdown": md, "backend": "nemoclaw"}
-
-
-def _resolve_dimension_narratives(narratives: dict, segment_list: list, segments_data: dict) -> None:
-    """Resolve {{ref}} placeholders in each dimension narrative in place.
-
-    Run before synthesis so the synthesis call sees real numbers instead of
-    placeholders. No-op if the SymGen pipeline isn't importable.
-    """
-    _ensure_symgen_imports()
-    if resolve_symgen is None:
-        return
-    overall_card = segments_data.get("overall_data_card", {})
-    for dim in list(narratives.keys()):
-        seg = next((s for s in segment_list if s.get("dimension") == dim), {})
-        card = dict(seg.get("data_card", {}))
-        card.update(overall_card)
-        resolved, _ = resolve_symgen(narratives[dim], card)
-        narratives[dim] = resolved
-
-
-def _build_synth_prompt(narratives: dict, segments_data: dict, payload: dict) -> str:
-    """Build the synthesis prompt body shared by report and refine flows.
-
-    Combines all data_cards into a reference list, then concatenates the
-    pre-resolved per-dimension narratives so the model can stitch them together.
-    """
-    segment_list = segments_data.get("segments", [])
-    synth_card = dict(segments_data.get("overall_data_card", {}))
-    for seg in segment_list:
-        synth_card.update(seg.get("data_card", {}))
-
-    synth_ref_lines = []
-    for key, info in synth_card.items():
-        if not isinstance(info, dict):
-            continue
-        ann = f' ({info["annotation"]})' if info.get("annotation") else ""
-        synth_ref_lines.append(f"  {{{{{key}}}}} = {info.get('display', '?')}{ann}")
-    synth_refs = "\n".join(synth_ref_lines) if synth_ref_lines else "  (no data available)"
-
-    synth_parts = [f"[{dim.upper()}] {text}" for dim, text in narratives.items()]
-    scores = payload.get("scores", {})
-    score_str = ", ".join(f"{k}={v}" for k, v in scores.items() if v is not None)
-    return (
-        f"Location: {{{{location_name}}}}\nScores: {score_str}\n\n"
-        f"Available references for synthesis:\n{synth_refs}\n\n"
-        + "\n".join(synth_parts)
-        + "\n\nCombine into a cohesive report using {{ref}} for numbers. "
-        "Prose paragraphs, no bullets, no headers."
-    )
-
-
-def _render_or_fallback_md(
-    narratives: dict,
-    synthesis: str,
-    location: str,
-    segments_path: str,
-    narratives_path: str,
-    html_path: str,
-    md_path: str,
-    title_prefix: str,
-    backend: str,
-    extra: dict | None = None,
-) -> dict:
-    """Write narratives, run the render script, and return {html, markdown, backend}.
-
-    Falls back to a markdown stitched from narratives if the render script
-    fails or produces no output. `extra` merges into the success result so
-    callers can add flags like `refined: True`.
-    """
-    try:
-        with open(narratives_path, "w") as f:
-            json.dump(narratives, f, cls=_SafeEncoder)
-    except OSError as exc:
-        return {"error": f"Failed to write narratives: {exc}"}
-
-    render_script = os.path.join(REPORT_SCRIPTS, "render_report.py")
-    render_args = [
-        "--segments", segments_path,
-        "--narratives", narratives_path,
-        "--template", REPORT_TEMPLATE,
-        "--output-html", html_path,
-        "--output-md", md_path,
-    ]
-    ok, _ = _run_script(render_script, render_args)
-    if not ok:
-        md_fallback = f"# {title_prefix} for {location}\n\n{synthesis}\n\n"
-        for dim, text in narratives.items():
-            if dim != "synthesis":
-                md_fallback += f"## {dim.title()}\n{text}\n\n"
-        return {"html": "", "markdown": md_fallback, "backend": f"{backend}-fallback"}
-
-    html = ""
-    md = ""
-    try:
-        if os.path.isfile(html_path):
-            with open(html_path) as f:
-                html = f.read()
-        if os.path.isfile(md_path):
-            with open(md_path) as f:
-                md = f.read()
-    except OSError:
-        pass
-
-    if not html and not md:
-        md = f"# {title_prefix} for {location}\n\n{synthesis}\n"
-        for dim, text in narratives.items():
-            if dim != "synthesis":
-                md += f"\n## {dim.title()}\n{text}\n"
-
-    result = {"html": html, "markdown": md, "backend": backend}
-    if extra:
-        result.update(extra)
-    return result
-
-
-def _apply_symgen_pipeline(narratives: dict, segments_data: dict) -> dict:
-    """Apply SymGen resolve + verify to all narratives. Modifies and returns narratives."""
-    _ensure_symgen_imports()
-    if resolve_symgen is None or verify_narrative is None:
-        logger.warning("SymGen pipeline unavailable, skipping resolve+verify")
-        return narratives
-
-    segment_list = segments_data.get("segments", [])
-    overall_card = segments_data.get("overall_data_card", {})
-
-    for dim in list(narratives.keys()):
-        # Build the data_card for this dimension
-        if dim == "synthesis":
-            # Synthesis uses overall_data_card merged with all dimension cards
-            card = dict(overall_card)
-            for seg in segment_list:
-                card.update(seg.get("data_card", {}))
-        else:
-            seg = next((s for s in segment_list if s.get("dimension") == dim), {})
-            card = dict(seg.get("data_card", {}))
-            # Also include overall card entries for cross-references
-            card.update(overall_card)
-
-        # Step A: Resolve {{ref}} placeholders
-        resolved, stats = resolve_symgen(narratives[dim], card)
-        narratives[dim] = resolved
-        logger.info(
-            "SymGen %s: %d refs resolved, %d unresolved",
-            dim, stats.get("resolved", 0), stats.get("unresolved", 0),
-        )
-
-    # Step B: Verify remaining bare numbers
-    for dim in list(narratives.keys()):
-        cleaned, report = verify_narrative(narratives[dim], segments_data, strict=True)
-        narratives[dim] = cleaned
-        score = report.get("grounding_score", 0)
-        if score < 1.0:
-            logger.warning(
-                "Narrative %s grounding: %.0f%% (%d ungrounded numbers)",
-                dim, score * 100, report.get("ungrounded", 0),
-            )
-
-    return narratives
-
-
-def _fallback_script_report(payload: dict, payload_path: str, segments_path: str,
-                            narratives_path: str, html_path: str, md_path: str,
-                            focus: str | None) -> dict:
-    """Generate report using skill scripts directly + vllm HTTP + SymGen pipeline."""
-    # Step 1: Extract segments
-    extract_script = os.path.join(REPORT_SCRIPTS, "extract_segments.py")
-    ok, err = _run_script(extract_script, [payload_path, "--output", segments_path])
-    if not ok:
-        return {"error": f"extract_segments failed: {err}"}
-
-    # Read segments
-    try:
-        with open(segments_path) as f:
-            segments_data = json.load(f)
-    except (json.JSONDecodeError, OSError) as exc:
-        return {"error": f"Failed to read segments: {exc}"}
-
-    segment_list = segments_data.get("segments", [])
-
-    # Step 2: LLM calls for each dimension using SymGen data-card prompts
-    try:
-        client = _get_openai_client()
-        model_name = _resolve_model_name(client)
-    except Exception as exc:
-        return {"error": f"Failed to initialize LLM client: {exc}"}
-
-    system_msg = (
-        "You are a NYC neighborhood data analyst. Write concise analysis using ONLY "
-        "the {{reference}} placeholders provided. Never write bare numbers."
-    )
-
-    narratives = {}
-    for seg in segment_list:
-        dim = seg.get("dimension", "")
-        if not dim:
-            continue
-        prompt = _build_dimension_prompt(dim, seg, focus)
-        text = _llm_chat(client, model_name, system_msg, prompt, max_tokens=200)
-        narratives[dim] = text if text else f"Analysis for {dim} is not available."
-
-    # Step 3: Synthesis — resolve dimension narratives first so synthesis sees real numbers
-    _resolve_dimension_narratives(narratives, segment_list, segments_data)
-    target = payload.get("target", {})
-    location = target.get("matched_address") or target.get("borough", "NYC")
-    synth_system = (
-        "You are a NYC neighborhood data analyst. Combine dimension analyses into a "
-        "cohesive 2-paragraph summary. Use ONLY {{reference}} placeholders for numbers. "
-        "Lead with the most concerning findings. Use location name, not coordinates."
-    )
-    synth_prompt = _build_synth_prompt(narratives, segments_data, payload)
-    synthesis = _llm_chat(client, model_name, synth_system, synth_prompt, max_tokens=500)
-    narratives["synthesis"] = synthesis if synthesis else "Report synthesis unavailable."
-
-    # Step 4: Apply full SymGen pipeline (resolve + verify) on all narratives
-    narratives = _apply_symgen_pipeline(narratives, segments_data)
-
-    # Step 5: Write narratives, render, and read outputs (with markdown fallback)
-    return _render_or_fallback_md(
-        narratives, synthesis, location,
-        segments_path, narratives_path, html_path, md_path,
-        title_prefix="Report", backend="scripts",
-    )
+    return {
+        "html": html,
+        "markdown": md,
+        "backend": "nemoclaw",
+        "grounding": GROUNDING_NONE,
+    }
 
 
 def _try_nemoclaw_poster(payload: dict, template: str) -> dict | None:
@@ -938,15 +622,21 @@ def _try_nemoclaw_poster(payload: dict, template: str) -> dict | None:
 
 
 def generate_poster(payload: dict, template: str = "offline") -> dict:
-    """Generate a poster through the configured backend.
+    """Generate a poster through the OpenClaw sandbox.
 
-    ``nemoclaw`` is fail-closed; direct host-vLLM generation is enabled only
-    by explicitly selecting ``AGENT_BACKEND=scripts``.
-    Returns dict with 'html' or 'error'.
+    Highlight extraction and rendering still shell out to the poster skill --
+    those run in both modes and are production dependencies, not leftovers.
+    Only the headline/summary generation had a second path, and that one
+    reached host vLLM directly; it went with the scripts mode on 2026-08-22.
+
+    Returns dict with 'html', 'headline', 'summary', 'grounding', or 'error'.
     """
-    if AGENT_BACKEND not in {"nemoclaw", "scripts"}:
+    if AGENT_BACKEND != "nemoclaw":
         return {
-            "error": f"Unsupported agent backend: {AGENT_BACKEND}",
+            "error": (
+                f"Unsupported agent backend: {AGENT_BACKEND!r}. "
+                "Only 'nemoclaw' remains."
+            ),
             "error_code": "unsupported_agent_backend",
             "backend": AGENT_BACKEND,
         }
@@ -965,67 +655,17 @@ def generate_poster(payload: dict, template: str = "offline") -> dict:
         if not ok:
             return {"error": f"extract_highlights failed: {err}"}
 
-        # Step 2: LLM for headline + summary
-        headline = None
-        summary = None
-
-        # --- NemoClaw path ---
-        if AGENT_BACKEND == "nemoclaw":
-            nc_result = _try_nemoclaw_poster(payload, template)
-            if nc_result:
-                headline = nc_result["headline"]
-                summary = nc_result["summary"]
-                logger.info("Poster headline/summary via OpenClaw agent")
-            else:
-                logger.warning("OpenClaw poster failed; direct fallback is disabled")
-                return {
-                    "error": "OpenClaw poster generation failed",
-                    "error_code": "openclaw_unavailable",
-                    "backend": "nemoclaw",
-                }
-
-        # --- Explicit direct vLLM path ---
-        if not headline or not summary:
-            try:
-                client = _get_openai_client()
-                model_name = _resolve_model_name(client)
-            except Exception as exc:
-                return {"error": f"Failed to initialize LLM client: {exc}"}
-
-            target = payload.get("target", {})
-            location = target.get("matched_address") or target.get("borough", "NYC")
-            scores = payload.get("scores", {})
-            overall = scores.get("overall", "?")
-            actions = payload.get("priority_actions", [])
-            top_action = actions[0]["action"] if actions else "neighborhood overview"
-
-            if not headline:
-                headline_prompt = (
-                    f"Location: {location}, overall score {overall}/100.\n"
-                    f"Top issue: {top_action}.\n"
-                    "Write a poster headline in under 15 words. Punchy, factual, no clickbait."
-                )
-                headline = _llm_chat(
-                    client, model_name,
-                    "You write short poster headlines for NYC neighborhood data.",
-                    headline_prompt, max_tokens=30,
-                )
-                if not headline:
-                    headline = f"{location}: Score {overall}/100"
-
-            if not summary:
-                summary_prompt = (
-                    f"Location: {location}, score {overall}/100.\n"
-                    f"Top issue: {top_action}.\n"
-                    "Write a poster summary in under 50 words. Clear, factual, cite one number."
-                )
-                summary = _llm_chat(
-                    client, model_name,
-                    "You write short poster summaries for NYC neighborhood data.",
-                    summary_prompt, max_tokens=80,
-                )
-                if not summary:
-                    summary = f"Analysis of {location} based on NYC Open Data."
+        # Step 2: headline + summary from the sandboxed agent
+        nc_result = _try_nemoclaw_poster(payload, template)
+        if not nc_result:
+            logger.warning("OpenClaw poster generation failed")
+            return {
+                "error": "OpenClaw poster generation failed",
+                "error_code": "openclaw_unavailable",
+                "backend": "nemoclaw",
+            }
+        headline = nc_result["headline"]
+        summary = nc_result["summary"]
 
         # Step 3: Render poster
         render_script = os.path.join(POSTER_SCRIPTS, "render_poster.py")
@@ -1051,7 +691,13 @@ def generate_poster(payload: dict, template: str = "offline") -> dict:
         if not html:
             return {"error": "Poster render produced no output"}
 
-        return {"html": html, "headline": headline, "summary": summary}
+        return {
+            "html": html,
+            "headline": headline,
+            "summary": summary,
+            "backend": "nemoclaw",
+            "grounding": GROUNDING_NONE,
+        }
     except Exception as exc:
         logger.exception("generate_poster failed")
         return {"error": str(exc), "backend": AGENT_BACKEND}
@@ -1072,35 +718,35 @@ def generate_poster(payload: dict, template: str = "offline") -> dict:
 def refine_report(session, feedback: str) -> dict:
     """Re-generate a report with user feedback incorporated.
 
-    ``nemoclaw`` is fail-closed; the direct scripts path runs only when
-    ``AGENT_BACKEND`` is explicitly ``scripts``.
-    Returns dict with 'html', 'markdown', or 'error'.
+    One backend, same as ``generate_report``.
+    Returns dict with 'html', 'markdown', 'grounding', or 'error'.
     """
     payload = session.analysis_payload
 
-    if AGENT_BACKEND not in {"nemoclaw", "scripts"}:
+    if AGENT_BACKEND != "nemoclaw":
         return {
-            "error": f"Unsupported agent backend: {AGENT_BACKEND}",
+            "error": (
+                f"Unsupported agent backend: {AGENT_BACKEND!r}. "
+                "Only 'nemoclaw' remains."
+            ),
             "error_code": "unsupported_agent_backend",
             "backend": AGENT_BACKEND,
         }
 
-    # --- NemoClaw path ---
-    if AGENT_BACKEND == "nemoclaw":
-        context = _build_condensed_context(payload)
-        prompt = (
-            f"You previously analyzed this NYC neighborhood:\n\n"
-            f"{context}\n\n"
-            f"The user requests a refined report with this feedback: {feedback}\n\n"
-            f"Write an updated neighborhood analysis report incorporating the feedback. "
-            f"Structure: Safety, Transit, Amenities, Building, Synthesis. "
-            f"Cite specific numbers from the data. Do not invent statistics."
-        )
-        session_id = f"refine-{os.getpid()}"
-        response = _openclaw_agent(prompt, session_id=session_id, timeout=45)
-        if response and len(response.strip()) >= 50:
-            md = response.strip()
-            html = f"""<!DOCTYPE html>
+    context = _build_condensed_context(payload)
+    prompt = (
+        f"You previously analyzed this NYC neighborhood:\n\n"
+        f"{context}\n\n"
+        f"The user requests a refined report with this feedback: {feedback}\n\n"
+        f"Write an updated neighborhood analysis report incorporating the feedback. "
+        f"Structure: Safety, Transit, Amenities, Building, Synthesis. "
+        f"Cite specific numbers from the data. Do not invent statistics."
+    )
+    session_id = f"refine-{os.getpid()}"
+    response = _openclaw_agent(prompt, session_id=session_id, timeout=45)
+    if response and len(response.strip()) >= 50:
+        md = response.strip()
+        html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>BlockSense Report (Refined)</title>
 <style>body{{font-family:system-ui;max-width:800px;margin:2em auto;padding:0 1em;color:#2a3439;line-height:1.6}}
 h1{{color:#565e74}}h2{{color:#0053dc;border-bottom:1px solid #e8e6dc;padding-bottom:4px}}
@@ -1109,100 +755,18 @@ ul{{padding-left:1.5em}}li{{margin-bottom:0.3em}}
 <h1>BlockSense NYC — Refined Report</h1>
 <p><em>User feedback: {html_lib.escape(feedback)}</em></p>
 {_md_to_html(md)}
-<hr><small>Generated via OpenClaw agent | Nemotron 30B</small>
+{GROUNDING_NOTICE_HTML}
 </body></html>"""
-            return {"html": html, "markdown": md, "backend": "nemoclaw"}
-        logger.warning("OpenClaw refine failed; direct fallback is disabled")
         return {
-            "error": "OpenClaw report refinement failed",
-            "error_code": "openclaw_unavailable",
+            "html": html,
+            "markdown": md,
             "backend": "nemoclaw",
+            "refined": True,
+            "grounding": GROUNDING_NONE,
         }
-
-    # --- Explicit direct scripts path ---
-    payload_path = _tmp_path(".json")
-    segments_path = _tmp_path("-segments.json")
-    narratives_path = _tmp_path("-narratives.json")
-    html_path = _tmp_path("-report.html")
-    md_path = _tmp_path("-report.md")
-    temps = [payload_path, segments_path, narratives_path, html_path, md_path]
-
-    try:
-        with open(payload_path, "w") as f:
-            json.dump(payload, f, cls=_SafeEncoder)
-
-        # Extract segments
-        extract_script = os.path.join(REPORT_SCRIPTS, "extract_segments.py")
-        ok, err = _run_script(extract_script, [payload_path, "--output", segments_path])
-        if not ok:
-            return {"error": f"extract_segments failed: {err}"}
-
-        try:
-            with open(segments_path) as f:
-                segments_data = json.load(f)
-        except (json.JSONDecodeError, OSError) as exc:
-            return {"error": f"Failed to read segments: {exc}"}
-
-        segment_list = segments_data.get("segments", [])
-
-        # LLM calls with feedback context, using SymGen data-card prompts
-        try:
-            client = _get_openai_client()
-            model_name = _resolve_model_name(client)
-        except Exception as exc:
-            return {"error": f"Failed to initialize LLM client: {exc}"}
-
-        # Include previous report context if available
-        previous_report = ""
-        if session.generated_reports:
-            previous_report = f"\nPrevious report was generated. User feedback: {feedback}"
-        else:
-            previous_report = f"\nUser requested focus: {feedback}"
-
-        system_msg = (
-            "You are a NYC neighborhood data analyst. Write concise analysis using ONLY "
-            "the {{reference}} placeholders provided. Never write bare numbers."
-            f"{previous_report}"
-        )
-
-        narratives = {}
-        for seg in segment_list:
-            dim = seg.get("dimension", "")
-            if not dim:
-                continue
-            prompt = _build_dimension_prompt(dim, seg, None)
-            prompt += f"\n\nUser feedback to incorporate: {feedback}"
-            text = _llm_chat(client, model_name, system_msg, prompt, max_tokens=200)
-            narratives[dim] = text if text else f"Analysis for {dim} is not available."
-
-        # Resolve dimension narratives before synthesis sees them
-        _resolve_dimension_narratives(narratives, segment_list, segments_data)
-
-        target = payload.get("target", {})
-        location = target.get("matched_address") or target.get("borough", "NYC")
-
-        # Synthesis with feedback, using SymGen
-        synth_system = (
-            "You are a NYC neighborhood data analyst. Combine dimension analyses into a "
-            "cohesive 2-paragraph summary. Use ONLY {{reference}} placeholders for numbers. "
-            "Lead with the most concerning findings. Use location name, not coordinates. "
-            f"Incorporate this user feedback: {feedback}"
-        )
-        synth_prompt = _build_synth_prompt(narratives, segments_data, payload)
-        synthesis = _llm_chat(client, model_name, synth_system, synth_prompt, max_tokens=500)
-        narratives["synthesis"] = synthesis if synthesis else "Report synthesis unavailable."
-
-        # Apply full SymGen pipeline (resolve + verify) on all narratives
-        narratives = _apply_symgen_pipeline(narratives, segments_data)
-
-        # Write narratives, render, and read outputs (with markdown fallback)
-        return _render_or_fallback_md(
-            narratives, synthesis, location,
-            segments_path, narratives_path, html_path, md_path,
-            title_prefix="Refined Report", backend="scripts", extra={"refined": True},
-        )
-    except Exception as exc:
-        logger.exception("refine_report failed")
-        return {"error": str(exc), "backend": AGENT_BACKEND}
-    finally:
-        _cleanup_files(*temps)
+    logger.warning("OpenClaw refine failed")
+    return {
+        "error": "OpenClaw report refinement failed",
+        "error_code": "openclaw_unavailable",
+        "backend": "nemoclaw",
+    }

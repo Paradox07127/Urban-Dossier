@@ -14,6 +14,32 @@ hygiene. The project now also has a separately validated x86 NVIDIA workstation
 profile; platform-specific tuning remains isolated while both profiles share
 the same application and data contracts.
 
+### Removed — SymGen and the direct-scripts report path (2026-08-22)
+
+- Deleted `resolve_symgen` / `verify_narrative` and the whole direct-scripts
+  report path: `_fallback_script_report`, `_build_dimension_prompt`,
+  `_build_synth_prompt`, `_resolve_dimension_narratives`,
+  `_apply_symgen_pipeline`, `_render_or_fallback_md`, the `AGENT_BACKEND=scripts`
+  mode, and the now-orphaned host-vLLM client (`_get_openai_client`,
+  `_llm_chat`, `_llm_chat_multi`). `agent_service.py` went 1,208 -> 768 lines.
+- The audit called the missing resolver a release blocker for claiming
+  verification it never performed. Investigation found it worse than that: the
+  prompt required `{{ref}}` placeholders for every number and forbade bare
+  ones, so with the resolver absent that path emitted literal
+  `{{rodent_count}}` to users. Deleting it removed a broken path, not a
+  feature — nothing in the shipped configuration could reach it, since
+  `AGENT_BACKEND` defaults to `nemoclaw` and nemoclaw is fail-closed.
+- Poster generation keeps `extract_highlights.py` and `render_poster.py`:
+  those run in both modes and are production dependencies, not leftovers.
+- Every report, refine and poster success response now carries `grounding`
+  (`verified: false`, `method: "none"`) and the HTML footer says the figures
+  are not independently re-verified. That is what closes the blocker: the
+  claim is gone and the artifact states its own status, so a future grounding
+  implementation has a field to set rather than a silence to break.
+- `agent_service` no longer holds an OpenAI/vLLM client at all. The tests that
+  monkeypatched one to prove it did not run now assert it does not exist,
+  which is what a sandbox boundary should mean.
+
 ### Removed — RAG retired (2026-08-20)
 
 - Removed the `rag/` package (ingest / embed / vector_index / retrieve /
